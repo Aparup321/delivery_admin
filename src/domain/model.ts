@@ -48,6 +48,7 @@ export type AuditEventType =
   | 'Application rejected'
   | 'Partner app connection updated'
   | 'Partner app data synced'
+  | 'Partner app account updated'
   | 'Settings modified'
   | 'Administrative role changed'
   | 'Demo data reset'
@@ -116,7 +117,10 @@ export interface PartnerApplication {
   reviewedAt: string | null
   decisionReason: string | null
   partnerId: string | null
-  demoRecord: true
+  /** Firestore document ID in delivery_app's partners collection, when linked. */
+  partnerAppUid: string | null
+  /** False when the application was created from a live delivery_app record. */
+  demoRecord: boolean
 }
 
 export type PartnerAppMode = 'firestore' | 'endpoint'
@@ -141,6 +145,7 @@ export interface PartnerAppRecord {
   email: string | null
   vehicle: string | null
   status: string | null
+  applicationStatus: string | null
   serviceAreas: string[]
   updatedAt: string | null
   fields: Record<string, string>
@@ -160,6 +165,8 @@ export interface Partner {
   restrictedReason: string | null
   suspendedReason: string | null
   needsOperationalReview: boolean
+  /** Firestore document ID in delivery_app's partners collection, when linked. */
+  partnerAppUid: string | null
 }
 
 export interface Assignment {

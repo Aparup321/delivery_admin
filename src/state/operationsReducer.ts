@@ -1,4 +1,4 @@
-import { DELIVERY_MILESTONES, type AdminRole, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type Permission } from '../domain/model.ts'
+import { DELIVERY_MILESTONES, type AdminRole, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerApplication, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
 import { getPartnerEligibility, getActiveAssignment } from '../domain/operations.ts'
 
@@ -31,6 +31,10 @@ export type OperationAction =
   | { type: 'partnerApp.connected'; at: string }
   | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; at: string }
   | { type: 'partnerApp.failed'; message: string }
+  | { type: 'partnerApp.link'; recordId: string; partnerId: string }
+  | { type: 'partnerApp.unlink'; partnerId: string }
+  | { type: 'partnerApp.review'; recordId: string; decision: 'Approved' | 'Rejected'; note: string }
+  | { type: 'partnerApp.write-result'; targetType: 'Application' | 'Partner'; targetId: string; recordId: string; ok: boolean; message: string; at: string; applicationStatus: string | null; accountStatus: string | null }
   | { type: 'notification.read'; notificationId: string }
   | { type: 'notification.read-all' }
   | { type: 'settings.save'; settings: OperationsState['settings'] }
@@ -59,6 +63,10 @@ const permissionByAction: Partial<Record<OperationAction['type'], Permission>> =
   'partnerApp.connected': 'settings',
   'partnerApp.sync-result': 'settings',
   'partnerApp.failed': 'settings',
+  'partnerApp.link': 'settings',
+  'partnerApp.unlink': 'settings',
+  'partnerApp.review': 'application-review',
+  'partnerApp.write-result': 'settings',
   'notification.read': 'read',
   'notification.read-all': 'read',
   'settings.save': 'settings',
@@ -117,6 +125,169 @@ function findApplication(data: OperationsState, id: string) {
   const application = data.applications.find((item) => item.id === id)
   if (!application) throw new Error(`Application ${id} could not be found.`)
   return application
+}
+
+function normalizeLinkName(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ')
+}
+
+/**
+ * Seed and real records often share a display name. Linking by an exact,
+ * unique normalized name gives the Administrator a useful starting point
+ * without guessing when two people have the same name.
+ */
+function autoLinkPartnerAppRecords(data: OperationsState) {
+  const recordsByName = new Map<string, PartnerAppRecord[]>()
+  for (const record of data.partnerAppRecords) {
+    const key = normalizeLinkName(record.name)
+    if (!key) continue
+    recordsByName.set(key, [...(recordsByName.get(key) ?? []), record])
+  }
+
+  for (const partner of data.partners) {
+    if (partner.partnerAppUid) continue
+    const candidates = recordsByName.get(normalizeLinkName(partner.name)) ?? []
+    if (candidates.length === 1) partner.partnerAppUid = candidates[0].id
+  }
+
+  for (const application of data.applications) {
+    if (application.partnerAppUid) continue
+    if (application.partnerId) {
+      const partner = data.partners.find((item) => item.id === application.partnerId)
+      if (partner?.partnerAppUid) {
+        application.partnerAppUid = partner.partnerAppUid
+        continue
+      }
+    }
+    const candidates = recordsByName.get(normalizeLinkName(application.applicantName)) ?? []
+    if (candidates.length === 1) application.partnerAppUid = candidates[0].id
+  }
+}
+
+function nextApplicationId(data: OperationsState) {
+  const numbers = data.applications.map((item) => Number(item.id.replace(/\D/g, ''))).filter(Number.isFinite)
+  return `APP-${Math.max(2_040, ...numbers) + 1}`
+}
+
+function maskPhoneNumber(phone: string | null) {
+  const digits = (phone ?? '').replace(/\D/g, '')
+  return digits.length >= 4 ? `+91 ••••• ${digits.slice(-4)}` : 'Not provided'
+}
+
+function maskEmailAddress(email: string | null) {
+  const value = (email ?? '').trim()
+  const [local, domain] = value.split('@')
+  return local && domain ? `${local.slice(0, 4)}••@${domain}` : 'Not provided'
+}
+
+function adminVehicleFor(value: string | null): Partner['vehicle'] {
+  const normalized = (value ?? '').toLowerCase()
+  if (normalized.includes('van')) return 'Van'
+  if (normalized.includes('scooter')) return 'Scooter'
+  return 'Bike'
+}
+
+/**
+ * A delivery_app account can submit onboarding before the Administrator has a
+ * local application record. Building one from the synced record lets the
+ * Administrator approve or reject it and keeps both apps in step.
+ */
+function applicationFromPartnerRecord(data: OperationsState, record: PartnerAppRecord): PartnerApplication {
+  if (!record.name.trim() || record.name === record.id) {
+    throw new Error('This delivery_app account has not completed onboarding, so there is no application to review.')
+  }
+  return {
+    id: nextApplicationId(data),
+    applicantName: record.name,
+    businessName: `${record.name} · delivery_app`,
+    maskedPhone: maskPhoneNumber(record.phone),
+    maskedEmail: maskEmailAddress(record.email),
+    vehicle: adminVehicleFor(record.vehicle),
+    serviceAreas: record.serviceAreas.length ? [...record.serviceAreas] : ['Kolkata'],
+    submittedAt: record.updatedAt ?? record.syncedAt,
+    documents: [...data.settings.requiredDocuments],
+    status: 'Submitted',
+    reviewedBy: null,
+    reviewedAt: null,
+    decisionReason: null,
+    partnerId: null,
+    partnerAppUid: record.id,
+    demoRecord: false,
+  }
+}
+
+function approveApplication(data: OperationsState, application: PartnerApplication, note: string, at: string, existingPartnerId: string | null = null) {
+  if (application.status !== 'Submitted') throw new Error(`${application.id} has already been decided and cannot be reviewed again.`)
+  let partner: Partner
+  let partnerId: string
+  if (existingPartnerId) {
+    // A manually linked directory record already represents this person. Keep
+    // it instead of adding a duplicate partner on approval.
+    partner = findPartner(data, existingPartnerId)
+    partnerId = partner.id
+    partner.partnerAppUid = application.partnerAppUid
+  } else {
+    const partnerNumbers = data.partners.map((item) => Number(item.id.replace(/\D/g, ''))).filter(Number.isFinite)
+    partnerId = `DP-${String(Math.max(0, ...partnerNumbers) + 1).padStart(4, '0')}`
+    partner = {
+      id: partnerId,
+      name: application.applicantName,
+      maskedPhone: application.maskedPhone,
+      maskedEmail: application.maskedEmail,
+      registeredAt: at,
+      vehicle: application.vehicle,
+      maskedRegistration: `WB-••-${String(2300 + data.partners.length).slice(-4)}`,
+      serviceAreas: [...application.serviceAreas],
+      availability: 'Offline',
+      restrictedReason: null,
+      suspendedReason: null,
+      needsOperationalReview: false,
+      partnerAppUid: application.partnerAppUid,
+    }
+    data.partners.unshift(partner)
+  }
+  const submittedTypes = new Set(application.documents)
+  if (!data.documents.some((document) => document.partnerId === partnerId)) {
+    data.settings.requiredDocuments.forEach((type, index) => {
+      const submitted = submittedTypes.has(type)
+      data.documents.push({
+        id: `DOC-${partnerId.slice(-4)}-${index + 1}`,
+        partnerId,
+        type,
+        submittedAt: submitted ? application.submittedAt : null,
+        status: submitted ? 'Submitted' : 'Missing',
+        expiresAt: null,
+        reviewer: null,
+        rejectionReason: null,
+        history: submitted ? [{ status: 'Submitted', changedAt: at, reviewer: data.user.name, reason: 'Created from an approved onboarding application.' }] : [],
+        demoRecord: true,
+      })
+    })
+  }
+  const previous = application.status
+  application.status = 'Approved'
+  application.reviewedBy = data.user.name
+  application.reviewedAt = at
+  application.decisionReason = note.trim() || null
+  application.partnerId = partnerId
+  partnerHistory(data, partnerId, 'Application approved', `Onboarding application ${application.id} approved. ${partner.name} added to the partner directory with documents queued for KYC review.`, null, at)
+  audit(data, 'Application approved', 'Application', application.id, previous, `Approved · ${partnerId}`, note || 'Approved by Administrator.', at)
+  notify(data, 'Partner Application Approved', 'Onboarding application approved', `${application.applicantName} · ${application.businessName} was approved and added as ${partnerId}.`, `/admin/partners/${partnerId}`, application.id, at)
+  notify(data, 'Verification Required', 'New partner documents need review', `${partnerId} has onboarding documents awaiting KYC verification.`, `/admin/partners/${partnerId}`, partnerId, at)
+  return { partnerId, message: `${application.id} approved. ${partner.name} added as ${partnerId}; documents are queued for KYC review.` }
+}
+
+function rejectApplication(data: OperationsState, application: PartnerApplication, reason: string, at: string) {
+  requireValue(reason, 'Rejection reason')
+  if (application.status !== 'Submitted') throw new Error(`${application.id} has already been decided and cannot be reviewed again.`)
+  const previous = application.status
+  application.status = 'Rejected'
+  application.reviewedBy = data.user.name
+  application.reviewedAt = at
+  application.decisionReason = reason.trim()
+  audit(data, 'Application rejected', 'Application', application.id, previous, 'Rejected', reason, at)
+  notify(data, 'Partner Application Rejected', 'Onboarding application rejected', `${application.applicantName} · ${application.businessName}: ${reason.trim()}`, '/admin/kyc', application.id, at)
+  return { message: `${application.id} rejected with a recorded reason.` }
 }
 
 function audit(data: OperationsState, eventType: AuditEventType, targetType: AuditLogEntry['targetType'], targetId: string, previousValue: string, newValue: string, reason: string, at: string) {
@@ -484,64 +655,11 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
     }
     case 'application.approve': {
       const application = findApplication(data, action.applicationId)
-      if (application.status !== 'Submitted') throw new Error(`${application.id} has already been decided and cannot be reviewed again.`)
-      const partnerNumbers = data.partners.map((item) => Number(item.id.replace(/\D/g, ''))).filter(Number.isFinite)
-      const partnerId = `DP-${String(Math.max(0, ...partnerNumbers) + 1).padStart(4, '0')}`
-      const partner: Partner = {
-        id: partnerId,
-        name: application.applicantName,
-        maskedPhone: application.maskedPhone,
-        maskedEmail: application.maskedEmail,
-        registeredAt: at,
-        vehicle: application.vehicle,
-        maskedRegistration: `WB-••-${String(2300 + data.partners.length).slice(-4)}`,
-        serviceAreas: [...application.serviceAreas],
-        availability: 'Offline',
-        restrictedReason: null,
-        suspendedReason: null,
-        needsOperationalReview: false,
-      }
-      data.partners.unshift(partner)
-      const submittedTypes = new Set(application.documents)
-      data.settings.requiredDocuments.forEach((type, index) => {
-        const submitted = submittedTypes.has(type)
-        data.documents.push({
-          id: `DOC-${partnerId.slice(-4)}-${index + 1}`,
-          partnerId,
-          type,
-          submittedAt: submitted ? application.submittedAt : null,
-          status: submitted ? 'Submitted' : 'Missing',
-          expiresAt: null,
-          reviewer: null,
-          rejectionReason: null,
-          history: submitted ? [{ status: 'Submitted', changedAt: at, reviewer: data.user.name, reason: 'Created from an approved onboarding application.' }] : [],
-          demoRecord: true,
-        })
-      })
-      const previous = application.status
-      application.status = 'Approved'
-      application.reviewedBy = data.user.name
-      application.reviewedAt = at
-      application.decisionReason = action.note.trim() || null
-      application.partnerId = partnerId
-      partnerHistory(data, partnerId, 'Application approved', `Onboarding application ${application.id} approved. ${partner.name} added to the partner directory with documents queued for KYC review.`, null, at)
-      audit(data, 'Application approved', 'Application', application.id, previous, `Approved · ${partnerId}`, action.note || 'Approved by Administrator.', at)
-      notify(data, 'Partner Application Approved', 'Onboarding application approved', `${application.applicantName} · ${application.businessName} was approved and added as ${partnerId}.`, `/admin/partners/${partnerId}`, application.id, at)
-      notify(data, 'Verification Required', 'New partner documents need review', `${partnerId} has onboarding documents awaiting KYC verification.`, `/admin/partners/${partnerId}`, partnerId, at)
-      return { message: `${application.id} approved. ${partner.name} added as ${partnerId}; documents are queued for KYC review.` }
+      return { message: approveApplication(data, application, action.note, at).message }
     }
     case 'application.reject': {
       const application = findApplication(data, action.applicationId)
-      requireValue(action.reason, 'Rejection reason')
-      if (application.status !== 'Submitted') throw new Error(`${application.id} has already been decided and cannot be reviewed again.`)
-      const previous = application.status
-      application.status = 'Rejected'
-      application.reviewedBy = data.user.name
-      application.reviewedAt = at
-      application.decisionReason = action.reason.trim()
-      audit(data, 'Application rejected', 'Application', application.id, previous, 'Rejected', action.reason, at)
-      notify(data, 'Partner Application Rejected', 'Onboarding application rejected', `${application.applicantName} · ${application.businessName}: ${action.reason.trim()}`, '/admin/kyc', application.id, at)
-      return { message: `${application.id} rejected with a recorded reason.` }
+      return { message: rejectApplication(data, application, action.reason, at).message }
     }
     case 'partnerApp.save': {
       const { mode } = action.config
@@ -596,12 +714,104 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       data.partnerApp.lastSyncAt = action.at
       data.partnerApp.lastConnectedAt = action.at
       data.partnerApp.lastError = null
-      audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records`, 'Manual partner app sync from the connection screen.', at)
-      return { message: `${data.partnerAppRecords.length} partner app record${data.partnerAppRecords.length === 1 ? '' : 's'} synced.` }
+      autoLinkPartnerAppRecords(data)
+      const linkedCount = data.partners.filter((partner) => partner.partnerAppUid).length
+      audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records · ${linkedCount} linked partners`, 'Manual partner app sync from the connection screen.', at)
+      return { message: `${data.partnerAppRecords.length} partner app record${data.partnerAppRecords.length === 1 ? '' : 's'} synced.${linkedCount ? ` ${linkedCount} partner${linkedCount === 1 ? '' : 's'} linked by name.` : ' Link records to admin partners before using live account actions.'}` }
     }
     case 'partnerApp.failed': {
       data.partnerApp.lastError = action.message.trim() || 'Partner app request failed.'
       return { message: data.partnerApp.lastError, kind: 'error' }
+    }
+    case 'partnerApp.link': {
+      const partner = findPartner(data, action.partnerId)
+      const record = data.partnerAppRecords.find((item) => item.id === action.recordId)
+      if (!record) throw new Error('Sync partner app data before linking a delivery_app account.')
+      if (partner.partnerAppUid === record.id) throw new Error(`${partner.name} is already linked to this delivery_app account.`)
+      const previous = partner.partnerAppUid ?? 'Not linked'
+      for (const other of data.partners) {
+        if (other.id !== partner.id && other.partnerAppUid === record.id) other.partnerAppUid = null
+      }
+      for (const application of data.applications) {
+        if (application.partnerAppUid === record.id) application.partnerAppUid = null
+      }
+      partner.partnerAppUid = record.id
+      const related = data.applications.filter((application) => application.partnerId === partner.id
+        || normalizeLinkName(application.applicantName) === normalizeLinkName(partner.name))
+      for (const application of related) application.partnerAppUid = record.id
+      audit(data, 'Partner app account updated', 'Partner', partner.id, previous, `${record.id} · ${record.name}`, `Linked manually from the partner app data view.${related.length ? ` ${related.length} application record${related.length === 1 ? '' : 's'} linked too.` : ''}`, at)
+      return { message: `${partner.name} linked to delivery_app account ${record.id}.` }
+    }
+    case 'partnerApp.unlink': {
+      const partner = findPartner(data, action.partnerId)
+      if (!partner.partnerAppUid) throw new Error(`${partner.name} is not linked to a delivery_app account.`)
+      const previous = partner.partnerAppUid
+      partner.partnerAppUid = null
+      for (const application of data.applications) {
+        if (application.partnerAppUid === previous) application.partnerAppUid = null
+      }
+      audit(data, 'Partner app account updated', 'Partner', partner.id, previous, 'Not linked', 'Unlinked from the partner app data view. Local admin records are unchanged.', at)
+      return { message: `${partner.name} unlinked from delivery_app account ${previous}.` }
+    }
+    case 'partnerApp.review': {
+      const record = data.partnerAppRecords.find((item) => item.id === action.recordId)
+      if (!record) throw new Error('Sync partner app data before reviewing a delivery_app application.')
+      const linkedPartner = data.partners.find((partner) => partner.partnerAppUid === record.id)
+      let application = data.applications.find((item) => item.partnerAppUid === record.id)
+        ?? (linkedPartner ? data.applications.find((item) => item.partnerId === linkedPartner.id) : undefined)
+      const recordStatus = (record.applicationStatus ?? '').toLowerCase()
+
+      if (application && application.status !== 'Submitted') {
+        if (application.status === 'Approved') throw new Error(`${application.id} is already approved.`)
+        // delivery_app must resubmit before a rejected application can be reviewed again.
+        if (recordStatus !== 'submitted' && recordStatus !== 'under_review') {
+          throw new Error(`${application.id} is rejected and delivery_app has not resubmitted it.`)
+        }
+        application.status = 'Submitted'
+        application.submittedAt = record.updatedAt ?? at
+        application.reviewedBy = null
+        application.reviewedAt = null
+        application.decisionReason = null
+      }
+
+      if (!application) {
+        application = applicationFromPartnerRecord(data, record)
+        if (linkedPartner) application.partnerId = linkedPartner.id
+        data.applications.unshift(application)
+      }
+
+      application.partnerAppUid ??= record.id
+      if (action.decision === 'Approved') {
+        const result = approveApplication(data, application, action.note, at, linkedPartner?.id ?? null)
+        return { message: `${result.message} delivery_app will be updated when the Firebase administrator is signed in.` }
+      }
+      return { message: rejectApplication(data, application, action.note, at).message }
+    }
+    case 'partnerApp.write-result': {
+      const message = action.message.trim() || (action.ok ? 'delivery_app account updated.' : 'delivery_app account update failed.')
+      if (!action.ok) data.partnerApp.lastError = message
+      else data.partnerApp.lastError = null
+      if (action.ok) {
+        const cached = data.partnerAppRecords.find((item) => item.id === action.recordId)
+        if (cached) {
+          if (action.applicationStatus) cached.applicationStatus = action.applicationStatus
+          if (action.accountStatus) cached.status = action.accountStatus
+          cached.updatedAt = action.at
+          cached.fields = {
+            ...cached.fields,
+            ...(action.applicationStatus ? { applicationStatus: action.applicationStatus } : {}),
+            ...(action.accountStatus ? { status: action.accountStatus } : {}),
+            updatedAt: action.at,
+          }
+        }
+      }
+      audit(data, 'Partner app account updated', action.targetType, action.targetId,
+        'Admin decision recorded locally',
+        action.ok ? 'delivery_app account updated' : 'delivery_app account update failed',
+        message, action.at)
+      return action.ok
+        ? { message: `delivery_app account updated for ${action.targetId}.` }
+        : { message: `delivery_app update failed for ${action.targetId}: ${message}`, kind: 'error' }
     }
     case 'notification.read': {
       const notification = data.notifications.find((item) => item.id === action.notificationId)

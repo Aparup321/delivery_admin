@@ -1,4 +1,5 @@
 import { createDemoAdmin } from '../domain/admin.ts'
+import { applyFirebaseConnectionDefaults } from '../config/firebase.ts'
 import type { OperationsState } from '../domain/model'
 import { createDemoState } from '../domain/seed.ts'
 
@@ -22,6 +23,32 @@ function isOperationsState(value: unknown): value is OperationsState {
     && Boolean(candidate.settings)
 }
 
+function linkedRecordId(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
+}
+
+function normalizeSavedState(parsed: OperationsState): OperationsState {
+  // Older local records predate the delivery_app link fields. Normalize them
+  // so every partner, application, and cached record has a stable shape.
+  return {
+    ...parsed,
+    user: createDemoAdmin(),
+    partnerApp: applyFirebaseConnectionDefaults(parsed.partnerApp),
+    partners: parsed.partners.map((partner) => ({
+      ...partner,
+      partnerAppUid: linkedRecordId(partner.partnerAppUid),
+    })),
+    applications: parsed.applications.map((application) => ({
+      ...application,
+      partnerAppUid: linkedRecordId(application.partnerAppUid),
+    })),
+    partnerAppRecords: parsed.partnerAppRecords.map((record) => ({
+      ...record,
+      applicationStatus: typeof record.applicationStatus === 'string' ? record.applicationStatus : null,
+    })),
+  }
+}
+
 export function loadOperationsState(): OperationsState {
   if (typeof window === 'undefined') return createDemoState()
   try {
@@ -29,8 +56,9 @@ export function loadOperationsState(): OperationsState {
     if (!saved) return createDemoState()
     const parsed: unknown = JSON.parse(saved)
     // The Operations team demo only exposes one Administrator account. Normalize
-    // older local records so a saved persona can never grant a lower role.
-    return isOperationsState(parsed) ? { ...parsed, user: createDemoAdmin() } : createDemoState()
+    // older local records so a saved persona can never grant a lower role, and
+    // seed an empty Firestore connector from the .env.local values.
+    return isOperationsState(parsed) ? normalizeSavedState(parsed) : createDemoState()
   } catch {
     return createDemoState()
   }

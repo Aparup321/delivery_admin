@@ -1,4 +1,5 @@
 import { createDemoAdmin } from './admin.ts'
+import { applyFirebaseConnectionDefaults } from '../config/firebase.ts'
 import { DELIVERY_MILESTONES, type Assignment, type AuditLogEntry, type Delivery, type DeliveryMilestone, type DocumentType, type OperationsSettings, type OperationsState, type Partner, type PartnerAppConfig, type PartnerApplication, type PartnerDocument, type PartnerHistoryEntry } from './model.ts'
 
 const requiredDocuments: DocumentType[] = ['Identity proof', 'Driving licence', 'Vehicle registration']
@@ -15,7 +16,7 @@ function makeMilestones(completedCount: number, now: number, baseOffset: number)
   }))
 }
 
-const partnerSeedRows: Array<Omit<Partner, 'maskedPhone' | 'maskedEmail' | 'registeredAt' | 'maskedRegistration' | 'restrictedReason' | 'suspendedReason' | 'needsOperationalReview'>> = [
+const partnerSeedRows: Array<Omit<Partner, 'maskedPhone' | 'maskedEmail' | 'registeredAt' | 'maskedRegistration' | 'restrictedReason' | 'suspendedReason' | 'needsOperationalReview' | 'partnerAppUid'>> = [
   { id: 'DP-0192', name: 'Anirban G.', vehicle: 'Bike', serviceAreas: ['Barasat', 'New Town', 'Rajarhat'], availability: 'On Delivery' },
   { id: 'DP-0189', name: 'Mohit S.', vehicle: 'Scooter', serviceAreas: ['Dum Dum', 'Salt Lake', 'Kolkata'], availability: 'On Delivery' },
   { id: 'DP-0178', name: 'Rakesh P.', vehicle: 'Van', serviceAreas: ['Lake Town', 'Sector V', 'Salt Lake'], availability: 'On Delivery' },
@@ -39,6 +40,7 @@ function makePartners(now: number): Partner[] {
     restrictedReason: null,
     suspendedReason: null,
     needsOperationalReview: false,
+    partnerAppUid: null,
   }))
 }
 
@@ -73,21 +75,21 @@ function makeApplications(now: number): PartnerApplication[] {
       maskedPhone: '+91 ••••• 4188', maskedEmail: 'rohan••@onboarding.demo.picdrop.in',
       vehicle: 'Scooter', serviceAreas: ['New Town', 'Rajarhat'], submittedAt: isoFrom(now, -125),
       documents: ['Identity proof', 'Driving licence', 'Vehicle registration'],
-      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, demoRecord: true,
+      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, partnerAppUid: null, demoRecord: true,
     },
     {
       id: 'APP-2040', applicantName: 'Farhan Qureshi', businessName: 'Salt Lake Scoot Couriers',
       maskedPhone: '+91 ••••• 5402', maskedEmail: 'farhan••@onboarding.demo.picdrop.in',
       vehicle: 'Scooter', serviceAreas: ['Salt Lake', 'Bidhannagar'], submittedAt: isoFrom(now, -305),
       documents: ['Identity proof', 'Driving licence'],
-      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, demoRecord: true,
+      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, partnerAppUid: null, demoRecord: true,
     },
     {
       id: 'APP-2039', applicantName: 'Sneha Banerjee', businessName: 'Bidhan Bikes',
       maskedPhone: '+91 ••••• 6673', maskedEmail: 'sneha••@onboarding.demo.picdrop.in',
       vehicle: 'Bike', serviceAreas: ['Bidhannagar', 'Sector V'], submittedAt: isoFrom(now, -1_690),
       documents: ['Identity proof', 'Driving licence', 'Vehicle registration'],
-      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, demoRecord: true,
+      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, partnerAppUid: null, demoRecord: true,
     },
     {
       id: 'APP-2038', applicantName: 'Subhajit D.', businessName: 'Subhajit Bike Desk',
@@ -95,7 +97,7 @@ function makeApplications(now: number): PartnerApplication[] {
       vehicle: 'Bike', serviceAreas: ['Kolkata', 'Dum Dum', 'Barasat'], submittedAt: isoFrom(now, -4_320),
       documents: ['Identity proof', 'Driving licence', 'Vehicle registration'],
       status: 'Approved', reviewedBy: 'Operations Admin', reviewedAt: isoFrom(now, -4_080),
-      decisionReason: 'Documents complete for the demo onboarding check.', partnerId: 'DP-0195', demoRecord: true,
+      decisionReason: 'Documents complete for the demo onboarding check.', partnerId: 'DP-0195', partnerAppUid: null, demoRecord: true,
     },
     {
       id: 'APP-2037', applicantName: 'Tanushree Ghosh', businessName: 'QuickDrop Kolkata',
@@ -103,14 +105,14 @@ function makeApplications(now: number): PartnerApplication[] {
       vehicle: 'Bike', serviceAreas: ['Kolkata'], submittedAt: isoFrom(now, -7_300),
       documents: ['Identity proof'],
       status: 'Rejected', reviewedBy: 'Operations Admin', reviewedAt: isoFrom(now, -7_000),
-      decisionReason: 'Vehicle registration was not submitted with the application.', partnerId: null, demoRecord: true,
+      decisionReason: 'Vehicle registration was not submitted with the application.', partnerId: null, partnerAppUid: null, demoRecord: true,
     },
     {
       id: 'APP-2036', applicantName: 'Victor Das', businessName: 'Metro Moving Vans',
       maskedPhone: '+91 ••••• 9034', maskedEmail: 'victor••@onboarding.demo.picdrop.in',
       vehicle: 'Van', serviceAreas: ['Sector V', 'Salt Lake'], submittedAt: isoFrom(now, -9_200),
       documents: ['Identity proof', 'Driving licence', 'Vehicle registration'],
-      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, demoRecord: true,
+      status: 'Submitted', reviewedBy: null, reviewedAt: null, decisionReason: null, partnerId: null, partnerAppUid: null, demoRecord: true,
     },
   ]
 }
@@ -154,7 +156,7 @@ function makeDelivery(now: number, values: {
   }
 }
 
-export const DEFAULT_PARTNER_APP_CONFIG: PartnerAppConfig = {
+export const DEFAULT_PARTNER_APP_CONFIG: PartnerAppConfig = applyFirebaseConnectionDefaults({
   mode: 'firestore',
   projectId: '',
   apiKey: '',
@@ -164,7 +166,7 @@ export const DEFAULT_PARTNER_APP_CONFIG: PartnerAppConfig = {
   lastConnectedAt: null,
   lastSyncAt: null,
   lastError: null,
-}
+})
 
 export const DEFAULT_SETTINGS: OperationsSettings = {
   offerTimeoutMinutes: 5,

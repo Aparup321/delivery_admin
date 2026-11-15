@@ -1,4 +1,5 @@
 import type { PartnerAppConfig, PartnerAppRecord } from '../domain/model.ts'
+import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
 const TOKEN_KEY = 'picdrop-partner-app-token'
 
@@ -27,7 +28,7 @@ export function clearPartnerAppToken() {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
@@ -89,29 +90,51 @@ export class PartnerAppRequestError extends Error {
   }
 }
 
+function firestoreCollection(config: PartnerAppConfig) {
+  const projectId = config.projectId.trim()
+  if (!projectId) throw new Error('Enter the Firebase project ID for the partner app.')
+  const databaseId = config.databaseId.trim() || '(default)'
+  const collection = config.partnersCollection.trim().replace(/^\/+|\/+$/g, '')
+  if (!collection) throw new Error('Enter the Firestore collection that stores partners.')
+  return { projectId, databaseId, collection }
+}
+
+function firestoreCollectionUrl(config: PartnerAppConfig) {
+  const { projectId, databaseId, collection } = firestoreCollection(config)
+  const path = collection.split('/').map((segment) => encodeURIComponent(segment)).join('/')
+  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents/${path}`
+}
+
 export function partnerAppEndpoint(config: PartnerAppConfig, pageSize?: number) {
   if (config.mode === 'endpoint') {
     const url = config.endpointUrl.trim()
     if (!url) throw new Error('Enter the REST endpoint URL for the partner app.')
     return url
   }
-  const projectId = config.projectId.trim()
-  if (!projectId) throw new Error('Enter the Firebase project ID for the partner app.')
-  const databaseId = config.databaseId.trim() || '(default)'
-  const collection = config.partnersCollection.trim().replace(/^\/+|\/+$/g, '')
-  if (!collection) throw new Error('Enter the Firestore collection that stores partners.')
+  const url = firestoreCollectionUrl(config)
   const params = new URLSearchParams()
   if (pageSize) params.set('pageSize', String(pageSize))
   if (config.apiKey.trim()) params.set('key', config.apiKey.trim())
   const query = params.toString() ? `?${params.toString()}` : ''
-  const path = collection.split('/').map((segment) => encodeURIComponent(segment)).join('/')
-  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents/${path}${query}`
+  return `${url}${query}`
+}
+
+/** Firestore document URL used by the write-through actions. */
+export function partnerAppDocumentEndpoint(config: PartnerAppConfig, documentId: string) {
+  if (config.mode !== 'firestore') throw new Error('Live account actions require a Firestore connection.')
+  const id = documentId.trim()
+  if (!id) throw new Error('The delivery_app partner document ID is missing.')
+  const params = new URLSearchParams()
+  if (config.apiKey.trim()) params.set('key', config.apiKey.trim())
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return `${firestoreCollectionUrl(config)}/${encodeURIComponent(id)}${query}`
 }
 
 async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSize?: number): Promise<unknown> {
   const url = partnerAppEndpoint(config, pageSize)
   const headers: Record<string, string> = { Accept: 'application/json' }
-  if (token.trim()) headers.Authorization = `Bearer ${token.trim()}`
+  const accessToken = await resolvePartnerAppToken(token, config.apiKey)
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`
   let response: Response
   try {
     response = await fetch(url, { method: 'GET', headers, cache: 'no-store' })
@@ -129,7 +152,10 @@ async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSi
     } catch {
       // The error response had no JSON body.
     }
-    throw new PartnerAppRequestError(`Partner app request failed (HTTP ${response.status})${detail ? `: ${detail}` : '.'}`, url)
+    const authHint = response.status === 401 || response.status === 403
+      ? ' Sign in a Firebase administrator in Settings → Partner app, or verify that firestore.rules allows the admin UID.'
+      : ''
+    throw new PartnerAppRequestError(`Partner app request failed (HTTP ${response.status})${detail ? `: ${detail}` : '.'}${authHint}`, url)
   }
   try {
     return await response.json()
@@ -225,6 +251,7 @@ function toPartnerAppRecord(fields: Record<string, unknown>, id: string, updated
     email: asString(pick(fields, ['email', 'emailAddress'])),
     vehicle: asString(pick(fields, ['vehicle', 'vehicleType', 'vehicle_type'])),
     status,
+    applicationStatus: asString(pick(fields, ['applicationStatus', 'application_status'])),
     serviceAreas: asStringArray(pick(fields, ['serviceAreas', 'serviceArea', 'areas', 'zones'])),
     updatedAt: updatedAt ?? asString(pick(fields, ['updatedAt', 'updated_at', 'lastActive', 'lastSeen', 'modifiedAt'])),
     fields: flattenFields(fields),
