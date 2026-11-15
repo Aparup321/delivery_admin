@@ -5,9 +5,12 @@ import { getPartnerEligibility } from '../src/domain/operations.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
 import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppEndpoint } from '../src/services/partnerApp.ts'
+import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
+import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
 import type { PartnerAppConfig } from '../src/domain/model.ts'
 import { DEMO_ADMIN_EMAIL } from '../src/domain/admin.ts'
 import { DEMO_ADMIN_PASSWORD, clearAdminSession, createAdminSession, persistAdminSession, readAdminSession, validateDemoAdminCredentials } from '../src/auth/adminSession.ts'
+import { DEMO_OTP_CODE, createDemoOtpChallenge, verifyOtp } from '../src/services/otp.ts'
 
 function frameWithDemo(): AppFrame {
   return { data: createDemoState(), feedback: null, sequence: 0 }
@@ -60,6 +63,18 @@ test('Administrator demo sign-in validates credentials and persists a restorable
   } finally {
     delete (globalThis as { window?: unknown }).window
   }
+})
+
+test('demo OTP accepts only the displayed code and expires after five minutes', () => {
+  const issuedAt = Date.UTC(2026, 4, 1, 9, 0, 0)
+  const challenge = createDemoOtpChallenge(DEMO_ADMIN_EMAIL, issuedAt)
+  assert.equal(challenge.destination, DEMO_ADMIN_EMAIL)
+  assert.equal(challenge.code, DEMO_OTP_CODE)
+  assert.equal(challenge.expiresAt, new Date(issuedAt + 5 * 60_000).toISOString())
+  assert.deepEqual(verifyOtp(challenge, DEMO_OTP_CODE, issuedAt + 60_000), { ok: true })
+  assert.deepEqual(verifyOtp(challenge, ' 123456 ', issuedAt + 60_000), { ok: true })
+  assert.deepEqual(verifyOtp(challenge, '000000', issuedAt + 60_000), { ok: false, reason: 'invalid' })
+  assert.deepEqual(verifyOtp(challenge, DEMO_OTP_CODE, issuedAt + 5 * 60_000), { ok: false, reason: 'expired' })
 })
 
 test('assignment validates eligibility and updates shared delivery, partner, history, audit, and notification records', () => {
@@ -213,6 +228,26 @@ test('partner suspension blocks new assignment and flags but does not silently r
   assert.equal(getPartnerEligibility(next.data, partner, target).eligible, false)
 })
 
+test('partner suspension is recorded in activity and audit history, and an Administrator can reinstate the partner', () => {
+  const frame = frameWithDemo()
+  const suspended = apply(frame, { type: 'partner.restrict', partnerId: 'DP-0192', status: 'Suspended', reason: 'Demo review hold' })
+  expectSuccess(suspended)
+  const suspensionEvent = suspended.data.partnerHistory.find((item) => item.partnerId === 'DP-0192' && item.type === 'Suspended')
+  assert.ok(suspensionEvent)
+  assert.match(suspensionEvent.description, /Demo review hold/)
+  assert.equal(suspensionEvent.actor, 'Operations Admin')
+  assert.ok(suspended.data.auditLogs.some((item) => item.eventType === 'Partner suspended' && item.targetId === 'DP-0192' && item.reason === 'Demo review hold'))
+  assert.ok(suspended.data.notifications.some((item) => item.category === 'Partner Suspended' && item.relatedRecordId === 'DP-0192'))
+
+  const restored = apply(suspended, { type: 'partner.restore', partnerId: 'DP-0192', reason: 'Operations review completed' })
+  expectSuccess(restored)
+  const partner = restored.data.partners.find((item) => item.id === 'DP-0192')!
+  assert.equal(partner.availability, 'On Delivery')
+  assert.equal(partner.suspendedReason, null)
+  assert.equal(partner.needsOperationalReview, true)
+  assert.ok(restored.data.partnerHistory.some((item) => item.partnerId === 'DP-0192' && item.type === 'Eligibility restored' && item.description.includes('Operations review completed')))
+})
+
 test('only an Administrator can approve an onboarding application, which onboards the partner and queues KYC documents', () => {
   const frame = frameWithDemo()
   frame.data.user.role = 'Operations Manager'
@@ -286,6 +321,121 @@ test('partner app connection is administrator-only, validates manual details, an
   assert.equal(synced.data.partnerApp.lastSyncAt, '2026-05-01T10:00:00.000Z')
   assert.equal(synced.data.partnerApp.lastError, null)
   assert.ok(synced.data.auditLogs.some((item) => item.eventType === 'Partner app data synced'))
+  assert.equal(synced.data.partners.find((partner) => partner.id === 'DP-0192')?.partnerAppUid, 'partner-001')
+})
+
+test('a live delivery_app application can be reviewed, approved, and linked without a local application record', () => {
+  const frame = frameWithDemo()
+  const records = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'live-partner-uid', partnerId: 'live-partner-uid', name: 'Aparup Santra', phone: '+91 98356 48245',
+      email: 'aparup@example.com', vehicle: 'bike', status: 'pending', applicationStatus: 'submitted',
+      serviceAreas: ['Barasat'], updatedAt: '2026-06-01T09:55:00.000Z',
+      fields: { fullName: 'Aparup Santra', applicationStatus: 'submitted' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  expectSuccess(records)
+  records.data.user.role = 'Operations Manager'
+
+  const blocked = apply(records, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Approved', note: '' })
+  assert.equal(blocked.feedback?.kind, 'error')
+  assert.equal(blocked.data.applications.some((item) => item.partnerAppUid === 'live-partner-uid'), false)
+
+  blocked.data.user.role = 'Admin'
+  const rejectedWithoutReason = apply(blocked, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Rejected', note: ' ' })
+  assert.equal(rejectedWithoutReason.feedback?.kind, 'error')
+
+  const approved = apply(blocked, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Approved', note: 'Checked in delivery_app' })
+  expectSuccess(approved)
+  const application = approved.data.applications.find((item) => item.partnerAppUid === 'live-partner-uid')!
+  assert.equal(application.status, 'Approved')
+  assert.equal(application.applicantName, 'Aparup Santra')
+  assert.equal(application.demoRecord, false)
+  const partner = approved.data.partners.find((item) => item.id === application.partnerId)!
+  assert.equal(partner.name, 'Aparup Santra')
+  assert.equal(partner.partnerAppUid, 'live-partner-uid')
+  const approvalLog = approved.data.auditLogs.find((item) => item.eventType === 'Application approved' && item.targetId === application.id)!
+  const approvalIntent = buildPartnerAppWriteIntent(approved.data, approvalLog)
+  assert.equal(approvalIntent?.kind, 'application')
+  if (approvalIntent?.kind === 'application') {
+    assert.equal(approvalIntent.decision, 'Approved')
+    assert.equal(approvalIntent.partnerAppUid, 'live-partner-uid')
+    assert.equal(approvalIntent.adminPartnerId, partner.id)
+    assert.equal(approvalIntent.reason, 'Checked in delivery_app')
+  }
+
+  const suspended = apply(approved, { type: 'partner.restrict', partnerId: partner.id, status: 'Suspended', reason: 'Chargeback investigation' })
+  expectSuccess(suspended)
+  const suspendLog = suspended.data.auditLogs.find((item) => item.eventType === 'Partner suspended' && item.targetId === partner.id)!
+  const suspendIntent = buildPartnerAppWriteIntent(suspended.data, suspendLog)
+  assert.equal(suspendIntent?.kind, 'account')
+  if (suspendIntent?.kind === 'account') {
+    assert.equal(suspendIntent.active, false)
+    assert.equal(suspendIntent.reason, 'Chargeback investigation')
+    assert.equal(suspendIntent.partnerAppUid, 'live-partner-uid')
+  }
+
+  const restored = apply(suspended, { type: 'partner.restore', partnerId: partner.id, reason: 'Investigation closed' })
+  expectSuccess(restored)
+  const restoreLog = restored.data.auditLogs.find((item) => item.eventType === 'Partner eligibility changed' && item.targetId === partner.id && item.previousValue === 'Suspended')!
+  const restoreIntent = buildPartnerAppWriteIntent(restored.data, restoreLog)
+  assert.equal(restoreIntent?.kind, 'account')
+  if (restoreIntent?.kind === 'account') {
+    assert.equal(restoreIntent.active, true)
+    assert.equal(restoreIntent.reason, 'Investigation closed')
+  }
+})
+
+test('a successful delivery_app write updates the cached record while a failed write keeps it unchanged', () => {
+  const frame = frameWithDemo()
+  const synced = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'live-partner-uid', partnerId: 'live-partner-uid', name: 'Aparup Santra', phone: '+91 98356 48245',
+      email: 'aparup@example.com', vehicle: 'bike', status: 'pending', applicationStatus: 'submitted',
+      serviceAreas: ['Barasat'], updatedAt: '2026-06-01T09:55:00.000Z',
+      fields: { fullName: 'Aparup Santra', applicationStatus: 'submitted', status: 'pending' },
+      syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  const failed = apply(synced, {
+    type: 'partnerApp.write-result', targetType: 'Application', targetId: 'APP-9001', recordId: 'live-partner-uid',
+    ok: false, message: 'HTTP 403: Missing or insufficient permissions.', at: '2026-06-01T10:05:00.000Z',
+    applicationStatus: 'rejected', accountStatus: 'pending',
+  })
+  assert.equal(failed.data.partnerAppRecords[0].applicationStatus, 'submitted')
+  assert.equal(failed.data.partnerApp.lastError, 'HTTP 403: Missing or insufficient permissions.')
+
+  const written = apply(synced, {
+    type: 'partnerApp.write-result', targetType: 'Application', targetId: 'APP-9001', recordId: 'live-partner-uid',
+    ok: true, message: 'rejected in delivery_app.', at: '2026-06-01T10:06:00.000Z',
+    applicationStatus: 'rejected', accountStatus: 'pending',
+  })
+  expectSuccess(written)
+  assert.equal(written.data.partnerAppRecords[0].applicationStatus, 'rejected')
+  assert.equal(written.data.partnerAppRecords[0].status, 'pending')
+  assert.equal(written.data.partnerAppRecords[0].fields.applicationStatus, 'rejected')
+  assert.equal(written.data.partnerApp.lastError, null)
+  assert.ok(written.data.auditLogs.some((item) => item.eventType === 'Partner app account updated' && item.targetId === 'APP-9001'))
+})
+
+test('live delivery_app review refuses accounts that have not completed onboarding', () => {
+  const frame = frameWithDemo()
+  const records = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'session-only-uid', partnerId: 'session-only-uid', name: 'session-only-uid', phone: '+91 90000 00000',
+      email: null, vehicle: null, status: null, applicationStatus: null, serviceAreas: [],
+      updatedAt: '2026-06-01T09:55:00.000Z', fields: { phone: '+91 90000 00000' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  const refused = apply(records, { type: 'partnerApp.review', recordId: 'session-only-uid', decision: 'Approved', note: '' })
+  assert.equal(refused.feedback?.kind, 'error')
+  assert.match(refused.feedback?.message ?? '', /has not completed onboarding/)
 })
 
 test('partner app responses are normalized from Firestore and plain JSON records', () => {
@@ -345,6 +495,26 @@ test('a pasted Firebase config fills the partner app connection values', () => {
 
   assert.throws(() => parseFirebaseConfigJson('{"apiKey":"missing-project"}'), /projectId/i)
   assert.throws(() => parseFirebaseConfigJson('not a config'), /config object/i)
+})
+
+test('Firebase environment defaults seed an empty connector without overwriting saved settings', () => {
+  const defaults: FirebaseEnvConfig = {
+    apiKey: 'env-key', authDomain: 'env.firebaseapp.com', projectId: 'env-project',
+    storageBucket: 'env.appspot.com', messagingSenderId: '123456789', appId: '1:123456789:web:env',
+    firestoreDatabaseId: 'env-db', partnersCollection: 'env-partners',
+  }
+  const empty: PartnerAppConfig = { mode: 'firestore', projectId: '', apiKey: '', databaseId: '(default)', partnersCollection: 'partners', endpointUrl: '', lastConnectedAt: null, lastSyncAt: null, lastError: null }
+  const seeded = applyFirebaseConnectionDefaults(empty, defaults)
+  assert.equal(seeded.projectId, 'env-project')
+  assert.equal(seeded.apiKey, 'env-key')
+  assert.equal(seeded.databaseId, 'env-db')
+  assert.equal(seeded.partnersCollection, 'env-partners')
+
+  const saved: PartnerAppConfig = { ...empty, projectId: 'saved-project', apiKey: 'saved-key', databaseId: 'saved-db', partnersCollection: 'saved-partners' }
+  assert.deepEqual(applyFirebaseConnectionDefaults(saved, defaults), saved)
+
+  const endpoint: PartnerAppConfig = { ...empty, mode: 'endpoint', endpointUrl: 'https://example.com/partners' }
+  assert.deepEqual(applyFirebaseConnectionDefaults(endpoint, defaults), endpoint)
 })
 
 test('expired mandatory documents immediately block eligibility', () => {
