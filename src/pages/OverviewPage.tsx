@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
 import type { Delivery, OperationsState } from '../domain/model'
 import { getPartnerEligibility } from '../domain/operations'
+import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/serviceAreas'
+import { MapPreview } from '../components/MapPreview'
 import { Icon, Panel, PanelHeading, relativeTime } from '../components/ui'
 
 interface Props {
@@ -59,6 +61,21 @@ export function OverviewPage({ data, open }: Props) {
     const record = data.deliveries.find((delivery) => delivery.status === 'Unassigned') ?? data.deliveries[0]
     return record && !getPartnerEligibility(data, partner, record).eligible && data.documents.some((document) => document.partnerId === partner.id && document.status !== 'Verified')
   })
+  const mapRoute = useMemo(() => {
+    const delivery = data.deliveries.find((item) => item.status === 'In Transit')
+      ?? data.deliveries.find((item) => item.status === 'Delayed')
+      ?? data.deliveries.find((item) => item.status === 'Assigned')
+      ?? data.deliveries[0]
+    if (!delivery) return null
+    return {
+      delivery,
+      approximate: !hasServiceAreaCoordinate(delivery.pickup) || !hasServiceAreaCoordinate(delivery.drop),
+      points: [
+        { id: `${delivery.id}-pickup`, label: `Pickup · ${delivery.pickup}`, ...serviceAreaCoordinate(delivery.pickup), kind: 'pickup' as const },
+        { id: `${delivery.id}-drop`, label: `Drop · ${delivery.drop}`, ...serviceAreaCoordinate(delivery.drop), kind: 'drop' as const },
+      ],
+    }
+  }, [data.deliveries])
   const total = data.deliveries.length || 1
   const gradient = counts.reduce<{ text: string; cursor: number }>((result, item) => {
     const start = result.cursor
@@ -105,12 +122,16 @@ export function OverviewPage({ data, open }: Props) {
 
     <div className="overview-columns overview-lower">
       <Panel className="map-panel">
-        <PanelHeading title="Active delivery areas" detail="Illustrative only · no live tracking" action={<span className="map-disclaimer">DEMO MAP</span>} />
-        <div className="illustrative-map" aria-label="Illustrative service area diagram, not a live map">
-          <svg viewBox="0 0 700 230" preserveAspectRatio="none" aria-hidden="true"><path className="map-river" d="M-20 156c95-55 115 32 209-14s123-78 205-22 149 71 326-11"/><path className="map-road" d="M12 32 156 73l112-41 164 53 104-38 173 52M-8 207l139-40 147 20 128-53 131 34 175-49M108-15l37 72-29 71 48 118M312-10l-29 62 30 72-24 115M546-12l-26 83 44 54-28 108"/><path className="map-route" d="M95 166c70-39 89-67 172-62s103 57 164 28 88 8 147-62"/></svg>
-          <span className="map-point map-point-pickup"><i /><b>Pickup</b><small>Barasat · demo</small></span><span className="map-point map-point-mid"><i /><b>Area</b><small>New Town</small></span><span className="map-point map-point-drop"><i /><b>Drop</b><small>Rajarhat · demo</small></span>
-          <span className="map-placeholder-label">Illustrative map — live tracking not connected.</span>
-        </div>
+        <PanelHeading
+          title="Active delivery map"
+          detail={mapRoute ? `${mapRoute.delivery.id} · ${mapRoute.delivery.pickup} → ${mapRoute.delivery.drop}` : 'No delivery record'}
+          action={mapRoute ? <button className="text-link" onClick={() => open(`/admin/deliveries/${mapRoute.delivery.id}`)}>Open delivery <Icon name="arrow" size={14} /></button> : undefined}
+        />
+        <MapPreview
+          points={mapRoute?.points ?? []}
+          ariaLabel={mapRoute ? `OpenStreetMap preview from ${mapRoute.delivery.pickup} to ${mapRoute.delivery.drop}` : 'OpenStreetMap delivery area preview'}
+        />
+        <p className="osm-map-footnote"><Icon name="info" size={13} />OpenStreetMap tiles, shared with delivery_app. {mapRoute?.approximate ? 'Some area coordinates are approximate. ' : ''}Live GPS, routing and ETAs are not connected.</p>
       </Panel>
 
       <Panel className="attention-panel">
@@ -136,6 +157,6 @@ export function OverviewPage({ data, open }: Props) {
         {!data.auditLogs.length && <p className="empty-inline">Operational changes will appear here after a demo action.</p>}
       </div>
     </Panel>
-    <div className="overview-footnote"><Icon name="shield" size={14} /> Demo records only · Partner app data is read-only when manually connected; no live GPS, payments, or external delivery service is connected.</div>
+    <div className="overview-footnote"><Icon name="shield" size={14} /> Demo records only · delivery_app partner records support live Administrator actions; no live GPS, payments, or external delivery service is connected.</div>
   </div>
 }

@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { DELIVERY_MILESTONES, type Delivery, type OperationsState } from '../domain/model'
+import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/serviceAreas'
+import { MapPreview } from '../components/MapPreview'
 import { Button, ConfirmDialog, formatDate, Icon, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 
@@ -33,6 +35,13 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
   const isTerminal = delivery.status === 'Completed' || delivery.status === 'Cancelled'
   const canOperate = frame.data.user.role !== 'Viewer'
   const canManage = ['Admin', 'Operations Manager'].includes(frame.data.user.role)
+  const mapRoute = useMemo(() => ({
+    approximate: !hasServiceAreaCoordinate(delivery.pickup) || !hasServiceAreaCoordinate(delivery.drop),
+    points: [
+      { id: `${delivery.id}-pickup`, label: `Pickup · ${delivery.pickup}`, ...serviceAreaCoordinate(delivery.pickup), kind: 'pickup' as const },
+      { id: `${delivery.id}-drop`, label: `Drop · ${delivery.drop}`, ...serviceAreaCoordinate(delivery.drop), kind: 'drop' as const },
+    ],
+  }), [delivery.id, delivery.pickup, delivery.drop])
 
   return <div className="page-stack detail-page">
     <div className="detail-action-bar">
@@ -57,6 +66,12 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
             <div className="detail-info-item"><span>Scheduled window</span><strong><Icon name="calendar" size={15} />{formatDate(delivery.scheduledStart)} — {formatDate(delivery.scheduledEnd)}</strong><small>Times are local demo schedule values</small></div>
             <div className="detail-info-item detail-instructions"><span>Special instructions</span><strong>{delivery.specialInstructions || 'No special instructions'}</strong><small>No customer-sensitive data is connected.</small></div>
           </div>
+        </Panel>
+
+        <Panel>
+          <PanelHeading title="Route map" detail="OpenStreetMap preview · no live GPS" />
+          <MapPreview points={mapRoute.points} ariaLabel={`OpenStreetMap preview from ${delivery.pickup} to ${delivery.drop}`} />
+          <p className="osm-map-footnote"><Icon name="info" size={13} />Tiles are shared with delivery_app. {mapRoute.approximate ? 'Some area coordinates are approximate. ' : ''}Routing, live partner location and ETA are not connected.</p>
         </Panel>
 
         <Panel className="milestone-panel">
@@ -107,7 +122,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
           })}</div> : <p className="muted-copy">No assignment history yet.</p>}
         </Panel>
 
-        <Panel className="record-meta-panel"><PanelHeading title="Record metadata" /><div className="record-meta-row"><span>Delivery ID</span><strong>{delivery.id}</strong></div><div className="record-meta-row"><span>Created</span><strong>{formatDate(delivery.createdAt)}</strong></div><div className="record-meta-row"><span>Record environment</span><strong>Local demo data</strong></div><div className="record-meta-row"><span>GPS / maps</span><strong>Not connected</strong></div></Panel>
+        <Panel className="record-meta-panel"><PanelHeading title="Record metadata" /><div className="record-meta-row"><span>Delivery ID</span><strong>{delivery.id}</strong></div><div className="record-meta-row"><span>Created</span><strong>{formatDate(delivery.createdAt)}</strong></div><div className="record-meta-row"><span>Record environment</span><strong>Local demo data</strong></div><div className="record-meta-row"><span>GPS / maps</span><strong>OpenStreetMap preview · live GPS not connected</strong></div></Panel>
       </div>
     </div>
 
