@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import type { DocumentStatus, OperationsState, Partner, PartnerAppRecord, PartnerDocument } from '../domain/model'
+import type { DocumentStatus, OperationsState, Partner, PartnerAppRecord, PartnerApplication, PartnerDocument } from '../domain/model'
 import { getActiveAssignment, getPartnerEligibility, isDocumentCurrent } from '../domain/operations'
 import { Button, ConfirmDialog, Dialog, EmptyState, formatDate, Icon, initials, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 import { partnerAppEndpoint } from '../services/partnerApp'
-import { ApplicationsPage } from './ApplicationsPage'
+import { hasFirebaseAdminSession } from '../services/firebaseAuth'
+import { ApplicationReviewDialog, ApplicationsPage } from './ApplicationsPage'
 
 interface DirectoryProps {
   data: OperationsState
@@ -85,12 +86,136 @@ function KycReviewPage({ data, open }: { data: OperationsState; open: (path: str
   </>
 }
 
-function PartnerAppRecordDialog({ record, linkedPartner, onClose, open }: { record: PartnerAppRecord; linkedPartner: Partner | undefined; onClose: () => void; open: (path: string) => void }) {
+function appStatusLabel(value: string | null) {
+  if (!value) return ''
+  return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function linkedPartnerForRecord(data: OperationsState, record: PartnerAppRecord) {
+  return data.partners.find((partner) => partner.partnerAppUid === record.id)
+    ?? data.partners.find((partner) => partner.id === record.partnerId || partner.id === record.id)
+}
+
+function applicationForRecord(data: OperationsState, record: PartnerAppRecord, partner: Partner | undefined) {
+  return data.applications.find((application) => application.partnerAppUid === record.id)
+    ?? (partner ? data.applications.find((application) => application.partnerId === partner.id) : undefined)
+}
+
+function LiveApplicationReviewDialog({ record, application, linkedPartner, onClose }: { record: PartnerAppRecord; application: PartnerApplication | undefined; linkedPartner: Partner | undefined; onClose: () => void }) {
+  const { frame, dispatch } = useOperations()
+  const [decision, setDecision] = useState<'Approved' | 'Rejected'>('Approved')
+  const [note, setNote] = useState('')
+  const isRejected = decision === 'Rejected'
+  const isAdmin = frame.data.user.role === 'Admin'
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!isAdmin) return
+    dispatch({ type: 'partnerApp.review', recordId: record.id, decision, note })
+    onClose()
+  }
+
+  return <Dialog title={`Review ${record.name}`} eyebrow="DELIVERY_APP APPLICATION" onClose={onClose}>
+    <form className="dialog-form" onSubmit={submit}>
+      <p className="dialog-description">This onboarding application was submitted from delivery_app.{' '}
+        {linkedPartner
+          ? `The decision is recorded against ${linkedPartner.id} and written to partners/${record.id}.`
+          : 'Approving creates a matching admin partner record and links it to this delivery_app account.'}
+        {application?.status === 'Rejected' ? ' It was rejected before and has been resubmitted.' : ''}
+      </p>
+      <div className="application-review-summary">
+        <div><span>Applicant</span><strong>{record.name}</strong></div>
+        <div><span>Contact</span><strong>{record.phone ?? '—'}</strong></div>
+        <div><span>Vehicle</span><strong>{record.vehicle ?? '—'}</strong></div>
+        <div><span>Service areas</span><strong>{record.serviceAreas.join(', ') || '—'}</strong></div>
+        <div><span>Submitted</span><strong>{formatDate(record.updatedAt ?? record.syncedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></div>
+        <div><span>delivery_app UID</span><strong>{record.id}</strong></div>
+      </div>
+      <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
+      <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
+      <p className="dialog-description">{isRejected ? 'The reason appears in delivery_app on the partner’s application status screen.' : 'Approval activates the delivery_app account so the partner can go online.'}</p>
+      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
+    </form>
+  </Dialog>
+}
+
+function PartnerAppRecordDialog({ record, data, onClose, open }: { record: PartnerAppRecord; data: OperationsState; onClose: () => void; open: (path: string) => void }) {
+  const { frame, dispatch } = useOperations()
+  const [review, setReview] = useState<'Approved' | 'Rejected' | null>(null)
+  const [reviewLive, setReviewLive] = useState(false)
+  const [accountDialog, setAccountDialog] = useState<'suspend' | 'restore' | null>(null)
+  const [linkPartnerId, setLinkPartnerId] = useState('')
+  const canManage = frame.data.user.role === 'Admin'
   const entries = Object.entries(record.fields).sort(([a], [b]) => a.localeCompare(b))
+  const linkedPartner = linkedPartnerForRecord(data, record)
+  const application = applicationForRecord(data, record, linkedPartner)
+  const linkedByUid = data.partners.find((partner) => partner.partnerAppUid === record.id)
+  const linkablePartners = data.partners.filter((partner) => !partner.partnerAppUid || partner.partnerAppUid === record.id).sort((a, b) => a.id.localeCompare(b.id))
+  const recordStatus = (record.applicationStatus ?? '').toLowerCase()
+  const canReviewLive = (!application || application.status === 'Rejected')
+    && (recordStatus === 'submitted' || recordStatus === 'under_review')
+  const firebaseSignedIn = hasFirebaseAdminSession()
+  const accountActionable = application?.status === 'Approved' || recordStatus === 'approved'
+
+  if (review && application && application.status === 'Submitted') {
+    return <ApplicationReviewDialog application={application} initialDecision={review} onClose={() => { setReview(null); onClose() }} />
+  }
+
+  if (reviewLive) {
+    return <LiveApplicationReviewDialog record={record} application={application} linkedPartner={linkedByUid} onClose={() => { setReviewLive(false); onClose() }} />
+  }
+
+  if (accountDialog === 'suspend' && linkedPartner) {
+    return <ConfirmDialog title={`Suspend ${linkedPartner.name}?`} detail="This suspends the same account in delivery_app as soon as the write-through completes. The partner is set offline and cannot receive requests. Existing delivery history is retained." reasonLabel="Suspension reason" confirmLabel="Suspend partner" danger onCancel={() => setAccountDialog(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restrict', partnerId: linkedPartner.id, status: 'Suspended', reason }); setAccountDialog(null) }} />
+  }
+
+  if (accountDialog === 'restore' && linkedPartner) {
+    return <ConfirmDialog title={`Restore ${linkedPartner.name}?`} detail="This reinstates the same delivery_app account when the application is approved. The partner can go online again after the write-through completes." reasonLabel="Reinstatement reason" confirmLabel="Restore partner" onCancel={() => setAccountDialog(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restore', partnerId: linkedPartner.id, reason }); setAccountDialog(null) }} />
+  }
+
   return <Dialog title={`Partner app record ${record.id}`} eyebrow="PARTNER APP DATA" wide onClose={onClose}>
     <div className="app-record-detail">
-      <div className="app-record-head"><span className="mini-avatar">{initials(record.name)}</span><div><strong>{record.name}</strong><small>{record.id} · synced {formatDate(record.syncedAt)}</small></div>{linkedPartner && <StatusBadge status={`Linked · ${linkedPartner.id}`} />}</div>
-      <div className="app-record-grid"><div><span>Partner ID</span><strong>{record.partnerId ?? '—'}</strong></div><div><span>Phone</span><strong>{record.phone ?? '—'}</strong></div><div><span>Email</span><strong>{record.email ?? '—'}</strong></div><div><span>Vehicle</span><strong>{record.vehicle ?? '—'}</strong></div><div><span>App status</span><strong>{record.status ?? '—'}</strong></div><div><span>Service areas</span><strong>{record.serviceAreas.length ? record.serviceAreas.join(', ') : '—'}</strong></div></div>
+      <div className="app-record-head"><span className="mini-avatar">{initials(record.name)}</span><div><strong>{record.name}</strong><small>{record.id} · synced {formatDate(record.syncedAt)}</small></div>{linkedByUid ? <StatusBadge status={`Linked · ${linkedByUid.id}`} /> : <span className="status-badge status-not-linked"><i className="status-dot" />Not linked</span>}</div>
+      <div className="app-record-grid">
+        <div><span>Partner ID</span><strong>{record.partnerId ?? '—'}</strong></div>
+        <div><span>Phone</span><strong>{record.phone ?? '—'}</strong></div>
+        <div><span>Email</span><strong>{record.email ?? '—'}</strong></div>
+        <div><span>Vehicle</span><strong>{record.vehicle ?? '—'}</strong></div>
+        <div><span>Application</span><strong>{record.applicationStatus ? <StatusBadge status={appStatusLabel(record.applicationStatus)} /> : '—'}</strong></div>
+        <div><span>Account</span><strong>{record.status ? <StatusBadge status={record.status} /> : '—'}</strong></div>
+        <div><span>Admin partner</span><strong>{linkedPartner ? `${linkedPartner.id} · ${linkedPartner.name}` : '—'}</strong></div>
+        <div><span>Service areas</span><strong>{record.serviceAreas.length ? record.serviceAreas.join(', ') : '—'}</strong></div>
+      </div>
+
+      <div className="app-record-actions">
+        <div>
+          <strong>Live delivery_app account</strong>
+          <span>{linkedByUid || canReviewLive
+            ? `Administrator actions write to this partner document when a Firebase administrator is signed in under Settings → Partner app.${firebaseSignedIn ? '' : ' No Firebase administrator is signed in yet.'}`
+            : 'Link this record to an admin partner before suspending or reinstating the delivery_app account.'}</span>
+        </div>
+        <div className="row-action-group">
+          {application?.status === 'Submitted' && <>
+            <Button size="small" variant="primary" disabled={!canManage} onClick={() => setReview('Approved')}>Approve application</Button>
+            <Button size="small" variant="danger" disabled={!canManage} onClick={() => setReview('Rejected')}>Reject application</Button>
+          </>}
+          {canReviewLive && <Button size="small" variant="primary" disabled={!canManage} onClick={() => setReviewLive(true)}>Review application</Button>}
+          {linkedByUid && accountActionable && (linkedByUid.availability === 'Suspended' || linkedByUid.availability === 'Restricted'
+            ? <Button size="small" variant="primary" disabled={!canManage} onClick={() => setAccountDialog('restore')}>Restore account</Button>
+            : <Button size="small" variant="danger" disabled={!canManage} onClick={() => setAccountDialog('suspend')}>Suspend account</Button>)}
+        </div>
+      </div>
+
+      <div className="app-record-link">
+        {linkedByUid ? <>
+          <span>Linked to <strong>{linkedByUid.id} · {linkedByUid.name}</strong>. Unlinking leaves the admin record unchanged.</span>
+          <Button size="small" variant="quiet" disabled={!canManage} onClick={() => dispatch({ type: 'partnerApp.unlink', partnerId: linkedByUid.id })}>Unlink record</Button>
+        </> : <>
+          <label className="field-label">Link to an admin partner<select value={linkPartnerId} disabled={!canManage} onChange={(event) => setLinkPartnerId(event.target.value)}><option value="">Choose a partner</option>{linkablePartners.map((partner) => <option key={partner.id} value={partner.id}>{partner.id} · {partner.name}</option>)}</select><span className="field-help">Linking matches this delivery_app UID to the admin record and its onboarding application.</span></label>
+          <Button size="small" variant="primary" disabled={!canManage || !linkPartnerId} onClick={() => { dispatch({ type: 'partnerApp.link', recordId: record.id, partnerId: linkPartnerId }); setLinkPartnerId('') }}>Link record</Button>
+        </>}
+      </div>
+
       <div className="app-record-fields"><span className="app-record-fields-label">Raw delivery_app fields</span>{entries.length ? entries.map(([key, value]) => <div className="app-record-field" key={key}><span>{key}</span><strong>{value}</strong></div>) : <p className="muted-copy">No fields were returned for this record.</p>}</div>
       <div className="dialog-actions"><Button onClick={onClose}>Close</Button>{linkedPartner && <Button variant="primary" onClick={() => { onClose(); open(`/admin/partners/${linkedPartner.id}`) }}>Open admin profile</Button>}</div>
     </div>
@@ -98,6 +223,7 @@ function PartnerAppRecordDialog({ record, linkedPartner, onClose, open }: { reco
 }
 
 function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
+  const { partnerAppWriteFailures, retryPartnerAppWrites } = useOperations()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [recordId, setRecordId] = useState<string | null>(null)
@@ -112,41 +238,41 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
   }
   const filtered = useMemo(() => data.partnerAppRecords.filter((record) => {
     const query = search.trim().toLowerCase()
-    return !query || [record.id, record.partnerId ?? '', record.name, record.phone ?? '', record.email ?? '', record.vehicle ?? '', record.status ?? '', ...record.serviceAreas].join(' ').toLowerCase().includes(query)
+    return !query || [record.id, record.partnerId ?? '', record.name, record.phone ?? '', record.email ?? '', record.vehicle ?? '', record.status ?? '', record.applicationStatus ?? '', ...record.serviceAreas].join(' ').toLowerCase().includes(query)
   }).sort((a, b) => (b.updatedAt ?? b.syncedAt).localeCompare(a.updatedAt ?? a.syncedAt)), [data.partnerAppRecords, search])
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
   const record = recordId ? data.partnerAppRecords.find((item) => item.id === recordId) : undefined
-  const linkedPartner = record ? data.partners.find((partner) => partner.id === record.partnerId || partner.id === record.id) : undefined
 
   return <>
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>partner app records</span><span className="dot-separator" />{config.lastSyncAt ? `Synced ${formatDate(config.lastSyncAt)}` : 'Never synced'}</div><Button size="small" onClick={() => open('/admin/settings?tab=partner-app')}><Icon name="settings" size={14} />Connection settings</Button></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>partner app records</span><span className="dot-separator" />{data.partners.filter((partner) => partner.partnerAppUid).length} linked partners · {config.lastSyncAt ? `Synced ${formatDate(config.lastSyncAt)}` : 'Never synced'}</div><Button size="small" onClick={() => open('/admin/settings?tab=partner-app')}><Icon name="settings" size={14} />Connection settings</Button></div>
       {!configured ? <EmptyState title="Partner app not connected" detail="Enter the delivery_admin Firebase config (same project as delivery_app) in Settings → Partner app, then sync partner records." action={<Button variant="primary" onClick={() => open('/admin/settings?tab=partner-app')}>Configure partner app</Button>} /> : <>
-        {config.lastError && <div className="soft-notice"><Icon name="alert" size={15} /><span className="partner-app-notice-copy">Last partner app request failed: {config.lastError}{requestUrl && <small className="partner-app-error-url">Request: {requestUrl}</small>}</span></div>}
+        {config.lastError && <div className="soft-notice"><Icon name="alert" size={15} /><span className="partner-app-notice-copy">Last delivery_app update failed: {config.lastError}{requestUrl && <small className="partner-app-error-url">Request: {requestUrl}</small>}</span>{partnerAppWriteFailures > 0 && <Button size="small" variant="primary" onClick={retryPartnerAppWrites}>Retry {partnerAppWriteFailures} update{partnerAppWriteFailures === 1 ? '' : 's'}</Button>}</div>}
         {data.partnerAppRecords.length === 0 ? <EmptyState title="No partner app records synced" detail="Run Sync partner data from Settings → Partner app. Records returned by delivery_app appear here after a successful sync." action={<Button variant="primary" onClick={() => open('/admin/settings?tab=partner-app')}>Open connection settings</Button>} /> : <>
-          <div className="filter-toolbar kyc-filter-toolbar"><label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search record, partner ID, contact, vehicle, or status" aria-label="Search partner app records" /></label></div>
-          <div className="table-scroll"><table className="data-table app-data-table"><thead><tr><th>App record</th><th>Contact</th><th>Vehicle</th><th>App status</th><th>Service areas</th><th>Admin partner</th><th>Updated</th><th /></tr></thead><tbody>
+          <div className="filter-toolbar kyc-filter-toolbar"><label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search record, partner ID, contact, vehicle, status, or application" aria-label="Search partner app records" /></label></div>
+          <div className="table-scroll"><table className="data-table app-data-table"><thead><tr><th>App record</th><th>Contact</th><th>Vehicle / areas</th><th>Application</th><th>Account</th><th>Admin partner</th><th>Updated</th><th /></tr></thead><tbody>
             {visible.map((item) => {
-              const partner = data.partners.find((candidate) => candidate.id === item.partnerId || candidate.id === item.id)
+              const partner = linkedPartnerForRecord(data, item)
+              const application = applicationForRecord(data, item, partner)
               return <tr key={item.id}>
                 <td><span className="partner-cell"><span className="mini-avatar">{initials(item.name)}</span><span><b>{item.name}</b><small>{item.id}</small></span></span></td>
                 <td><span className="application-documents"><strong>{item.phone ?? 'No phone'}</strong><small>{item.email ?? 'No email'}</small></span></td>
-                <td>{item.vehicle ?? <span className="muted-text">—</span>}</td>
+                <td><span className="application-documents"><strong>{item.vehicle ?? '—'}</strong><small>{item.serviceAreas.slice(0, 2).join(', ') || 'No areas'}{item.serviceAreas.length > 2 ? ` +${item.serviceAreas.length - 2}` : ''}</small></span></td>
+                <td>{item.applicationStatus ? <StatusBadge status={appStatusLabel(item.applicationStatus)} /> : <span className="muted-text">—</span>}</td>
                 <td>{item.status ? <StatusBadge status={item.status} /> : <span className="muted-text">—</span>}</td>
-                <td><span className="area-list">{item.serviceAreas.slice(0, 2).join(', ') || '—'}{item.serviceAreas.length > 2 && <small>+{item.serviceAreas.length - 2} areas</small>}</span></td>
-                <td>{partner ? <button className="table-record-link" onClick={() => open(`/admin/partners/${partner.id}`)}>{partner.id}<small>{partner.name}</small></button> : <span className="muted-text">Not linked</span>}</td>
+                <td>{partner ? <button className="table-record-link" onClick={() => open(`/admin/partners/${partner.id}`)}>{partner.id}<small>{partner.name}</small></button> : application ? <span className="muted-text">{application.id}<small>Application only</small></span> : <span className="muted-text">Not linked</span>}</td>
                 <td>{formatDate(item.updatedAt ?? item.syncedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
-                <td><Button size="small" onClick={() => setRecordId(item.id)}>Details</Button></td>
+                <td><Button size="small" onClick={() => setRecordId(item.id)}>Manage</Button></td>
               </tr>
             })}
           </tbody></table>{visible.length === 0 && <EmptyState title="No matching partner app records" detail="Adjust the search to find a synced delivery_app record." />}</div>
           <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
         </>}
-        <div className="notification-history-note"><Icon name="shield" size={14} />Read-only cache of delivery_app records. Data refreshes only when an Administrator runs a sync from Settings → Partner app.</div>
+        <div className="notification-history-note"><Icon name="shield" size={14} />Synced records are a cache. Link a record to an admin partner, then approve, reject, suspend, or restore from this view; the change is written to delivery_app's Firestore document.</div>
       </>}
     </Panel>
-    {record && <PartnerAppRecordDialog record={record} linkedPartner={linkedPartner} onClose={() => setRecordId(null)} open={open} />}
+    {record && <PartnerAppRecordDialog record={record} data={data} onClose={() => setRecordId(null)} open={open} />}
   </>
 }
 
@@ -156,6 +282,7 @@ function PartnerActivityPage({ data, open }: { data: OperationsState; open: (pat
   const [type, setType] = useState('All')
   const [page, setPage] = useState(1)
   const [suspendTarget, setSuspendTarget] = useState<Partner | null>(null)
+  const [restoreTarget, setRestoreTarget] = useState<Partner | null>(null)
   const pageSize = 10
   const canManage = frame.data.user.role === 'Admin'
   const types = [...new Set(data.partnerHistory.map((event) => event.type))].sort()
@@ -172,7 +299,7 @@ function PartnerActivityPage({ data, open }: { data: OperationsState; open: (pat
     <Panel className="records-panel">
       <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>partner activity events</span><span className="dot-separator" />{data.partners.filter((partner) => partner.availability === 'Suspended').length} suspended partners</div><span className="demo-caption">Recorded from local demo workflows</span></div>
       <div className="filter-toolbar kyc-filter-toolbar"><label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search partner, activity, detail, or operator" aria-label="Search partner activity" /></label><label className="filter-control"><span>Activity type</span><select value={type} onChange={(event) => { setType(event.target.value); setPage(1) }}><option>All</option>{types.map((item) => <option key={item}>{item}</option>)}</select></label></div>
-      <div className="table-scroll"><table className="data-table activity-table"><thead><tr><th>Partner</th><th>Activity</th><th>Details</th><th>Related record</th><th>Recorded by</th><th>When</th><th /></tr></thead><tbody>
+      <div className="table-scroll"><table className="data-table activity-table"><thead><tr><th>Partner</th><th>Activity</th><th>Details</th><th>Related record</th><th>Recorded by</th><th>When</th><th>Actions</th></tr></thead><tbody>
         {visible.map((event) => {
           const partner = data.partners.find((item) => item.id === event.partnerId)
           const relatedDelivery = event.relatedDeliveryId ? data.deliveries.find((delivery) => delivery.id === event.relatedDeliveryId) : undefined
@@ -183,14 +310,15 @@ function PartnerActivityPage({ data, open }: { data: OperationsState; open: (pat
             <td>{relatedDelivery ? <button className="table-record-link" onClick={() => open(`/admin/deliveries/${relatedDelivery.id}`)}>{relatedDelivery.id}<small>{relatedDelivery.status}</small></button> : <span className="muted-text">—</span>}</td>
             <td>{event.actor}</td>
             <td>{formatDate(event.at, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
-            <td>{partner ? <Button size="small" variant="danger" disabled={!canManage || partner.availability === 'Suspended'} title={partner.availability === 'Suspended' ? 'Partner is already suspended' : canManage ? undefined : 'Administrator access required'} onClick={() => setSuspendTarget(partner)}>Suspend</Button> : <span className="muted-text">—</span>}</td>
+            <td>{partner ? <span className="row-action-group">{partner.availability === 'Suspended' ? <Button size="small" disabled={!canManage} title={canManage ? 'Restore this suspended partner' : 'Administrator access required'} onClick={() => setRestoreTarget(partner)}>Restore</Button> : <Button size="small" variant="danger" disabled={!canManage} title={canManage ? 'Suspend this partner' : 'Administrator access required'} onClick={() => setSuspendTarget(partner)}>Suspend</Button>}</span> : <span className="muted-text">—</span>}</td>
           </tr>
         })}
       </tbody></table>{visible.length === 0 && <EmptyState title="No partner activity matches" detail="Adjust the activity type or search filters. Activity is recorded as partner actions occur." />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
-      <div className="notification-history-note"><Icon name="shield" size={14} />Only an Administrator can suspend a partner. Suspensions block new assignments and are recorded in partner activity and the audit log.</div>
+      <div className="notification-history-note"><Icon name="shield" size={14} />Only an Administrator can suspend or reinstate a partner. Suspensions block new assignments and every decision is recorded in partner activity and the audit log.</div>
     </Panel>
     {suspendTarget && <ConfirmDialog title={`Suspend ${suspendTarget.name}?`} detail="Suspension blocks new assignments and offers. Existing delivery assignments and history are retained for an operations review." reasonLabel="Suspension reason" confirmLabel="Suspend partner" danger onCancel={() => setSuspendTarget(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restrict', partnerId: suspendTarget.id, status: 'Suspended', reason }); setSuspendTarget(null) }} />}
+    {restoreTarget && <ConfirmDialog title={`Restore ${restoreTarget.name}?`} detail="Restoring removes the suspension and makes the partner eligible again once document checks and any existing assignment allow it. The reinstatement is recorded in activity and the audit log." reasonLabel="Reinstatement reason" confirmLabel="Restore partner" onCancel={() => setRestoreTarget(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restore', partnerId: restoreTarget.id, reason }); setRestoreTarget(null) }} />}
   </>
 }
 

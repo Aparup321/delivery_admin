@@ -3,7 +3,7 @@ import type { OperationsState, PartnerApplication } from '../domain/model'
 import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 
-function ApplicationReviewDialog({ application, initialDecision, onClose }: { application: PartnerApplication; initialDecision: 'Approved' | 'Rejected'; onClose: () => void }) {
+export function ApplicationReviewDialog({ application, initialDecision, onClose }: { application: PartnerApplication; initialDecision: 'Approved' | 'Rejected'; onClose: () => void }) {
   const { frame, dispatch } = useOperations()
   const [decision, setDecision] = useState<'Approved' | 'Rejected'>(initialDecision)
   const [note, setNote] = useState('')
@@ -76,7 +76,7 @@ export function ApplicationsPage({ data, open }: { data: OperationsState; open: 
             <td><span className="application-documents"><strong>{item.documents.length} submitted</strong><small>{missing.length ? `Missing: ${missing.join(', ')}` : 'All mandatory documents attached'}</small></span></td>
             <td>{formatDate(item.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
             <td><StatusBadge status={item.status} /></td>
-            <td><span className={item.status === 'Rejected' ? 'kyc-issue-text' : 'kyc-reviewer-text'}>{item.decisionReason ?? item.reviewedBy ?? 'Awaiting Administrator review'}</span>{item.reviewedAt && <small className="muted-text">{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}</td>
+            <td><span className={item.status === 'Rejected' ? 'kyc-issue-text' : 'kyc-reviewer-text'}>{item.decisionReason ?? item.reviewedBy ?? 'Awaiting Administrator review'}</span>{item.reviewedAt && <small className="muted-text">{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}{item.partnerAppUid && <small className="muted-text">delivery_app account linked</small>}</td>
             <td>{item.status === 'Submitted'
               ? <span className="row-action-group"><Button size="small" variant="primary" disabled={!canReview} title={canReview ? 'Approve this KYC application' : 'Administrator access required'} onClick={() => setReview({ applicationId: item.id, decision: 'Approved' })}>Approve</Button><Button size="small" variant="danger" disabled={!canReview} title={canReview ? 'Reject this KYC application' : 'Administrator access required'} onClick={() => setReview({ applicationId: item.id, decision: 'Rejected' })}>Reject</Button></span>
               : <Button size="small" variant="quiet" onClick={() => item.partnerId ? open(`/admin/partners/${item.partnerId}`) : undefined} disabled={!item.partnerId}>{item.partnerId ? 'Open partner' : 'Decision recorded'}</Button>}</td>
