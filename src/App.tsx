@@ -165,7 +165,8 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
 
   const routeKnown = ['/admin', '/admin/deliveries', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
   const showHeading = routeKnown && !isAssignmentRoute
-  const breadcrumbs = isDeliveryDetail && selectedDelivery ? [{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: selectedDelivery.id }] : partnerMatch ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: selectedPartnerId }] : activeLabel === 'Overview' ? undefined : [{ label: 'Overview', path: '/admin' }, { label: activeLabel === 'Partners' ? partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : activeLabel : activeLabel }]
+  const partnerViewLabel = partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : ''
+  const breadcrumbs = isDeliveryDetail && selectedDelivery ? [{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: selectedDelivery.id }] : partnerMatch ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: selectedPartnerId }] : activeLabel === 'Overview' ? undefined : activeLabel === 'Partners' && partnerViewLabel ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: partnerViewLabel }] : [{ label: 'Overview', path: '/admin' }, { label: activeLabel }]
 
   function signOut() {
     clearAdminSession()

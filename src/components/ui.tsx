@@ -65,9 +65,13 @@ export function DemoTag() {
 }
 
 export function PageHeading({ title, subtitle, breadcrumbs, action, onNavigate }: { title: string; subtitle: string; breadcrumbs?: Array<{ label: string; path?: string }>; action?: ReactNode; onNavigate?: (path: string) => void }) {
+  const backCrumb = breadcrumbs && onNavigate ? [...breadcrumbs].reverse().find((crumb) => crumb.path) : undefined
   return <div className="page-heading">
     <div>
-      {breadcrumbs && <div className="breadcrumbs">{breadcrumbs.map((crumb, index) => <span key={`${crumb.label}-${index}`}>{index > 0 && <Icon name="chevron" size={13} />}{crumb.path && onNavigate ? <button onClick={() => onNavigate(crumb.path!)}>{crumb.label}</button> : <span>{crumb.label}</span>}</span>)}</div>}
+      {(backCrumb || breadcrumbs) && <div className="heading-meta">
+        {backCrumb && <button className="heading-back" onClick={() => onNavigate?.(backCrumb.path!)} aria-label={`Back to ${backCrumb.label}`}><Icon name="arrow" size={13} className="icon-flip" /><span>Back to {backCrumb.label}</span></button>}
+        {breadcrumbs && <div className="breadcrumbs">{breadcrumbs.map((crumb, index) => <span key={`${crumb.label}-${index}`}>{index > 0 && <Icon name="chevron" size={13} />}{crumb.path && onNavigate ? <button onClick={() => onNavigate(crumb.path!)}>{crumb.label}</button> : <span>{crumb.label}</span>}</span>)}</div>}
+      </div>}
       <div className="title-row"><h1>{title}</h1><DemoTag /></div>
       <p className="page-subtitle">{subtitle}</p>
     </div>
