@@ -6,7 +6,7 @@ export interface MapPoint {
   label: string
   latitude: number
   longitude: number
-  kind?: 'pickup' | 'drop' | 'neutral'
+  kind?: 'pickup' | 'drop' | 'partner' | 'neutral'
 }
 
 interface MapPreviewProps {

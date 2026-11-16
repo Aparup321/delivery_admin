@@ -164,7 +164,7 @@ async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSi
   }
 }
 
-function decodeFirestoreFields(fields: unknown): Record<string, unknown> {
+export function decodeFirestoreFields(fields: unknown): Record<string, unknown> {
   if (!isRecord(fields)) return {}
   const result: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(fields)) result[key] = decodeFirestoreValue(value)

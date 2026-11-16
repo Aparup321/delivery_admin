@@ -2,13 +2,24 @@ import { useMemo } from 'react'
 import type { Delivery, OperationsState } from '../domain/model'
 import { getPartnerEligibility } from '../domain/operations'
 import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/serviceAreas'
-import { MapPreview } from '../components/MapPreview'
-import { Icon, Panel, PanelHeading, relativeTime } from '../components/ui'
+import { MapPreview, type MapPoint } from '../components/MapPreview'
+import { Button, Icon, Panel, PanelHeading, relativeTime } from '../components/ui'
+import { useLiveDeliveries } from '../hooks/useLiveDeliveries'
+import { useOperations } from '../state/OperationsProvider'
 
 interface Props {
   data: OperationsState
   open: (path: string) => void
 }
+
+/** Partner-side statuses that still represent a job on the road. */
+const LIVE_ACTIVE_STATUSES = [
+  'accepted',
+  'pickup_arrived',
+  'picked_up',
+  'in_transit',
+  'drop_arrived',
+]
 
 const statusColors: Record<string, string> = {
   'In Transit': '#713CE0', Assigned: '#946ce8', Unassigned: '#9b98a4', Pending: '#e5a330', Delayed: '#d94f5c', Completed: '#29956f', Cancelled: '#777482',
@@ -43,6 +54,12 @@ function activityByDay(data: OperationsState) {
 }
 
 export function OverviewPage({ data, open }: Props) {
+  const { frame } = useOperations()
+  const live = useLiveDeliveries(frame.data.partnerApp)
+  const liveDelivery = useMemo(
+    () => live.deliveries.find((delivery) => LIVE_ACTIVE_STATUSES.includes(delivery.nativeStatus)) ?? null,
+    [live.deliveries],
+  )
   const counts = useMemo(() => deliveryStatusCounts(data.deliveries), [data.deliveries])
   const bars = useMemo(() => activityByDay(data), [data.deliveries])
   const available = data.partners.filter((partner) => partner.availability === 'Available').length
@@ -62,20 +79,63 @@ export function OverviewPage({ data, open }: Props) {
     return record && !getPartnerEligibility(data, partner, record).eligible && data.documents.some((document) => document.partnerId === partner.id && document.status !== 'Verified')
   })
   const mapRoute = useMemo(() => {
+    if (liveDelivery) {
+      const points: MapPoint[] = [
+        {
+          id: `${liveDelivery.id}-pickup`,
+          label: `Pickup · ${liveDelivery.pickup.name}`,
+          latitude: liveDelivery.pickup.latitude,
+          longitude: liveDelivery.pickup.longitude,
+          kind: 'pickup',
+        },
+        {
+          id: `${liveDelivery.id}-drop`,
+          label: `Drop · ${liveDelivery.destination.name}`,
+          latitude: liveDelivery.destination.latitude,
+          longitude: liveDelivery.destination.longitude,
+          kind: 'drop',
+        },
+      ]
+      if (liveDelivery.currentLocation) {
+        points.push({
+          id: `${liveDelivery.id}-partner`,
+          label: liveDelivery.partnerName,
+          latitude: liveDelivery.currentLocation.latitude,
+          longitude: liveDelivery.currentLocation.longitude,
+          kind: 'partner',
+        })
+      }
+      return {
+        source: 'live' as const,
+        id: liveDelivery.displayId,
+        summary: `${liveDelivery.pickup.name} → ${liveDelivery.destination.name}`,
+        approximate: false,
+        points,
+        detailPath: null,
+        locationUpdatedAt: liveDelivery.currentLocation?.updatedAt ?? null,
+        updatedAt: liveDelivery.updatedAt,
+      }
+    }
+
     const delivery = data.deliveries.find((item) => item.status === 'In Transit')
       ?? data.deliveries.find((item) => item.status === 'Delayed')
       ?? data.deliveries.find((item) => item.status === 'Assigned')
       ?? data.deliveries[0]
     if (!delivery) return null
     return {
-      delivery,
+      source: 'demo' as const,
+      id: delivery.id,
+      summary: `${delivery.pickup} → ${delivery.drop}`,
       approximate: !hasServiceAreaCoordinate(delivery.pickup) || !hasServiceAreaCoordinate(delivery.drop),
       points: [
         { id: `${delivery.id}-pickup`, label: `Pickup · ${delivery.pickup}`, ...serviceAreaCoordinate(delivery.pickup), kind: 'pickup' as const },
         { id: `${delivery.id}-drop`, label: `Drop · ${delivery.drop}`, ...serviceAreaCoordinate(delivery.drop), kind: 'drop' as const },
       ],
+      detailPath: `/admin/deliveries/${delivery.id}`,
+      locationUpdatedAt: null,
+      updatedAt: delivery.createdAt,
     }
-  }, [data.deliveries])
+  }, [liveDelivery, data.deliveries])
   const total = data.deliveries.length || 1
   const gradient = counts.reduce<{ text: string; cursor: number }>((result, item) => {
     const start = result.cursor
@@ -124,14 +184,20 @@ export function OverviewPage({ data, open }: Props) {
       <Panel className="map-panel">
         <PanelHeading
           title="Active delivery map"
-          detail={mapRoute ? `${mapRoute.delivery.id} · ${mapRoute.delivery.pickup} → ${mapRoute.delivery.drop}` : 'No delivery record'}
-          action={mapRoute ? <button className="text-link" onClick={() => open(`/admin/deliveries/${mapRoute.delivery.id}`)}>Open delivery <Icon name="arrow" size={14} /></button> : undefined}
+          detail={mapRoute ? `${mapRoute.id} · ${mapRoute.summary}` : 'No delivery record'}
+          action={<span className="map-heading-actions">
+            {mapRoute && <span className={`source-tag source-${mapRoute.source}`}><i />{mapRoute.source === 'live' ? 'Live' : 'Demo'}</span>}
+            {mapRoute?.detailPath && <button className="text-link" onClick={() => open(mapRoute.detailPath!)}>Open delivery <Icon name="arrow" size={14} /></button>}
+          </span>}
         />
+        {live.error && <div className="soft-notice map-sync-notice"><Icon name="alert" size={15} /><span>Live delivery sync failed. {mapRoute?.source === 'live' ? 'The map may be stale.' : 'Showing the demo route instead.'}</span><Button size="small" variant="quiet" title={live.error} onClick={live.refresh}>Retry</Button></div>}
         <MapPreview
           points={mapRoute?.points ?? []}
-          ariaLabel={mapRoute ? `OpenStreetMap preview from ${mapRoute.delivery.pickup} to ${mapRoute.delivery.drop}` : 'OpenStreetMap delivery area preview'}
+          ariaLabel={mapRoute ? `OpenStreetMap preview of ${mapRoute.summary}` : 'OpenStreetMap delivery area preview'}
         />
-        <p className="osm-map-footnote"><Icon name="info" size={13} />OpenStreetMap tiles, shared with delivery_app. {mapRoute?.approximate ? 'Some area coordinates are approximate. ' : ''}Live GPS, routing and ETAs are not connected.</p>
+        <p className="osm-map-footnote"><Icon name="info" size={13} />{mapRoute?.source === 'live'
+          ? <>Live delivery from delivery_app · {mapRoute.locationUpdatedAt ? `Partner position updated ${relativeTime(mapRoute.locationUpdatedAt)}. ` : "Waiting for the partner's GPS position. "}Routing and ETAs are approximate.</>
+          : <>Demo route · no active live delivery. OpenStreetMap tiles, shared with delivery_app. {mapRoute?.approximate ? 'Some area coordinates are approximate. ' : ''}Live GPS, routing and ETAs for demo jobs are not connected.</>}</p>
       </Panel>
 
       <Panel className="attention-panel">
@@ -157,6 +223,6 @@ export function OverviewPage({ data, open }: Props) {
         {!data.auditLogs.length && <p className="empty-inline">Operational changes will appear here after a demo action.</p>}
       </div>
     </Panel>
-    <div className="overview-footnote"><Icon name="shield" size={14} /> Demo records only · delivery_app partner records support live Administrator actions; no live GPS, payments, or external delivery service is connected.</div>
+    <div className="overview-footnote"><Icon name="shield" size={14} /> Administrator decisions are mirrored to delivery_app. The map uses OpenStreetMap tiles shared with the partner app; demo jobs remain simulated.</div>
   </div>
 }

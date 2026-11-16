@@ -6,6 +6,7 @@ import { appReducer, type AppFrame, type OperationAction } from '../src/state/op
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
 import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppEndpoint } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
+import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
 import type { PartnerAppConfig } from '../src/domain/model.ts'
 import { DEMO_ADMIN_EMAIL } from '../src/domain/admin.ts'
@@ -579,4 +580,106 @@ test('demo reset restores interconnected seed records and records the reset even
   assert.equal(frame.data.deliveries.find((item) => item.id === 'DLV-1046')?.status, 'Unassigned')
   assert.equal(frame.data.partners.find((item) => item.id === 'DP-0187')?.availability, 'Available')
   assert.ok(frame.data.auditLogs.some((item) => item.eventType === 'Demo data reset'))
+})
+
+test('live deliveries from delivery_app are normalized for the operations map', () => {
+  const deliveries = normalizeLiveDeliveries({
+    documents: [
+      {
+        name: 'projects/delivery-231a0/databases/(default)/documents/deliveries/PK-2001',
+        fields: {
+          displayId: { stringValue: '#PK-2001' },
+          partnerUid: { stringValue: 'partner-1' },
+          partnerName: { stringValue: 'Aparup Santra' },
+          status: { stringValue: 'in_transit' },
+          adminStatus: { stringValue: 'In Transit' },
+          source: { stringValue: 'live' },
+          pickup: {
+            mapValue: {
+              fields: {
+                name: { stringValue: 'Salt Lake Hub' },
+                address: { stringValue: 'Salt Lake, Kolkata' },
+                latitude: { doubleValue: 22.5867 },
+                longitude: { doubleValue: 88.4171 },
+              },
+            },
+          },
+          destination: {
+            mapValue: {
+              fields: {
+                name: { stringValue: 'New Town' },
+                address: { stringValue: 'New Town, Kolkata' },
+                latitude: { doubleValue: 22.52 },
+                longitude: { doubleValue: 88.46 },
+              },
+            },
+          },
+          distanceKm: { doubleValue: 6.4 },
+          etaMinutes: { integerValue: '22' },
+          earnings: { doubleValue: 95 },
+          itemCount: { integerValue: '2' },
+          paymentMode: { stringValue: 'Cash' },
+          customerName: { stringValue: 'R. Das' },
+          customerPhoneMasked: { stringValue: '+91 ***** 4321' },
+          requestedAt: { stringValue: '2026-11-16T09:00:00.000Z' },
+          events: {
+            arrayValue: {
+              values: [
+                { mapValue: { fields: { status: { stringValue: 'accepted' }, at: { stringValue: '2026-11-16T09:01:00.000Z' } } } },
+                { mapValue: { fields: { status: { stringValue: 'in_transit' }, at: { stringValue: '2026-11-16T09:10:00.000Z' } } } },
+              ],
+            },
+          },
+          currentLocation: {
+            mapValue: {
+              fields: {
+                latitude: { doubleValue: 22.59 },
+                longitude: { doubleValue: 88.42 },
+                accuracy: { doubleValue: 12 },
+                updatedAt: { stringValue: '2026-11-16T09:12:00.000Z' },
+              },
+            },
+          },
+          updatedAt: { stringValue: '2026-11-16T09:12:00.000Z' },
+        },
+      },
+      {
+        name: 'projects/delivery-231a0/databases/(default)/documents/deliveries/PK-2002',
+        fields: { displayId: { stringValue: '#PK-2002' } },
+      },
+    ],
+  })
+
+  assert.equal(deliveries.length, 1)
+  const delivery = deliveries[0]
+  assert.equal(delivery.id, 'PK-2001')
+  assert.equal(delivery.displayId, '#PK-2001')
+  assert.equal(delivery.status, 'In Transit')
+  assert.equal(delivery.nativeStatus, 'in_transit')
+  assert.equal(delivery.pickup.name, 'Salt Lake Hub')
+  assert.equal(delivery.destination.latitude, 22.52)
+  assert.equal(delivery.etaMinutes, 22)
+  assert.equal(delivery.events.length, 2)
+  assert.equal(delivery.currentLocation?.updatedAt, '2026-11-16T09:12:00.000Z')
+})
+
+test('live delivery normalization tolerates missing optional fields', () => {
+  const [delivery] = normalizeLiveDeliveries({
+    documents: [
+      {
+        name: 'projects/delivery-231a0/databases/(default)/documents/deliveries/PK-2003',
+        fields: {
+          status: { stringValue: 'accepted' },
+          pickup: { mapValue: { fields: { name: { stringValue: 'Hub' }, latitude: { doubleValue: 22.5 }, longitude: { doubleValue: 88.4 } } } },
+          destination: { mapValue: { fields: { name: { stringValue: 'Drop' }, latitude: { doubleValue: 22.6 }, longitude: { doubleValue: 88.5 } } } },
+        },
+      },
+    ],
+  })
+
+  assert.equal(delivery.displayId, '#PK-2003')
+  assert.equal(delivery.status, 'accepted')
+  assert.equal(delivery.partnerName, 'Delivery partner')
+  assert.equal(delivery.currentLocation, null)
+  assert.deepEqual(delivery.events, [])
 })

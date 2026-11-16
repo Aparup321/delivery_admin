@@ -246,6 +246,14 @@ a { color: inherit; }
 .chart-legend-inline .demo-caption { margin-left: auto; }
 .overview-lower { grid-template-columns: minmax(0, 1.08fr) minmax(0, .92fr); }
 .osm-map { margin: 10px 13px 13px; }
+.map-heading-actions { display: inline-flex; align-items: center; gap: 9px; }
+.source-tag { display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border-radius: 999px; font-size: 8px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.source-tag i { width: 5px; height: 5px; border-radius: 50%; }
+.source-live { color: #226a4f; background: #e7f6ee; }
+.source-live i { background: #29956f; }
+.source-demo { color: #6b6478; background: #f1eff5; }
+.source-demo i { background: #9b98a4; }
+.map-sync-notice { margin: 2px 13px 0; }
 .osm-map-canvas { position: relative; overflow: hidden; height: 202px; background: #e8eef2; border: 1px solid #e5e2ea; border-radius: 6px; isolation: isolate; }
 .osm-map-tile { position: absolute; z-index: 0; width: 256px; height: 256px; max-width: none; pointer-events: none; user-select: none; }
 .osm-map-marker { position: absolute; z-index: 2; display: flex; align-items: center; gap: 5px; transform: translate(-50%, -50%); pointer-events: none; white-space: nowrap; }
@@ -253,6 +261,7 @@ a { color: inherit; }
 .osm-map-marker b { padding: 3px 5px; color: #403a48; background: rgba(255,255,255,.94); border: 1px solid rgba(224,219,230,.9); border-radius: 4px; box-shadow: 0 1px 3px rgba(25,21,43,.12); font-size: 8px; font-weight: 650; }
 .osm-map-marker-pickup i { background: #29956f; }
 .osm-map-marker-drop i { background: #d94f5c; }
+.osm-map-marker-partner i { background: #2f7de1; box-shadow: 0 0 0 4px rgba(47,125,225,.18); }
 .osm-map-marker-neutral i { background: var(--purple); }
 .osm-map-badge { position: absolute; z-index: 3; top: 7px; left: 7px; padding: 3px 6px; color: #5f5a67; background: rgba(255,255,255,.92); border: 1px solid rgba(224,219,230,.85); border-radius: 3px; font-size: 8px; font-weight: 700; letter-spacing: .03em; }
 .osm-map-attribution { position: absolute; z-index: 3; right: 5px; bottom: 5px; padding: 3px 5px; color: #5f5a67; background: rgba(255,255,255,.9); border-radius: 3px; font-size: 7px; }
