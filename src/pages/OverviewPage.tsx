@@ -184,7 +184,7 @@ export function OverviewPage({ data, open }: Props) {
       <Panel className="map-panel">
         <PanelHeading
           title="Active delivery map"
-          detail={mapRoute ? `${mapRoute.id} · ${mapRoute.summary}` : 'No delivery record'}
+          detail={mapRoute ? `${mapRoute.id} · ${mapRoute.summary}${mapRoute.source === 'live' && liveDelivery ? ` · ${liveDelivery.status}` : ''}` : 'No delivery record'}
           action={<span className="map-heading-actions">
             {mapRoute && <span className={`source-tag source-${mapRoute.source}`}><i />{mapRoute.source === 'live' ? 'Live' : 'Demo'}</span>}
             {mapRoute?.detailPath && <button className="text-link" onClick={() => open(mapRoute.detailPath!)}>Open delivery <Icon name="arrow" size={14} /></button>}
