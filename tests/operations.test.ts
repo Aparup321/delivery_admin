@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDemoState } from '../src/domain/seed.ts'
-import { getPartnerEligibility } from '../src/domain/operations.ts'
+import { getPartnerEligibility, nextPartnerId } from '../src/domain/operations.ts'
+import { buildKycQueue, liveApplicationStatus } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
 import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppEndpoint } from '../src/services/partnerApp.ts'
@@ -286,6 +287,135 @@ test('rejecting an onboarding application requires a reason and never creates a 
   assert.equal(application.partnerId, null)
   assert.equal(rejected.data.partners.length, frame.data.partners.length)
   assert.ok(rejected.data.auditLogs.some((item) => item.eventType === 'Application rejected' && item.targetId === 'APP-2040'))
+})
+
+test('an Administrator can create a partner directory record with missing mandatory documents', () => {
+  const frame = frameWithDemo()
+  const partnerId = nextPartnerId(frame.data)
+  assert.match(partnerId, /^DP-\d{4}$/)
+  assert.equal(Number(partnerId.slice(3)), Math.max(...frame.data.partners.map((partner) => Number(partner.id.slice(3)))) + 1)
+
+  frame.data.user.role = 'Viewer'
+  const blocked = apply(frame, {
+    type: 'partner.create', partnerId, name: 'Sneha Bose', phone: '+91 98765 43210', email: 'sneha@example.com',
+    vehicle: 'Scooter', serviceAreas: ['Barasat'], registrationLast4: '1234', note: '',
+  })
+  assert.equal(blocked.feedback?.kind, 'error')
+  assert.equal(blocked.data.partners.some((partner) => partner.id === partnerId), false)
+
+  blocked.data.user.role = 'Admin'
+  const created = apply(blocked, {
+    type: 'partner.create', partnerId, name: '  Sneha   Bose ', phone: '+91 98765 43210', email: 'sneha@example.com',
+    vehicle: 'Scooter', serviceAreas: [' Barasat ', 'New Town', 'Barasat'], registrationLast4: '1234', note: 'Added from the admin console',
+  })
+  expectSuccess(created)
+  const partner = created.data.partners.find((item) => item.id === partnerId)!
+  assert.equal(partner.name, 'Sneha Bose')
+  assert.equal(partner.availability, 'Offline')
+  assert.equal(partner.partnerAppUid, null)
+  assert.match(partner.maskedPhone, /3210$/)
+  assert.equal(partner.maskedEmail, 'sneh••@example.com')
+  assert.equal(partner.maskedRegistration, 'WB-••-1234')
+  assert.deepEqual(partner.serviceAreas, ['Barasat', 'New Town'])
+
+  const documents = created.data.documents.filter((item) => item.partnerId === partnerId)
+  assert.equal(documents.length, created.data.settings.requiredDocuments.length)
+  assert.ok(documents.every((item) => item.status === 'Missing' && item.submittedAt === null))
+  assert.ok(created.data.partnerHistory.some((item) => item.partnerId === partnerId && item.type === 'Partner created'))
+  assert.ok(created.data.auditLogs.some((item) => item.eventType === 'Partner created' && item.targetId === partnerId))
+  assert.ok(created.data.notifications.some((item) => item.category === 'Verification Required' && item.relatedRecordId === partnerId))
+
+  const duplicate = apply(created, {
+    type: 'partner.create', partnerId, name: 'Another Person', phone: '+91 90000 11111', email: '',
+    vehicle: 'Bike', serviceAreas: ['Kolkata'], registrationLast4: '', note: '',
+  })
+  assert.equal(duplicate.feedback?.kind, 'error')
+  assert.match(duplicate.feedback?.message ?? '', /already used/)
+  assert.equal(duplicate.data.partners.length, created.data.partners.length)
+})
+
+test('the KYC queue unifies local applications with synced delivery_app onboarding records', () => {
+  const frame = frameWithDemo()
+  const demoQueue = buildKycQueue(frame.data)
+  assert.equal(demoQueue.length, frame.data.applications.length)
+  assert.ok(demoQueue.every((item) => item.source === 'admin'))
+  assert.equal(
+    demoQueue.filter((item) => item.status === 'Submitted').length,
+    frame.data.applications.filter((item) => item.status === 'Submitted').length,
+  )
+  const rejected = demoQueue.find((item) => item.status === 'Rejected')!
+  assert.equal(rejected.decisionReason, 'Vehicle registration was not submitted with the application.')
+
+  assert.equal(liveApplicationStatus('submitted'), 'Submitted')
+  assert.equal(liveApplicationStatus('UNDER_REVIEW'), 'Submitted')
+  assert.equal(liveApplicationStatus(' pending '), 'Submitted')
+  assert.equal(liveApplicationStatus('approved'), 'Approved')
+  assert.equal(liveApplicationStatus('rejected'), 'Rejected')
+  assert.equal(liveApplicationStatus('draft'), null)
+  assert.equal(liveApplicationStatus(null), null)
+
+  const synced = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'live-kyc-uid', partnerId: 'live-kyc-uid', name: 'Aparup Santra', phone: '+91 98356 48245',
+      email: 'aparup@example.com', vehicle: 'bike', status: 'pending', applicationStatus: 'under_review',
+      serviceAreas: ['Barasat'], updatedAt: '2026-06-01T09:55:00.000Z',
+      fields: { fullName: 'Aparup Santra', applicationStatus: 'under_review' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }, {
+      id: 'session-only-uid', partnerId: 'session-only-uid', name: 'session-only-uid', phone: '+91 90000 00000',
+      email: null, vehicle: null, status: null, applicationStatus: 'submitted', serviceAreas: [],
+      updatedAt: '2026-06-01T09:55:00.000Z', fields: { phone: '+91 90000 00000' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  const liveQueue = buildKycQueue(synced.data)
+  const liveItem = liveQueue.find((item) => item.recordId === 'live-kyc-uid')!
+  assert.equal(liveItem.source, 'delivery_app')
+  assert.equal(liveItem.status, 'Submitted')
+  assert.equal(liveItem.partnerAppUid, 'live-kyc-uid')
+  assert.equal(liveItem.applicantName, 'Aparup Santra')
+  assert.equal(liveItem.businessName, 'delivery_app onboarding')
+  assert.equal(liveItem.documentsKnown, false)
+  assert.equal(liveQueue.some((item) => item.recordId === 'session-only-uid'), false)
+
+  const approved = apply(synced, { type: 'partnerApp.review', recordId: 'live-kyc-uid', decision: 'Approved', note: 'Verified in delivery_app' })
+  expectSuccess(approved)
+  const approvedMatches = buildKycQueue(approved.data).filter((item) => item.partnerAppUid === 'live-kyc-uid')
+  assert.equal(approvedMatches.length, 1)
+  assert.equal(approvedMatches[0].source, 'admin')
+  assert.equal(approvedMatches[0].status, 'Approved')
+})
+
+test('a rejected live application becomes reviewable again after delivery_app resubmits', () => {
+  const synced = apply(frameWithDemo(), {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'live-kyc-uid', partnerId: 'live-kyc-uid', name: 'Aparup Santra', phone: '+91 98356 48245',
+      email: 'aparup@example.com', vehicle: 'bike', status: 'pending', applicationStatus: 'submitted',
+      serviceAreas: ['Barasat'], updatedAt: '2026-06-01T09:55:00.000Z',
+      fields: { fullName: 'Aparup Santra', applicationStatus: 'submitted' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  const rejected = apply(synced, { type: 'partnerApp.review', recordId: 'live-kyc-uid', decision: 'Rejected', note: 'Address proof is unreadable.' })
+  expectSuccess(rejected)
+  const rejectedItem = buildKycQueue(rejected.data).find((item) => item.recordId === 'live-kyc-uid')!
+  assert.equal(rejectedItem.status, 'Rejected')
+  assert.equal(rejectedItem.decisionReason, 'Address proof is unreadable.')
+  assert.equal(rejectedItem.resubmitted, false)
+
+  const application = rejected.data.applications.find((item) => item.partnerAppUid === 'live-kyc-uid')!
+  const record = rejected.data.partnerAppRecords[0]
+  record.applicationStatus = 'submitted'
+  record.updatedAt = new Date(new Date(application.reviewedAt!).getTime() + 60_000).toISOString()
+  const resubmittedItem = buildKycQueue(rejected.data).find((item) => item.recordId === 'live-kyc-uid')!
+  assert.equal(resubmittedItem.status, 'Submitted')
+  assert.equal(resubmittedItem.resubmitted, true)
+  assert.equal(resubmittedItem.decisionReason, null)
+
+  const approved = apply(rejected, { type: 'partnerApp.review', recordId: 'live-kyc-uid', decision: 'Approved', note: 'Resubmitted proof is clear.' })
+  expectSuccess(approved)
+  assert.equal(approved.data.applications.find((item) => item.partnerAppUid === 'live-kyc-uid')?.status, 'Approved')
 })
 
 test('partner app connection is administrator-only, validates manual details, and caches synced records', () => {

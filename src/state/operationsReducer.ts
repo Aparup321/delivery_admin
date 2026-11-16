@@ -1,6 +1,6 @@
 import { DELIVERY_MILESTONES, type AdminRole, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerApplication, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
-import { getPartnerEligibility, getActiveAssignment } from '../domain/operations.ts'
+import { getPartnerEligibility, getActiveAssignment, nextPartnerId } from '../domain/operations.ts'
 
 export interface AppFrame {
   data: OperationsState
@@ -21,6 +21,7 @@ export type OperationAction =
   | { type: 'offer.reject'; offerId: string; reason: string }
   | { type: 'offer.expire'; offerId: string }
   | { type: 'offer.expire-due'; now: number }
+  | { type: 'partner.create'; partnerId: string; name: string; phone: string; email: string; vehicle: Partner['vehicle']; serviceAreas: string[]; registrationLast4: string; note: string }
   | { type: 'partner.restrict'; partnerId: string; status: 'Restricted' | 'Suspended'; reason: string }
   | { type: 'partner.restore'; partnerId: string; reason: string }
   | { type: 'partner.availability'; partnerId: string; availability: 'Available' | 'Offline'; reason: string }
@@ -53,6 +54,7 @@ const permissionByAction: Partial<Record<OperationAction['type'], Permission>> =
   'offer.accept': 'assignment',
   'offer.reject': 'assignment',
   'offer.expire': 'assignment',
+  'partner.create': 'partner-management',
   'partner.restrict': 'partner-management',
   'partner.restore': 'partner-management',
   'partner.availability': 'partner-management',
@@ -227,8 +229,7 @@ function approveApplication(data: OperationsState, application: PartnerApplicati
     partnerId = partner.id
     partner.partnerAppUid = application.partnerAppUid
   } else {
-    const partnerNumbers = data.partners.map((item) => Number(item.id.replace(/\D/g, ''))).filter(Number.isFinite)
-    partnerId = `DP-${String(Math.max(0, ...partnerNumbers) + 1).padStart(4, '0')}`
+    partnerId = nextPartnerId(data)
     partner = {
       id: partnerId,
       name: application.applicantName,
@@ -591,6 +592,67 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       if (offer.status !== 'Awaiting Response') throw new Error('Only offers awaiting a response can time out.')
       timeoutOffer(data, offer.id, at)
       return { message: `Timeout simulated for ${offer.id}.` }
+    }
+    case 'partner.create': {
+      const name = action.name.trim().replace(/\s+/g, ' ')
+      requireValue(name, 'Partner name')
+      if (name.length > 80) throw new Error('Partner name must be 80 characters or fewer.')
+      const phoneDigits = action.phone.replace(/\D/g, '')
+      if (phoneDigits.length < 7 || phoneDigits.length > 15) throw new Error('Enter a phone number with 7 to 15 digits.')
+      const email = action.email.trim()
+      if (email.length > 120) throw new Error('Email address must be 120 characters or fewer.')
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid email address or leave it blank.')
+      if (!['Bike', 'Scooter', 'Van'].includes(action.vehicle)) throw new Error('Choose a valid vehicle type.')
+      const serviceAreas = [...new Set(action.serviceAreas.map((area) => area.trim().replace(/\s+/g, ' ')).filter(Boolean))]
+      if (!serviceAreas.length) throw new Error('Add at least one service area.')
+      if (serviceAreas.length > 8) throw new Error('Add no more than 8 service areas.')
+      if (serviceAreas.some((area) => area.length > 40)) throw new Error('Each service area must be 40 characters or fewer.')
+      const partnerId = action.partnerId.trim().toUpperCase()
+      if (!/^DP-\d{4}$/.test(partnerId)) throw new Error('Partner ID must look like DP-0000.')
+      if (data.partners.some((partner) => partner.id === partnerId)) throw new Error(`${partnerId} is already used by another partner.`)
+      const registrationDigits = action.registrationLast4.replace(/\D/g, '')
+      if (registrationDigits && registrationDigits.length !== 4) throw new Error('Enter the last four digits of the vehicle registration, or leave it blank.')
+      const note = action.note.trim()
+      if (note.length > 240) throw new Error('The internal note must be 240 characters or fewer.')
+
+      const maskedPhone = maskPhoneNumber(phoneDigits)
+      const duplicate = data.partners.find((partner) => normalizeLinkName(partner.name) === normalizeLinkName(name) && partner.maskedPhone === maskedPhone)
+      if (duplicate) throw new Error(`${duplicate.name} (${duplicate.id}) already uses this phone number.`)
+
+      const partner: Partner = {
+        id: partnerId,
+        name,
+        maskedPhone,
+        maskedEmail: maskEmailAddress(email || null),
+        registeredAt: at,
+        vehicle: action.vehicle,
+        maskedRegistration: registrationDigits ? `WB-••-${registrationDigits}` : 'Not provided',
+        serviceAreas,
+        availability: 'Offline',
+        restrictedReason: null,
+        suspendedReason: null,
+        needsOperationalReview: false,
+        partnerAppUid: null,
+      }
+      data.partners.unshift(partner)
+      data.settings.requiredDocuments.forEach((type, index) => {
+        data.documents.push({
+          id: `DOC-${partnerId.slice(-4)}-${index + 1}`,
+          partnerId,
+          type,
+          submittedAt: null,
+          status: 'Missing',
+          expiresAt: null,
+          reviewer: null,
+          rejectionReason: null,
+          history: [],
+          demoRecord: true,
+        })
+      })
+      partnerHistory(data, partnerId, 'Partner created', `Partner record created by ${data.user.name} from the admin console. The partner starts offline with mandatory documents missing.${note ? ` Note: ${note}` : ''}`, null, at)
+      audit(data, 'Partner created', 'Partner', partnerId, 'Not in the directory', `${partnerId} · ${name}`, note || `Partner record created by ${data.user.name} with mandatory documents missing.`, at)
+      notify(data, 'Verification Required', 'New partner needs KYC verification', `${name} (${partnerId}) was added by ${data.user.name}. Mandatory documents are missing and the partner is offline.`, `/admin/partners/${partnerId}`, partnerId, at)
+      return { message: `${name} created as ${partnerId}. The partner is offline until the mandatory documents are verified.` }
     }
     case 'partner.restrict': {
       const partner = findPartner(data, action.partnerId)

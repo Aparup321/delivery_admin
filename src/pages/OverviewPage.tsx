@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import type { Delivery, OperationsState } from '../domain/model'
-import { getPartnerEligibility } from '../domain/operations'
+import { buildKycQueue } from '../domain/kyc'
 import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/serviceAreas'
 import { MapPreview, type MapPoint } from '../components/MapPreview'
 import { Button, Icon, Panel, PanelHeading, relativeTime } from '../components/ui'
@@ -74,10 +74,7 @@ export function OverviewPage({ data, open }: Props) {
   const activeOffers = data.offers.filter((offer) => offer.status === 'Awaiting Response')
   const expiringOffers = activeOffers.filter((offer) => new Date(offer.expiresAt).getTime() - currentTime < 10 * 60_000)
   const approaching = data.deliveries.filter((delivery) => !['Completed', 'Cancelled', 'Delayed'].includes(delivery.status) && new Date(delivery.scheduledEnd).getTime() > currentTime && new Date(delivery.scheduledEnd).getTime() - currentTime < 60 * 60_000)
-  const incompletePartners = data.partners.filter((partner) => {
-    const record = data.deliveries.find((delivery) => delivery.status === 'Unassigned') ?? data.deliveries[0]
-    return record && !getPartnerEligibility(data, partner, record).eligible && data.documents.some((document) => document.partnerId === partner.id && document.status !== 'Verified')
-  })
+  const pendingKyc = buildKycQueue(data).filter((item) => item.status === 'Submitted').length
   const mapRoute = useMemo(() => {
     if (liveDelivery) {
       const points: MapPoint[] = [
@@ -207,8 +204,8 @@ export function OverviewPage({ data, open }: Props) {
           {unassigned > 0 && <button className="attention-row" onClick={() => open('/admin/deliveries?status=Unassigned')}><span className="attention-icon attention-orange"><Icon name="user" size={15} /></span><span><b>{unassigned} unassigned deliver{unassigned === 1 ? 'y' : 'ies'}</b><small>Find an eligible partner</small></span><Icon name="chevron" size={15} /></button>}
           {expiringOffers.length > 0 && <button className="attention-row" onClick={() => open(`/admin/deliveries/${expiringOffers[0].deliveryId}`)}><span className="attention-icon attention-orange"><Icon name="clock" size={15} /></span><span><b>{expiringOffers.length} offer{expiringOffers.length === 1 ? '' : 's'} expiring soon</b><small>Simulated offer response window</small></span><Icon name="chevron" size={15} /></button>}
           {approaching.length > 0 && <button className="attention-row" onClick={() => open(`/admin/deliveries/${approaching[0].id}`)}><span className="attention-icon attention-blue"><Icon name="calendar" size={15} /></span><span><b>{approaching.length} deadline{approaching.length === 1 ? '' : 's'} approaching</b><small>Scheduled end is within one hour</small></span><Icon name="chevron" size={15} /></button>}
-          {incompletePartners.length > 0 && <button className="attention-row" onClick={() => open('/admin/partners?view=kyc')}><span className="attention-icon attention-purple"><Icon name="file" size={15} /></span><span><b>{incompletePartners.length} partner{incompletePartners.length === 1 ? '' : 's'} need verification</b><small>Open KYC review queue</small></span><Icon name="chevron" size={15} /></button>}
-          {!delayed && !unassigned && !expiringOffers.length && !approaching.length && !incompletePartners.length && <p className="attention-clear"><Icon name="check-circle" size={16} />No attention items right now.</p>}
+          {pendingKyc > 0 && <button className="attention-row" onClick={() => open('/admin/kyc')}><span className="attention-icon attention-purple"><Icon name="file" size={15} /></span><span><b>{pendingKyc} KYC application{pendingKyc === 1 ? '' : 's'} need review</b><small>Approve or reject onboarding applications</small></span><Icon name="chevron" size={15} /></button>}
+          {!delayed && !unassigned && !expiringOffers.length && !approaching.length && !pendingKyc && <p className="attention-clear"><Icon name="check-circle" size={16} />No attention items right now.</p>}
         </div>
       </Panel>
     </div>

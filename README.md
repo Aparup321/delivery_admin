@@ -48,10 +48,11 @@ npm run build
 - `/admin/deliveries` — searchable, filterable, sortable delivery queue, pagination, selection, and demo delivery creation.
 - `/admin/deliveries/:id` — milestones, delay/cancellation actions, assignment and offer history.
 - `/admin/deliveries/:id/assign` — eligibility-based partner assignment and simulated partner offers.
-- `/admin/partners` — partner directory and profile, status controls, delivery history, and document records.
-- `/admin/partners?view=kyc` — merged onboarding-application and KYC document review queue with approve/reject decisions, recorded reasons, filters, and direct review links.
+- `/admin/partners` — partner directory and profile, verification, delivery history, activity, and suspend/restore controls.
+- `/admin/partners?view=new` — create a new partner directory record; mandatory KYC documents start missing.
 - `/admin/partners?view=activity` — partner activity history with administrator suspension and reinstatement controls.
-- `/admin/partners?view=app` — delivery_app partner records synced from Firestore, with record linking and live application/account actions.
+- `/admin/partners?view=app` — delivery_app partner records synced from Firestore, with record linking and live account suspend/restore actions.
+- `/admin/kyc` — unified onboarding KYC queue for admin applications and synced delivery_app applications, with approve/reject decisions, required rejection reasons, filters, and resubmission handling.
 - `/admin/settings?tab=partner-app` — Firebase administrator sign-in, Firestore or REST connection, connection test, and partner data sync.
 - `/admin/notifications` — event-driven notifications with read state and record navigation.
 - `/admin/audit-logs` — searchable, filterable, append-only-in-UI activity history and CSV export.
@@ -93,10 +94,11 @@ Both apps share one Firebase project. delivery_admin talks to Firestore over RES
 ### Link and act on a delivery_app account
 
 - After a sync, a partner app record is linked automatically when its name matches exactly one admin partner name. Otherwise open the record and choose **Link to an admin partner**.
-- **Approve**/**Reject** on a synced application writes `applicationStatus`, `status`, `adminReview`, and timestamps to `partners/{uid}`. Rejection requires a reason and appears in the partner app.
-- A delivery_app application that has no local admin record can be reviewed directly from **Partners → Partner app**. Approval creates the admin partner record and links it.
-- **Suspend** sets `status` to `paused` with `adminSuspension`; **Restore** sets it back to `active`. The partner app reacts immediately through its Firestore listener and blocks going online while paused.
+- Onboarding applications appear in **KYC Review**, including applications submitted from delivery_app. **Approve**/**Reject** writes `applicationStatus`, `status`, `adminReview`, and timestamps to `partners/{uid}`. Rejection requires a reason and appears in the partner app.
+- A delivery_app application with no local admin record can be reviewed from **KYC Review**. Approval creates the admin partner record and links it. If delivery_app resubmits after a rejection, the application returns to the review queue.
+- **Suspend** sets `status` to `paused` with `adminSuspension`; **Restore** sets it back to `active`. Use the partner profile or **Partners → Partner app** to manage the live account. The partner app reacts immediately through its Firestore listener and blocks going online while paused.
 - Every write is queued from the audit entry, so a new decision is not lost if several are made quickly. Failed writes are kept and can be retried from **Partners → Partner app**; signing the Firebase administrator back in also retries them. The result appears in **Audit logs** and in **Settings → Partner app** as the last delivery_app error or success.
+- Administrators can create a new partner from **Partners → Add partner**. The record starts offline with every mandatory KYC document marked missing and must complete onboarding and document review before assignment.
 
 If a write fails with HTTP 403, sign the Firebase administrator in again and confirm the UID in `delivery_app/firestore.rules`. If the browser reports HTTP 403 only while reading, also check the API key’s HTTP-referrer restrictions for the console origin.
 

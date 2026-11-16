@@ -39,6 +39,7 @@ export type AuditEventType =
   | 'Assignment offer created'
   | 'Assignment offer rejected'
   | 'Assignment offer timed out'
+  | 'Partner created'
   | 'Partner restricted'
   | 'Partner suspended'
   | 'Partner availability changed'

@@ -4,7 +4,8 @@ export const DEMO_ADMIN_EMAIL = 'admin@picdrop.demo'
 
 export const DEMO_ADMIN_PERMISSIONS = [
   'Manage deliveries, assignments, and delivery milestones',
-  'Review partner applications, eligibility, restrictions, and KYC records',
+  'Create partner records, approve or reject onboarding KYC applications, and verify documents',
+  'Suspend, restrict, restore, and review partner activity and eligibility',
   'Connect the delivery_app partner backend and sync partner records',
   'Configure delivery operations and notification settings',
   'Review and export the administrative audit history',

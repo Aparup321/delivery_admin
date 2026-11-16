@@ -9,6 +9,7 @@ import { DeliveryDetailPage } from './pages/DeliveryDetailPage'
 import { AssignmentPage } from './pages/AssignmentPage'
 import { AdminLoginPage } from './pages/LoginPage'
 import { PartnerProfilePage, PartnersPage } from './pages/PartnersPage'
+import { KycReviewPage } from './pages/KycReviewPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -64,7 +65,9 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
   const [accountOpen, setAccountOpen] = useState(false)
   const [search, setSearch] = useState('')
   const [toast, setToast] = useState<{ message: string; kind: string } | null>(null)
-  const routePath = route.pathname === '/admin/applications' ? '/admin/kyc' : route.pathname
+  const legacyKycRoute = route.pathname === '/admin/applications'
+    || (route.pathname === '/admin/partners' && ['kyc', 'applications'].includes(new URLSearchParams(route.search).get('view') ?? ''))
+  const routePath = legacyKycRoute ? '/admin/kyc' : route.pathname
   const activeLabel = routeLabel(routePath)
   const unreadCount = frame.data.notifications.filter((notification) => !notification.readAt).length
 
@@ -139,7 +142,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
   }
 
   const query = new URLSearchParams(route.search)
-  const partnersView = query.get('view') === 'applications' ? 'kyc' : query.get('view')
+  const partnersView = query.get('view')
   const deliveryMatch = route.pathname.match(/^\/admin\/deliveries\/([^/]+)(?:\/(assign))?$/)
   const partnerMatch = route.pathname.match(/^\/admin\/partners\/([^/]+)$/)
   const isAssignmentRoute = Boolean(deliveryMatch?.[2])
@@ -149,20 +152,20 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
 
   const pageTitle = activeLabel === 'Overview' ? 'Operations Overview'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? `Assign partner · ${selectedDelivery?.id ?? ''}` : isDeliveryDetail ? `Delivery ${selectedDelivery?.id ?? ''}` : 'Deliveries'
-      : activeLabel === 'Partners' ? partnerMatch ? `Partner · ${selectedPartnerId}` : partnersView === 'kyc' ? 'KYC review' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : 'Delivery partners'
-        : activeLabel === 'KYC Review' ? 'KYC review'
+      : activeLabel === 'Partners' ? partnerMatch ? `Partner · ${selectedPartnerId}` : partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : 'Delivery partners'
+        : activeLabel === 'KYC Review' ? 'KYC Review'
           : activeLabel
   const pageSubtitle = activeLabel === 'Overview' ? 'A clear view of the delivery queue, partner availability, and operational exceptions.'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? '' : isDeliveryDetail ? 'Operational record, assignment history, and delivery milestones.' : 'Search, filter, assign, and review demo delivery jobs.'
-      : activeLabel === 'Partners' ? partnerMatch ? 'Verification, eligibility, availability, and delivery history.' : partnersView === 'kyc' ? 'Review onboarding applications and verify partner KYC documents in one queue.' : partnersView === 'app' ? 'Read-only delivery_app records synced from the partner backend.' : partnersView === 'activity' ? 'Audit partner activity and suspend a partner when required.' : 'Review delivery-partner availability, verification, and assignment eligibility.'
-        : activeLabel === 'KYC Review' ? 'Review onboarding applications and verify partner KYC documents in one queue.'
+      : activeLabel === 'Partners' ? partnerMatch ? 'Verification, eligibility, availability, and delivery history.' : partnersView === 'new' ? 'Create a partner directory record. Mandatory KYC documents are queued as missing.' : partnersView === 'app' ? 'Read-only delivery_app records synced from the partner backend.' : partnersView === 'activity' ? 'Audit partner activity and suspend or restore a partner when required.' : 'Review delivery-partner availability, verification, and assignment eligibility.'
+        : activeLabel === 'KYC Review' ? 'Review onboarding KYC applications from this console and delivery_app. Administrator approval only.'
           : activeLabel === 'Notifications' ? 'Event-driven operational notifications from local demo workflows.'
             : activeLabel === 'Audit Logs' ? 'Append-only history of administrative operations in this demo.'
               : 'Local demo configurations and simulated administrative access.'
 
   const routeKnown = ['/admin', '/admin/deliveries', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
   const showHeading = routeKnown && !isAssignmentRoute
-  const breadcrumbs = isDeliveryDetail && selectedDelivery ? [{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: selectedDelivery.id }] : partnerMatch ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: selectedPartnerId }] : activeLabel === 'Overview' ? undefined : [{ label: 'Overview', path: '/admin' }, { label: partnersView === 'kyc' ? 'KYC review' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : activeLabel }]
+  const breadcrumbs = isDeliveryDetail && selectedDelivery ? [{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: selectedDelivery.id }] : partnerMatch ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: selectedPartnerId }] : activeLabel === 'Overview' ? undefined : [{ label: 'Overview', path: '/admin' }, { label: activeLabel === 'Partners' ? partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : activeLabel : activeLabel }]
 
   function signOut() {
     clearAdminSession()
@@ -208,7 +211,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
         {isAssignmentRoute && selectedDelivery && <AssignmentPage data={frame.data} delivery={selectedDelivery} open={open} />}
         {deliveryMatch && !selectedDelivery && <div className="route-not-found"><Icon name="alert" size={22} /><h2>Delivery not found</h2><p>The requested record is not available in local demo data.</p><Button onClick={() => open('/admin/deliveries')}>Back to deliveries</Button></div>}
         {routePath === '/admin/partners' && <PartnersPage data={frame.data} open={open} viewFromUrl={partnersView ?? undefined} />}
-        {routePath === '/admin/kyc' && <PartnersPage data={frame.data} open={open} viewFromUrl="kyc" />}
+        {routePath === '/admin/kyc' && <KycReviewPage data={frame.data} open={open} />}
         {partnerMatch && <PartnerProfilePage data={frame.data} open={open} partnerId={selectedPartnerId} initialDocumentId={query.get('document')} />}
         {routePath === '/admin/notifications' && <NotificationsPage data={frame.data} open={open} />}
         {routePath === '/admin/audit-logs' && <AuditLogsPage data={frame.data} />}

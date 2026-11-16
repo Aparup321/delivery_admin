@@ -12,6 +12,14 @@ export function isDocumentCurrent(document: PartnerDocument, now = Date.now()) {
   return document.status === 'Verified' && (!document.expiresAt || new Date(document.expiresAt).getTime() > now)
 }
 
+/** Next free admin partner ID in the DP-0000 series. */
+export function nextPartnerId(state: OperationsState) {
+  const numbers = state.partners
+    .map((partner) => Number(partner.id.replace(/\D/g, '')))
+    .filter(Number.isFinite)
+  return `DP-${String(Math.max(0, ...numbers) + 1).padStart(4, '0')}`
+}
+
 export function getPartnerEligibility(state: OperationsState, partner: Partner, delivery: Delivery, now = Date.now()): EligibilityResult {
   const reasons: string[] = []
   const documents = state.documents.filter((document) => document.partnerId === partner.id)

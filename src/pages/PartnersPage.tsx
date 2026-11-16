@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import type { DocumentStatus, OperationsState, Partner, PartnerAppRecord, PartnerApplication, PartnerDocument } from '../domain/model'
+import type { DocumentStatus, OperationsState, Partner, PartnerAppRecord, PartnerDocument } from '../domain/model'
 import { getActiveAssignment, getPartnerEligibility, isDocumentCurrent } from '../domain/operations'
 import { Button, ConfirmDialog, Dialog, EmptyState, formatDate, Icon, initials, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 import { partnerAppEndpoint } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
-import { ApplicationReviewDialog, ApplicationsPage } from './ApplicationsPage'
+import { roleCan } from '../state/operationsReducer'
+import { PartnerCreatePage } from './PartnerCreatePage'
+
+type PartnersSection = 'directory' | 'activity' | 'new' | 'app'
 
 interface DirectoryProps {
   data: OperationsState
@@ -26,64 +29,8 @@ function partnerVerification(data: OperationsState, partner: Partner) {
   return 'Incomplete'
 }
 
-function PartnerSectionTabs({ active, data, open }: { active: 'directory' | 'app' | 'activity' | 'kyc'; data: OperationsState; open: (path: string) => void }) {
-  const reviewCount = data.documents.filter((document) => displayedDocumentStatus(document) !== 'Verified').length
-  const pendingApplications = data.applications.filter((application) => application.status === 'Submitted').length
-  const attentionCount = reviewCount + pendingApplications
-  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>Partner directory<span>{data.partners.length}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'kyc' ? 'active' : ''} onClick={() => open('/admin/kyc')}>KYC review<span className={attentionCount ? 'tab-attention-count' : ''}>{attentionCount}</span></button></div>
-}
-
-function KycReviewPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
-  const { frame } = useOperations()
-  const [search, setSearch] = useState('')
-  const [status, setStatus] = useState('Needs review')
-  const [documentType, setDocumentType] = useState('All')
-  const [page, setPage] = useState(1)
-  const [documentId, setDocumentId] = useState<string | null>(null)
-  const pageSize = 10
-  const filtered = useMemo(() => data.documents.filter((document) => {
-    const partner = data.partners.find((item) => item.id === document.partnerId)
-    const currentStatus = displayedDocumentStatus(document)
-    const query = search.trim().toLowerCase()
-    return (status === 'All' || (status === 'Needs review' ? currentStatus !== 'Verified' : currentStatus === status))
-      && (documentType === 'All' || document.type === documentType)
-      && (!query || `${document.id} ${document.partnerId} ${partner?.name ?? ''} ${document.type} ${document.rejectionReason ?? ''}`.toLowerCase().includes(query))
-  }).sort((a, b) => {
-    const priority = (item: PartnerDocument) => ['Missing', 'Expired', 'Rejected', 'Submitted', 'Under Review', 'Verified'].indexOf(displayedDocumentStatus(item))
-    const difference = priority(a) - priority(b)
-    return difference || (a.expiresAt ?? '9999').localeCompare(b.expiresAt ?? '9999')
-  }), [data.documents, data.partners, search, status, documentType])
-  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
-  const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
-  const reviewDocument = documentId ? data.documents.find((item) => item.id === documentId) : undefined
-  const canReview = ['Admin', 'Operations Manager'].includes(frame.data.user.role)
-
-  return <>
-    <Panel className="records-panel kyc-queue-panel">
-    <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>document records</span><span className="dot-separator" />Review from one queue</div><span className="demo-caption">Illustrative KYC records · no real files or identity checks</span></div>
-    <div className="filter-toolbar kyc-filter-toolbar"><label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search partner, document, or reason" aria-label="Search KYC records" /></label><label className="filter-control"><span>Review status</span><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1) }}><option>Needs review</option><option>All</option><option>Missing</option><option>Submitted</option><option>Under Review</option><option>Rejected</option><option>Expired</option><option>Verified</option></select></label><label className="filter-control"><span>Document type</span><select value={documentType} onChange={(event) => { setDocumentType(event.target.value); setPage(1) }}><option>All</option>{[...new Set(data.documents.map((item) => item.type))].map((item) => <option key={item}>{item}</option>)}</select></label></div>
-    <div className="table-scroll"><table className="data-table kyc-table"><thead><tr><th>Partner</th><th>Document</th><th>Status</th><th>Submitted</th><th>Expiry</th><th>Reviewer / issue</th><th>Requirement</th><th>Actions</th></tr></thead><tbody>
-      {visible.map((document) => {
-        const partner = data.partners.find((item) => item.id === document.partnerId)
-        const currentStatus = displayedDocumentStatus(document)
-        const mandatory = data.settings.requiredDocuments.includes(document.type)
-        return <tr key={document.id}>
-          <td><button className="partner-cell partner-profile-button" onClick={() => open(`/admin/partners/${document.partnerId}`)}><span className="mini-avatar">{initials(partner?.name ?? document.partnerId)}</span><span><b>{partner?.name ?? 'Unknown partner'}</b><small>{document.partnerId}</small></span></button></td>
-          <td><span className="kyc-document-name"><strong>{document.type}</strong><small>{document.id}</small></span></td>
-          <td><StatusBadge status={currentStatus} /></td>
-          <td>{document.submittedAt ? formatDate(document.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' }) : <span className="muted-text">No submission</span>}</td>
-          <td>{document.expiresAt ? formatDate(document.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}</td>
-          <td><span className={document.rejectionReason ? 'kyc-issue-text' : 'kyc-reviewer-text'}>{document.rejectionReason ?? document.reviewer ?? (currentStatus === 'Missing' ? 'No record submitted' : 'Awaiting reviewer')}</span></td>
-          <td>{mandatory ? <span className="required-tag">MANDATORY</span> : <span className="muted-text">Optional</span>}</td>
-          <td><Button size="small" variant={canReview ? 'secondary' : 'quiet'} disabled={!canReview} title={canReview ? 'Review this KYC document' : 'Administrator access required'} onClick={() => setDocumentId(document.id)}>{canReview ? 'Review' : 'View record'}</Button></td>
-        </tr>
-      })}
-    </tbody></table>{visible.length === 0 && <EmptyState title="No KYC records match" detail="Adjust status or document type filters. Verified records are excluded by the default Needs review filter." />}</div>
-    <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
-    <div className="notification-history-note"><Icon name="shield" size={14} />Review actions update the partner document, eligibility, notifications, verification history, and audit log together.</div>
-    </Panel>
-    {reviewDocument && <DocumentDialog key={reviewDocument.id} document={reviewDocument} onClose={() => setDocumentId(null)} />}
-  </>
+function PartnerSectionTabs({ active, data, open }: { active: PartnersSection; data: OperationsState; open: (path: string) => void }) {
+  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>Partner directory<span>{data.partners.length}</span></button><button className={active === 'new' ? 'active' : ''} onClick={() => open('/admin/partners?view=new')}>Add partner</button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
 }
 
 function appStatusLabel(value: string | null) {
@@ -101,48 +48,8 @@ function applicationForRecord(data: OperationsState, record: PartnerAppRecord, p
     ?? (partner ? data.applications.find((application) => application.partnerId === partner.id) : undefined)
 }
 
-function LiveApplicationReviewDialog({ record, application, linkedPartner, onClose }: { record: PartnerAppRecord; application: PartnerApplication | undefined; linkedPartner: Partner | undefined; onClose: () => void }) {
-  const { frame, dispatch } = useOperations()
-  const [decision, setDecision] = useState<'Approved' | 'Rejected'>('Approved')
-  const [note, setNote] = useState('')
-  const isRejected = decision === 'Rejected'
-  const isAdmin = frame.data.user.role === 'Admin'
-
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!isAdmin) return
-    dispatch({ type: 'partnerApp.review', recordId: record.id, decision, note })
-    onClose()
-  }
-
-  return <Dialog title={`Review ${record.name}`} eyebrow="DELIVERY_APP APPLICATION" onClose={onClose}>
-    <form className="dialog-form" onSubmit={submit}>
-      <p className="dialog-description">This onboarding application was submitted from delivery_app.{' '}
-        {linkedPartner
-          ? `The decision is recorded against ${linkedPartner.id} and written to partners/${record.id}.`
-          : 'Approving creates a matching admin partner record and links it to this delivery_app account.'}
-        {application?.status === 'Rejected' ? ' It was rejected before and has been resubmitted.' : ''}
-      </p>
-      <div className="application-review-summary">
-        <div><span>Applicant</span><strong>{record.name}</strong></div>
-        <div><span>Contact</span><strong>{record.phone ?? '—'}</strong></div>
-        <div><span>Vehicle</span><strong>{record.vehicle ?? '—'}</strong></div>
-        <div><span>Service areas</span><strong>{record.serviceAreas.join(', ') || '—'}</strong></div>
-        <div><span>Submitted</span><strong>{formatDate(record.updatedAt ?? record.syncedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></div>
-        <div><span>delivery_app UID</span><strong>{record.id}</strong></div>
-      </div>
-      <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
-      <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
-      <p className="dialog-description">{isRejected ? 'The reason appears in delivery_app on the partner’s application status screen.' : 'Approval activates the delivery_app account so the partner can go online.'}</p>
-      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
-    </form>
-  </Dialog>
-}
-
 function PartnerAppRecordDialog({ record, data, onClose, open }: { record: PartnerAppRecord; data: OperationsState; onClose: () => void; open: (path: string) => void }) {
   const { frame, dispatch } = useOperations()
-  const [review, setReview] = useState<'Approved' | 'Rejected' | null>(null)
-  const [reviewLive, setReviewLive] = useState(false)
   const [accountDialog, setAccountDialog] = useState<'suspend' | 'restore' | null>(null)
   const [linkPartnerId, setLinkPartnerId] = useState('')
   const canManage = frame.data.user.role === 'Admin'
@@ -152,18 +59,8 @@ function PartnerAppRecordDialog({ record, data, onClose, open }: { record: Partn
   const linkedByUid = data.partners.find((partner) => partner.partnerAppUid === record.id)
   const linkablePartners = data.partners.filter((partner) => !partner.partnerAppUid || partner.partnerAppUid === record.id).sort((a, b) => a.id.localeCompare(b.id))
   const recordStatus = (record.applicationStatus ?? '').toLowerCase()
-  const canReviewLive = (!application || application.status === 'Rejected')
-    && (recordStatus === 'submitted' || recordStatus === 'under_review')
   const firebaseSignedIn = hasFirebaseAdminSession()
   const accountActionable = application?.status === 'Approved' || recordStatus === 'approved'
-
-  if (review && application && application.status === 'Submitted') {
-    return <ApplicationReviewDialog application={application} initialDecision={review} onClose={() => { setReview(null); onClose() }} />
-  }
-
-  if (reviewLive) {
-    return <LiveApplicationReviewDialog record={record} application={application} linkedPartner={linkedByUid} onClose={() => { setReviewLive(false); onClose() }} />
-  }
 
   if (accountDialog === 'suspend' && linkedPartner) {
     return <ConfirmDialog title={`Suspend ${linkedPartner.name}?`} detail="This suspends the same account in delivery_app as soon as the write-through completes. The partner is set offline and cannot receive requests. Existing delivery history is retained." reasonLabel="Suspension reason" confirmLabel="Suspend partner" danger onCancel={() => setAccountDialog(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restrict', partnerId: linkedPartner.id, status: 'Suspended', reason }); setAccountDialog(null) }} />
@@ -190,16 +87,11 @@ function PartnerAppRecordDialog({ record, data, onClose, open }: { record: Partn
       <div className="app-record-actions">
         <div>
           <strong>Live delivery_app account</strong>
-          <span>{linkedByUid || canReviewLive
-            ? `Administrator actions write to this partner document when a Firebase administrator is signed in under Settings → Partner app.${firebaseSignedIn ? '' : ' No Firebase administrator is signed in yet.'}`
-            : 'Link this record to an admin partner before suspending or reinstating the delivery_app account.'}</span>
+          <span>{linkedByUid
+            ? `Administrator account actions write to this partner document when a Firebase administrator is signed in under Settings → Partner app.${firebaseSignedIn ? '' : ' No Firebase administrator is signed in yet.'}`
+            : 'Link this record to an admin partner before suspending or reinstating the delivery_app account. KYC approval is handled from KYC Review.'}</span>
         </div>
         <div className="row-action-group">
-          {application?.status === 'Submitted' && <>
-            <Button size="small" variant="primary" disabled={!canManage} onClick={() => setReview('Approved')}>Approve application</Button>
-            <Button size="small" variant="danger" disabled={!canManage} onClick={() => setReview('Rejected')}>Reject application</Button>
-          </>}
-          {canReviewLive && <Button size="small" variant="primary" disabled={!canManage} onClick={() => setReviewLive(true)}>Review application</Button>}
           {linkedByUid && accountActionable && (linkedByUid.availability === 'Suspended' || linkedByUid.availability === 'Restricted'
             ? <Button size="small" variant="primary" disabled={!canManage} onClick={() => setAccountDialog('restore')}>Restore account</Button>
             : <Button size="small" variant="danger" disabled={!canManage} onClick={() => setAccountDialog('suspend')}>Suspend account</Button>)}
@@ -269,7 +161,7 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
           </tbody></table>{visible.length === 0 && <EmptyState title="No matching partner app records" detail="Adjust the search to find a synced delivery_app record." />}</div>
           <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
         </>}
-        <div className="notification-history-note"><Icon name="shield" size={14} />Synced records are a cache. Link a record to an admin partner, then approve, reject, suspend, or restore from this view; the change is written to delivery_app's Firestore document.</div>
+        <div className="notification-history-note"><Icon name="shield" size={14} />Synced records are a cache. Link a record to an admin partner, then suspend or restore the live account from this view. Onboarding applications are approved or rejected from KYC Review.</div>
       </>}
     </Panel>
     {record && <PartnerAppRecordDialog record={record} data={data} onClose={() => setRecordId(null)} open={open} />}
@@ -322,31 +214,8 @@ function PartnerActivityPage({ data, open }: { data: OperationsState; open: (pat
   </>
 }
 
-function VerificationPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
-  const pendingApplications = data.applications.filter((application) => application.status === 'Submitted').length
-  const approvedApplications = data.applications.filter((application) => application.status === 'Approved').length
-  const pendingDocuments = data.documents.filter((document) => displayedDocumentStatus(document) !== 'Verified').length
-  const flaggedDocuments = data.documents.filter((document) => ['Expired', 'Rejected'].includes(displayedDocumentStatus(document))).length
-
-  return <div className="page-stack verification-page">
-    <Panel className="verification-overview">
-      <div className="verification-overview-copy"><span className="eyebrow">PARTNER VERIFICATION</span><h2>KYC review workspace</h2><p>Approve partner KYC applications and verify submitted documents from one queue.</p></div>
-      <div className="verification-stat-grid">
-        <div><span className="kyc-summary-icon kyc-icon-orange"><Icon name="clock" size={16} /></span><span><strong>{pendingApplications}</strong><small>Applications awaiting</small></span></div>
-        <div><span className="kyc-summary-icon kyc-icon-green"><Icon name="check-circle" size={16} /></span><span><strong>{approvedApplications}</strong><small>Applications approved</small></span></div>
-        <div><span className="kyc-summary-icon kyc-icon-purple"><Icon name="file" size={16} /></span><span><strong>{pendingDocuments}</strong><small>Documents to review</small></span></div>
-        <div><span className="kyc-summary-icon kyc-icon-red"><Icon name="alert" size={16} /></span><span><strong>{flaggedDocuments}</strong><small>Expired or rejected</small></span></div>
-      </div>
-    </Panel>
-    <div className="verification-section"><div><span>ONBOARDING</span><strong>Partner KYC applications</strong><small>Approve to onboard, or reject with a recorded reason.</small></div><span className="verification-section-badge">{pendingApplications} awaiting</span></div>
-    <ApplicationsPage data={data} open={open} />
-    <div className="verification-section"><div><span>DOCUMENT CHECKS</span><strong>Partner KYC documents</strong><small>Review identity, driving licence, and vehicle records without leaving this queue.</small></div><span className="verification-section-badge">{pendingDocuments} to review</span></div>
-    <KycReviewPage data={data} open={open} />
-  </div>
-}
-
 export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
-  const [view, setView] = useState<'directory' | 'app' | 'activity' | 'kyc'>(viewFromUrl === 'kyc' || viewFromUrl === 'applications' ? 'kyc' : viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : 'directory')
+  const { frame, dispatch } = useOperations()
   const [search, setSearch] = useState('')
   const [availability, setAvailability] = useState('All')
   const [vehicle, setVehicle] = useState('All')
@@ -354,7 +223,11 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   const [verification, setVerification] = useState('All')
   const [eligibility, setEligibility] = useState('All')
   const [page, setPage] = useState(1)
+  const [suspendTarget, setSuspendTarget] = useState<Partner | null>(null)
+  const [restoreTarget, setRestoreTarget] = useState<Partner | null>(null)
   const pageSize = 8
+  const canManage = roleCan(frame.data.user.role, 'partner-management')
+  const view: PartnersSection = viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : viewFromUrl === 'new' ? 'new' : 'directory'
   const areas = [...new Set(data.partners.flatMap((partner) => partner.serviceAreas))].sort()
   const deliveryForEligibility = data.deliveries.find((item) => item.status === 'Unassigned' || item.status === 'Pending') ?? data.deliveries.find((item) => !['Completed', 'Cancelled'].includes(item.status))
 
@@ -372,16 +245,14 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
 
-  useEffect(() => { setView(viewFromUrl === 'kyc' || viewFromUrl === 'applications' ? 'kyc' : viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : 'directory') }, [viewFromUrl])
-
-  if (view === 'kyc') return <div className="page-stack"><PartnerSectionTabs active="kyc" data={data} open={open} /><VerificationPage data={data} open={open} /></div>
+  if (view === 'new') return <div className="page-stack"><PartnerSectionTabs active="new" data={data} open={open} /><PartnerCreatePage data={data} open={open} /></div>
   if (view === 'app') return <div className="page-stack"><PartnerSectionTabs active="app" data={data} open={open} /><PartnerAppDataPage data={data} open={open} /></div>
   if (view === 'activity') return <div className="page-stack"><PartnerSectionTabs active="activity" data={data} open={open} /><PartnerActivityPage data={data} open={open} /></div>
 
   return <div className="page-stack">
     <PartnerSectionTabs active="directory" data={data} open={open} />
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery partners</span><span className="dot-separator" />{data.partners.filter((item) => item.availability === 'Available').length} available now</div><span className="demo-caption">Eligibility is contextual to the current demo queue</span></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery partners</span><span className="dot-separator" />{data.partners.filter((item) => item.availability === 'Available').length} available now</div><div className="row-action-group"><span className="demo-caption">Eligibility is contextual to the current demo queue</span><Button size="small" variant="primary" onClick={() => open('/admin/partners?view=new')}><Icon name="plus" size={14} />Add partner</Button></div></div>
       <div className="filter-toolbar partner-filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search name, partner ID, vehicle, area" aria-label="Search delivery partners" /></label>
         <label className="filter-control"><span>Availability</span><select value={availability} onChange={(event) => { setAvailability(event.target.value); setPage(1) }}><option>All</option><option>Available</option><option>On Delivery</option><option>Offline</option><option>Restricted</option><option>Suspended</option></select></label>
@@ -390,7 +261,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
         <label className="filter-control"><span>Verification</span><select value={verification} onChange={(event) => { setVerification(event.target.value); setPage(1) }}><option>All</option><option>Verified</option><option>Incomplete</option><option>Under Review</option><option>Attention Required</option></select></label>
         <label className="filter-control"><span>Eligibility</span><select value={eligibility} onChange={(event) => { setEligibility(event.target.value); setPage(1) }}><option>All</option><option>Eligible</option><option>Ineligible</option></select></label>
       </div>
-      <div className="table-scroll"><table className="data-table partner-table"><thead><tr><th>Partner</th><th>Vehicle</th><th>Service area</th><th>Verification</th><th>Availability</th><th>Current assignment</th><th>Eligibility</th><th /></tr></thead><tbody>
+      <div className="table-scroll"><table className="data-table partner-table"><thead><tr><th>Partner</th><th>Vehicle</th><th>Service area</th><th>Verification</th><th>Availability</th><th>Current assignment</th><th>Eligibility</th><th>Actions</th></tr></thead><tbody>
         {visible.map((partner) => {
           const active = getActiveAssignment(data, partner.id)
           const assignedDelivery = active ? data.deliveries.find((delivery) => delivery.id === active.deliveryId) : undefined
@@ -404,13 +275,17 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
             <td><StatusBadge status={partner.availability} /></td>
             <td>{assignedDelivery ? <button className="table-record-link" onClick={() => open(`/admin/deliveries/${assignedDelivery.id}`)}>{assignedDelivery.id}<small>{assignedDelivery.status}</small></button> : <span className="muted-text">None</span>}</td>
             <td><span className="eligibility-cell" title={eligibilityResult.reasons.join('\n')}><i className={eligibilityResult.eligible ? 'eligibility-ok' : 'eligibility-no'} />{eligibilityResult.eligible ? 'Eligible' : eligibilityResult.reasons[0] ?? 'Not eligible'}</span></td>
-            <td><button className="row-open-button" onClick={() => open(`/admin/partners/${partner.id}`)} aria-label={`View ${partner.name} profile`}><Icon name="arrow" size={15} /></button></td>
+            <td><span className="row-action-group">{partner.availability === 'Suspended' || partner.availability === 'Restricted'
+              ? <Button size="small" variant="primary" disabled={!canManage} title={canManage ? `Restore ${partner.name}` : 'Partner management access required'} onClick={() => setRestoreTarget(partner)}>Restore</Button>
+              : <Button size="small" variant="danger" disabled={!canManage} title={canManage ? `Suspend ${partner.name}` : 'Partner management access required'} onClick={() => setSuspendTarget(partner)}>Suspend</Button>}<button className="row-open-button" onClick={() => open(`/admin/partners/${partner.id}`)} aria-label={`View ${partner.name} profile`}><Icon name="arrow" size={15} /></button></span></td>
           </tr>
         })}
       </tbody></table>{visible.length === 0 && <EmptyState title="No partners match these filters" detail="Adjust the filters to view partners in the demo directory." />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
     </Panel>
     <p className="overview-footnote"><Icon name="shield" size={14} />Contact details, registration details, and all verification documents are illustrative and masked. Off-duty locations are not collected or displayed.</p>
+    {suspendTarget && <ConfirmDialog title={`Suspend ${suspendTarget.name}?`} detail="Suspension blocks new assignments and is reflected in delivery_app immediately. Any active delivery is preserved and flagged for operations review." reasonLabel="Suspension reason" confirmLabel="Suspend partner" danger onCancel={() => setSuspendTarget(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restrict', partnerId: suspendTarget.id, status: 'Suspended', reason }); setSuspendTarget(null) }} />}
+    {restoreTarget && <ConfirmDialog title={`Restore ${restoreTarget.name}?`} detail="Reinstating removes the suspension and lets the partner receive new assignments again. Verification and any active delivery still affect eligibility." reasonLabel="Reinstatement reason" confirmLabel="Restore partner" onCancel={() => setRestoreTarget(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restore', partnerId: restoreTarget.id, reason }); setRestoreTarget(null) }} />}
   </div>
 }
 
