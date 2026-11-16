@@ -3,11 +3,15 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.6"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test tests/operations.test.ts"
+    "test": "node --experimental-strip-types --test tests/operations.test.ts",
+    "check": "npm run build && npm test"
   },
   "dependencies": {
     "react": "^18.3.1",

@@ -153,7 +153,7 @@ async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSi
       // The error response had no JSON body.
     }
     const authHint = response.status === 401 || response.status === 403
-      ? ' Sign in a Firebase administrator in Settings → Partner app, or verify that firestore.rules allows the admin UID.'
+      ? ' Sign in with a Firebase administrator account, and verify that firestore.rules allows that account UID.'
       : ''
     throw new PartnerAppRequestError(`Partner app request failed (HTTP ${response.status})${detail ? `: ${detail}` : '.'}${authHint}`, url)
   }

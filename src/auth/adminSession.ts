@@ -1,7 +1,11 @@
-import { DEMO_ADMIN_EMAIL, createDemoAdmin } from '../domain/admin.ts'
+import { demoModeEnabled, isAdminEmailAllowed } from '../config/firebase.ts'
+import { clearFirebaseAdminSession, readFirebaseAdminSession, type FirebaseAdminSession } from '../services/firebaseAuth.ts'
+import { clearPartnerAppToken } from '../services/partnerApp.ts'
 
-export const DEMO_ADMIN_PASSWORD = 'demo-admin'
-const SESSION_KEY = 'picdrop-hopngo-admin-session-v1'
+export const DEMO_LOGIN_EMAIL = 'admin@picdrop.demo'
+export const DEMO_OTP_CODE = '123456'
+
+const DEMO_SESSION_KEY = 'picdrop-demo-admin-session-v1'
 
 export interface AdminSession {
   userId: string
@@ -9,61 +13,96 @@ export interface AdminSession {
   email: string
   role: 'Admin'
   signedInAt: string
-  mode: 'Local demo'
+  mode: 'Firebase Authentication' | 'Demo access'
 }
 
-export function validateDemoAdminCredentials(email: string, password: string) {
-  return email.trim().toLowerCase() === DEMO_ADMIN_EMAIL && password === DEMO_ADMIN_PASSWORD
+function fallbackName(email: string) {
+  const localPart = email.split('@')[0]?.trim()
+  if (!localPart) return 'Operations Administrator'
+  return localPart.replace(/[._-]+/g, ' ').replace(/\b\w/g, (character) => character.toUpperCase())
 }
 
-export function createAdminSession(signedInAt = new Date().toISOString()): AdminSession {
-  const admin = createDemoAdmin()
+/** Maps the Firebase identity to the console's Administrator session. */
+export function createAdminSession(firebase: FirebaseAdminSession): AdminSession {
   return {
-    userId: admin.id,
-    name: admin.name,
-    email: admin.email,
+    userId: firebase.uid,
+    name: firebase.displayName?.trim() || fallbackName(firebase.email),
+    email: firebase.email,
     role: 'Admin',
-    signedInAt,
-    mode: 'Local demo',
+    signedInAt: firebase.signedInAt,
+    mode: 'Firebase Authentication',
   }
 }
 
-export function persistAdminSession(session: AdminSession) {
-  try {
-    window.sessionStorage.setItem(SESSION_KEY, JSON.stringify(session))
-    return true
-  } catch {
-    return false
+export function createDemoAdminSession(): AdminSession {
+  return {
+    userId: 'DEMO-OPS-01',
+    name: 'Demo Operations Manager',
+    email: DEMO_LOGIN_EMAIL,
+    role: 'Admin',
+    signedInAt: new Date().toISOString(),
+    mode: 'Demo access',
   }
 }
 
-export function readAdminSession(): AdminSession | null {
-  if (typeof window === 'undefined') return null
+export function readDemoAdminSession(): AdminSession | null {
   try {
-    const saved = window.sessionStorage.getItem(SESSION_KEY)
-    if (!saved) return null
-    const parsed: unknown = JSON.parse(saved)
-    if (!parsed || typeof parsed !== 'object') return null
-    const candidate = parsed as Partial<AdminSession>
-    if (candidate.role !== 'Admin' || candidate.email !== DEMO_ADMIN_EMAIL || !candidate.signedInAt) return null
+    const raw = window.sessionStorage.getItem(DEMO_SESSION_KEY)
+    if (!raw) return null
+    const value: unknown = JSON.parse(raw)
+    if (!value || typeof value !== 'object') return null
+    const candidate = value as Partial<AdminSession>
+    if (candidate.mode !== 'Demo access' || !candidate.userId || !candidate.email || !candidate.signedInAt) return null
     return {
-      userId: candidate.userId ?? 'ADM-OPS-01',
-      name: candidate.name ?? 'Operations Admin',
-      email: DEMO_ADMIN_EMAIL,
+      userId: candidate.userId,
+      name: candidate.name?.trim() || 'Demo Operations Manager',
+      email: candidate.email,
       role: 'Admin',
       signedInAt: candidate.signedInAt,
-      mode: 'Local demo',
+      mode: 'Demo access',
     }
   } catch {
     return null
   }
 }
 
-export function clearAdminSession() {
+export function storeDemoAdminSession(session: AdminSession = createDemoAdminSession()) {
   try {
-    window.sessionStorage.removeItem(SESSION_KEY)
-    return true
+    window.sessionStorage.setItem(DEMO_SESSION_KEY, JSON.stringify(session))
   } catch {
-    return false
+    // The demo still works for this page view when session storage is unavailable.
   }
+}
+
+export function clearDemoAdminSession() {
+  try {
+    window.sessionStorage.removeItem(DEMO_SESSION_KEY)
+  } catch {
+    // Nothing to clear when session storage is unavailable.
+  }
+}
+
+export function isDemoOtpValid(code: string) {
+  return code.trim() === DEMO_OTP_CODE
+}
+
+export function readAdminSession(): AdminSession | null {
+  if (demoModeEnabled) {
+    const demo = readDemoAdminSession()
+    if (demo) return demo
+  }
+  const firebase = readFirebaseAdminSession()
+  if (!firebase) return null
+  if (!isAdminEmailAllowed(firebase.email)) {
+    clearAdminSession()
+    return null
+  }
+  return createAdminSession(firebase)
+}
+
+export function clearAdminSession() {
+  clearFirebaseAdminSession()
+  clearDemoAdminSession()
+  clearPartnerAppToken()
+  return true
 }

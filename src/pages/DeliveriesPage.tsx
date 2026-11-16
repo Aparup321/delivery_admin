@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { Delivery, OperationsState, PackageSize, VehicleType } from '../domain/model'
-import { Button, DemoTag, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
+import { Button, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 
 const statusFilters = ['All', 'Pending', 'Unassigned', 'Assigned', 'In Transit', 'Delayed', 'Completed', 'Cancelled']
@@ -35,7 +35,7 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
     onClose()
   }
 
-  return <Dialog title="Create a demo delivery" onClose={onClose}>
+  return <Dialog title="Create a delivery" onClose={onClose}>
     <form className="dialog-form" onSubmit={submit}>
       <p className="dialog-description">Creates a local illustrative job only. No customer, delivery service, or partner app is contacted.</p>
       <div className="form-grid two-columns">
@@ -137,7 +137,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
 
   return <div className="page-stack">
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery records</span><span className="dot-separator" />{data.deliveries.length} total in demo</div><div className="records-actions"><DemoTag />{selected.length > 0 && <Button size="small" variant="secondary" onClick={bulkAssign} disabled={!canAssign}><Icon name="route" size={14} />Assign selected ({selected.length})</Button>}<Button size="small" variant="primary" onClick={() => setCreateOpen(true)} disabled={!['Admin', 'Operations Manager'].includes(frame.data.user.role)} title="Administrator access required"><Icon name="plus" size={15} />Create demo delivery</Button></div></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery records</span><span className="dot-separator" />{data.deliveries.length} total</div><div className="records-actions">{selected.length > 0 && <Button size="small" variant="secondary" onClick={bulkAssign} disabled={!canAssign}><Icon name="route" size={14} />Assign selected ({selected.length})</Button>}<Button size="small" variant="primary" onClick={() => setCreateOpen(true)} disabled={!['Admin', 'Operations Manager'].includes(frame.data.user.role)} title="Administrator access required"><Icon name="plus" size={15} />Create delivery</Button></div></div>
       <div className="filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search ID, location, or partner" aria-label="Search deliveries" /></label>
         <label className="filter-control"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1) }}>{statusFilters.map((value) => <option key={value}>{value}</option>)}</select></label>
@@ -177,7 +177,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
             </tr>
           })}</tbody>
         </table>
-        {visible.length === 0 && <EmptyState title="No deliveries match these filters" detail="Change the search or reset filters to see the demo delivery queue." />}
+        {visible.length === 0 && <EmptyState title="No deliveries match these filters" detail="Change the search or reset filters to see the delivery queue." />}
       </div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>Next</Button></div></div>
     </Panel>

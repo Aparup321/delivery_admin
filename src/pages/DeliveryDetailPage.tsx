@@ -58,12 +58,12 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
     <div className="detail-main-grid">
       <div className="detail-left-column">
         <Panel>
-          <PanelHeading title="Delivery information" detail="Illustrative demo record" />
+          <PanelHeading title="Delivery information" detail="Local record" />
           <div className="detail-info-grid">
             <div className="detail-info-item"><span>Pickup</span><strong><Icon name="pin" size={15} />{delivery.pickup}</strong><small>{delivery.pickupAddress}</small></div>
             <div className="detail-info-item"><span>Drop</span><strong><Icon name="pin" size={15} />{delivery.drop}</strong><small>{delivery.dropAddress}</small></div>
             <div className="detail-info-item"><span>Package</span><strong><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg.toFixed(1)} kg</strong><small>Vehicle requirement: {delivery.vehicleRequirement}</small></div>
-            <div className="detail-info-item"><span>Scheduled window</span><strong><Icon name="calendar" size={15} />{formatDate(delivery.scheduledStart)} — {formatDate(delivery.scheduledEnd)}</strong><small>Times are local demo schedule values</small></div>
+            <div className="detail-info-item"><span>Scheduled window</span><strong><Icon name="calendar" size={15} />{formatDate(delivery.scheduledStart)} — {formatDate(delivery.scheduledEnd)}</strong><small>Times are local schedule values</small></div>
             <div className="detail-info-item detail-instructions"><span>Special instructions</span><strong>{delivery.specialInstructions || 'No special instructions'}</strong><small>No customer-sensitive data is connected.</small></div>
           </div>
         </Panel>
@@ -81,7 +81,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
             const current = !complete && index === nextMilestone && !isTerminal
             return <div key={milestone.name} className={`milestone-row ${complete ? 'milestone-done' : ''} ${current ? 'milestone-current' : ''}`}>
               <div className="milestone-track"><span className="milestone-marker">{complete ? <Icon name="check" size={12} /> : current ? <i /> : <span />}</span>{index < delivery.milestones.length - 1 && <span className="milestone-line" />}</div>
-              <div className="milestone-copy"><div><strong>{milestone.name}</strong>{current && <span className="current-step-tag">NEXT</span>}</div><small>{complete ? `${formatDate(milestone.completedAt)} · ${milestone.completedBy}` : current ? 'Ready to record in this demo workflow' : 'Not yet recorded'}</small></div>
+              <div className="milestone-copy"><div><strong>{milestone.name}</strong>{current && <span className="current-step-tag">NEXT</span>}</div><small>{complete ? `${formatDate(milestone.completedAt)} · ${milestone.completedBy}` : current ? 'Ready to record' : 'Not yet recorded'}</small></div>
               <span className={`milestone-state ${complete ? 'state-complete' : current ? 'state-current' : ''}`}>{complete ? 'Complete' : current ? 'In progress' : 'Upcoming'}</span>
             </div>
           })}</div>
@@ -89,7 +89,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
         </Panel>
 
         <Panel>
-          <PanelHeading title="Assignment offers" detail={`${offers.length} recorded attempt${offers.length === 1 ? '' : 's'} · demo lifecycle`} action={!isTerminal && !currentAssignment && <Button size="small" onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}><Icon name="plus" size={14} />Create an offer</Button>} />
+          <PanelHeading title="Assignment offers" detail={`${offers.length} recorded attempt${offers.length === 1 ? '' : 's'} · offer lifecycle`} action={!isTerminal && !currentAssignment && <Button size="small" onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}><Icon name="plus" size={14} />Create an offer</Button>} />
           {offers.length ? <div className="offer-list">{offers.map((offer) => {
             const offerPartner = data.partners.find((partner) => partner.id === offer.partnerId)
             const isActive = offer.status === 'Awaiting Response'
@@ -97,7 +97,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
               <div className="offer-main"><span className="offer-avatar">{offerPartner?.name.split(' ').map((part) => part[0]).join('').replace('.', '') ?? 'DP'}</span><div><strong>{offer.id} <StatusBadge status={offer.status} /></strong><small>{delivery.id} · {offerPartner?.id} {offerPartner?.name ?? 'Partner unavailable'} · attempt {offer.attempt}</small><div className="offer-states">{offer.stateHistory.map((step, index) => <span className={step.status === offer.status ? 'offer-state-current' : ''} key={`${step.status}-${index}`} title={formatDate(step.at, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}>{step.status}{index < offer.stateHistory.length - 1 && <i />}</span>)}</div>{offer.note && <small className="offer-note">{offer.note}</small>}</div></div>
               <div className="offer-time"><small>{isActive ? 'Time remaining · simulated' : 'Created'}</small><strong className={isActive && new Date(offer.expiresAt).getTime() - now < 60_000 ? 'text-danger' : ''}>{isActive ? timeLeft(offer.expiresAt, now) : formatDate(offer.respondedAt ?? offer.createdAt, { hour: 'numeric', minute: '2-digit' })}</strong></div>
               <div className="offer-actions">
-                {offer.status === 'Created' && <Button size="small" variant="primary" disabled={!canOperate} onClick={() => dispatch({ type: 'offer.send', offerId: offer.id })}>Send offer · Demo</Button>}
+                {offer.status === 'Created' && <Button size="small" variant="primary" disabled={!canOperate} onClick={() => dispatch({ type: 'offer.send', offerId: offer.id })}>Send offer</Button>}
                 {isActive && <><Button size="small" variant="primary" disabled={!canOperate} onClick={() => dispatch({ type: 'offer.accept', offerId: offer.id })}>Accept</Button><Button size="small" variant="quiet" disabled={!canOperate} onClick={() => setDialog(offer.id)}>Reject</Button><Button size="small" variant="quiet" disabled={!canManage} onClick={() => dispatch({ type: 'offer.expire', offerId: offer.id })}>Simulate timeout</Button></>}
               </div>
             </div>
@@ -107,7 +107,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
 
       <div className="detail-right-column">
         <Panel className="current-assignment-panel">
-          <PanelHeading title="Current assignment" detail={currentAssignment ? 'Active assignment · demo' : 'No active assignment'} />
+          <PanelHeading title="Current assignment" detail={currentAssignment ? 'Active assignment' : 'No active assignment'} />
           {currentAssignment && assignedPartner ? <>
             <button className="profile-summary-link" onClick={() => open(`/admin/partners/${assignedPartner.id}`)}><span className="profile-large-avatar">{assignedPartner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><strong>{assignedPartner.name}</strong><small>{assignedPartner.id}</small></span><Icon name="external" size={15} /></button>
             <div className="assignment-facts"><div><span>Vehicle</span><strong>{assignedPartner.vehicle}</strong></div><div><span>Service area</span><strong>{assignedPartner.serviceAreas.join(', ')}</strong></div><div><span>Assignment status</span><strong><StatusBadge status={currentAssignment.status} /></strong></div><div><span>Assigned at</span><strong>{formatDate(currentAssignment.assignedAt)}</strong></div><div><span>Operator</span><strong>{currentAssignment.assignedBy}</strong></div><div><span>Attempt</span><strong>#{currentAssignment.attempt}</strong></div></div>
@@ -122,12 +122,12 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
           })}</div> : <p className="muted-copy">No assignment history yet.</p>}
         </Panel>
 
-        <Panel className="record-meta-panel"><PanelHeading title="Record metadata" /><div className="record-meta-row"><span>Delivery ID</span><strong>{delivery.id}</strong></div><div className="record-meta-row"><span>Created</span><strong>{formatDate(delivery.createdAt)}</strong></div><div className="record-meta-row"><span>Record environment</span><strong>Local demo data</strong></div><div className="record-meta-row"><span>GPS / maps</span><strong>OpenStreetMap preview · live GPS not connected</strong></div></Panel>
+        <Panel className="record-meta-panel"><PanelHeading title="Record metadata" /><div className="record-meta-row"><span>Delivery ID</span><strong>{delivery.id}</strong></div><div className="record-meta-row"><span>Created</span><strong>{formatDate(delivery.createdAt)}</strong></div><div className="record-meta-row"><span>Record environment</span><strong>Local browser record</strong></div><div className="record-meta-row"><span>GPS / maps</span><strong>OpenStreetMap preview · live GPS not connected</strong></div></Panel>
       </div>
     </div>
 
     {dialog === 'cancel' && <ConfirmDialog title="Cancel this delivery?" detail="Cancellation is recorded with a required reason. Assignment and offer history are kept; partners are not silently removed." confirmLabel="Cancel delivery" danger onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.cancel', deliveryId: delivery.id, reason }); setDialog(null) }} />}
-    {dialog === 'delay' && <ConfirmDialog title="Mark delivery delayed" detail="The current milestone will be preserved. A delay exception and operational notification are recorded in the demo." confirmLabel="Mark delayed" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.delay', deliveryId: delivery.id, reason }); setDialog(null) }} />}
+    {dialog === 'delay' && <ConfirmDialog title="Mark delivery delayed" detail="The current milestone will be preserved. A delay exception and operational notification are recorded." confirmLabel="Mark delayed" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.delay', deliveryId: delivery.id, reason }); setDialog(null) }} />}
     {dialog === 'resolve' && <ConfirmDialog title="Resolve delivery delay" detail="Add an operational note to clear the delay flag. The delivery returns to its prior status and milestone." reasonLabel="Resolution note" confirmLabel="Resolve delay" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.clear-delay', deliveryId: delivery.id, reason }); setDialog(null) }} />}
     {dialog && !['cancel', 'delay', 'resolve'].includes(dialog) && <ConfirmDialog title="Record partner rejection" detail="This simulated response is saved to offer history and the audit log." reasonLabel="Rejection reason" confirmLabel="Record rejection" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'offer.reject', offerId: dialog, reason }); setDialog(null) }} />}
   </div>

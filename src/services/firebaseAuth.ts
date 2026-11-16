@@ -1,16 +1,17 @@
 /**
  * Firebase Authentication for the delivery_admin console.
  *
- * The local Administrator sign-in on the login screen is a demo gate. This
- * module is the separate Firebase identity used to authorize Firestore reads
- * and writes against the delivery_app project. Credentials are exchanged with
- * the Identity Toolkit REST API, and the resulting ID token is kept in
- * sessionStorage for this browser tab only.
+ * Administrator sign-in uses Firebase Authentication. This module exchanges
+ * credentials with the Identity Toolkit REST API and authorizes Firestore
+ * reads and writes against the delivery_app project. The refresh token is
+ * persisted so the console reconnects automatically on later runs; the
+ * short-lived ID token is refreshed on demand.
  */
 
 export interface FirebaseAdminSession {
   uid: string
   email: string
+  displayName?: string
   idToken: string
   refreshToken: string
   expiresAt: number
@@ -18,6 +19,7 @@ export interface FirebaseAdminSession {
 }
 
 const SESSION_KEY = 'picdrop-firebase-admin-session-v1'
+const PERSISTED_SESSION_KEY = 'picdrop-firebase-admin-session-persisted-v1'
 
 let memorySession: FirebaseAdminSession | null = null
 
@@ -39,18 +41,30 @@ function isSession(value: unknown): value is FirebaseAdminSession {
     && typeof value.signedInAt === 'string'
 }
 
-export function readFirebaseAdminSession(): FirebaseAdminSession | null {
-  if (memorySession) return memorySession
+function readStoredSession(key: string, storage: 'sessionStorage' | 'localStorage') {
   try {
-    const raw = window.sessionStorage.getItem(SESSION_KEY)
+    const raw = window[storage].getItem(key)
     if (!raw) return null
     const parsed: unknown = JSON.parse(raw)
-    if (!isSession(parsed)) return null
-    memorySession = parsed
-    return parsed
+    return isSession(parsed) ? parsed : null
   } catch {
     return null
   }
+}
+
+export function readFirebaseAdminSession(): FirebaseAdminSession | null {
+  if (memorySession) return memorySession
+  const active = readStoredSession(SESSION_KEY, 'sessionStorage')
+  if (active) {
+    memorySession = active
+    return active
+  }
+  // A persisted session keeps the two apps connected across restarts. Its ID
+  // token is empty until the first Firestore request refreshes it.
+  const persisted = readStoredSession(PERSISTED_SESSION_KEY, 'localStorage')
+  if (!persisted) return null
+  memorySession = persisted
+  return persisted
 }
 
 export function storeFirebaseAdminSession(session: FirebaseAdminSession) {
@@ -60,12 +74,24 @@ export function storeFirebaseAdminSession(session: FirebaseAdminSession) {
   } catch {
     // The session still works for this page view when storage is unavailable.
   }
+  try {
+    // Keep only the long-lived refresh token on disk; ID tokens are renewed.
+    const persisted: FirebaseAdminSession = { ...session, idToken: '', expiresAt: 0 }
+    window.localStorage.setItem(PERSISTED_SESSION_KEY, JSON.stringify(persisted))
+  } catch {
+    // Persistence is optional when storage is unavailable.
+  }
 }
 
 export function clearFirebaseAdminSession() {
   memorySession = null
   try {
     window.sessionStorage.removeItem(SESSION_KEY)
+  } catch {
+    // Nothing to clear when storage is unavailable.
+  }
+  try {
+    window.localStorage.removeItem(PERSISTED_SESSION_KEY)
   } catch {
     // Nothing to clear when storage is unavailable.
   }
@@ -139,6 +165,7 @@ function sessionFromAuthResponse(payload: unknown, fallbackEmail: string): Fireb
   return {
     uid,
     email: asString(payload.email) || fallbackEmail,
+    displayName: asString(payload.displayName) || undefined,
     idToken,
     refreshToken,
     expiresAt: Date.now() + expiresIn * 1000,
@@ -203,7 +230,7 @@ async function refreshSession(session: FirebaseAdminSession, apiKey: string): Pr
 export async function getFirebaseAdminIdToken(apiKey: string): Promise<string> {
   const session = readFirebaseAdminSession()
   if (!session) return ''
-  if (session.expiresAt - 60_000 > Date.now()) return session.idToken
+  if (session.idToken && session.expiresAt - 60_000 > Date.now()) return session.idToken
   const refreshed = await refreshSession(session, apiKey)
   return refreshed.idToken
 }

@@ -1,4 +1,3 @@
-import { createDemoAdmin } from '../domain/admin.ts'
 import { applyFirebaseConnectionDefaults } from '../config/firebase.ts'
 import type { OperationsState } from '../domain/model'
 import { createDemoState } from '../domain/seed.ts'
@@ -32,7 +31,9 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
   // so every partner, application, and cached record has a stable shape.
   return {
     ...parsed,
-    user: createDemoAdmin(),
+    // The console exposes one Administrator role. The signed-in Firebase
+    // identity supplies the display fields; local storage cannot grant another role.
+    user: { ...parsed.user, role: 'Admin' },
     partnerApp: applyFirebaseConnectionDefaults(parsed.partnerApp),
     partners: parsed.partners.map((partner) => ({
       ...partner,
@@ -55,9 +56,9 @@ export function loadOperationsState(): OperationsState {
     const saved = window.localStorage.getItem(STORAGE_KEY)
     if (!saved) return createDemoState()
     const parsed: unknown = JSON.parse(saved)
-    // The Operations team demo only exposes one Administrator account. Normalize
-    // older local records so a saved persona can never grant a lower role, and
-    // seed an empty Firestore connector from the .env.local values.
+    // Normalize older local records and seed an empty Firestore connector from
+    // the environment values. The authenticated Firebase identity is applied by
+    // the app shell after sign-in; local records never grant a different role.
     return isOperationsState(parsed) ? normalizeSavedState(parsed) : createDemoState()
   } catch {
     return createDemoState()
@@ -66,7 +67,7 @@ export function loadOperationsState(): OperationsState {
 
 export function saveOperationsState(state: OperationsState) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...state, user: createDemoAdmin() }))
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
     return true
   } catch {
     return false

@@ -13,7 +13,7 @@ function exportCsv(rows: AuditLogEntry[]) {
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
   anchor.href = url
-  anchor.download = 'picdrop-hopngo-demo-audit.csv'
+  anchor.download = 'picdrop-hopngo-audit.csv'
   anchor.click()
   URL.revokeObjectURL(url)
 }
@@ -44,7 +44,7 @@ export function AuditLogsPage({ data }: { data: OperationsState }) {
 
   return <div className="page-stack">
     <Panel className="records-panel audit-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>audit events</span><span className="dot-separator" />Append-only demo history</div><Button size="small" onClick={() => exportCsv(filtered)} disabled={!filtered.length}><Icon name="download" size={14} />Export filtered CSV</Button></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>audit events</span><span className="dot-separator" />Append-only local history</div><Button size="small" onClick={() => exportCsv(filtered)} disabled={!filtered.length}><Icon name="download" size={14} />Export filtered CSV</Button></div>
       <div className="filter-toolbar audit-filters"><label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search event, operator, record, or value" aria-label="Search audit log" /></label><label className="filter-control"><span>Event type</span><select value={eventType} onChange={(event) => { setEventType(event.target.value); setPage(1) }}><option>All</option>{eventTypes.map((item) => <option key={item}>{item}</option>)}</select></label><label className="filter-control"><span>Operator</span><select value={operator} onChange={(event) => { setOperator(event.target.value); setPage(1) }}><option>All</option>{operators.map((item) => <option key={item}>{item}</option>)}</select></label><label className="filter-control filter-date"><span>From</span><input type="date" value={from} onChange={(event) => { setFrom(event.target.value); setPage(1) }} /></label><label className="filter-control filter-date"><span>To</span><input type="date" value={to} min={from || undefined} onChange={(event) => { setTo(event.target.value); setPage(1) }} /></label></div>
       <div className="table-scroll"><table className="data-table audit-table"><thead><tr><th>Event</th><th>Operator / role</th><th>Target record</th><th>Change</th><th>Timestamp</th><th /></tr></thead><tbody>
         {visible.map((event) => <tr key={event.id}>
@@ -55,10 +55,10 @@ export function AuditLogsPage({ data }: { data: OperationsState }) {
           <td><strong className="window-value">{formatDate(event.timestamp)}</strong><small className="cell-subtext">{new Date(event.timestamp).toLocaleDateString()}</small></td>
           <td><Button size="small" variant="quiet" onClick={() => setSelected(event)}>Details</Button></td>
         </tr>)}
-      </tbody></table>{visible.length === 0 && <EmptyState title="No audit events found" detail="Changes made in this demo are recorded here and cannot be edited or deleted from the interface." />}</div>
+      </tbody></table>{visible.length === 0 && <EmptyState title="No audit events found" detail="Changes made in this console are recorded here and cannot be edited or deleted from the interface." />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
     </Panel>
-    <div className="overview-footnote"><Icon name="lock" size={14} />Audit entries are append-only in this application. This local demo does not provide production-grade tamper resistance.</div>
+    <div className="overview-footnote"><Icon name="lock" size={14} />Audit entries are append-only in this application. Local audit entries do not provide production-grade tamper resistance.</div>
     {selected && <Dialog title={selected.eventType} eyebrow="AUDIT EVENT · APPEND-ONLY" onClose={() => setSelected(null)}>
       <div className="audit-detail"><div className="audit-detail-meta"><span>Event ID<strong>{selected.id}</strong></span><span>Timestamp<strong>{formatDate(selected.timestamp)}</strong></span><span>Operator<strong>{selected.operator} · {selected.operatorRole}</strong></span><span>Target<strong>{selected.targetType} · {selected.targetId}</strong></span></div><div className="audit-value-block"><span>Previous value</span><p>{selected.previousValue}</p></div><div className="audit-value-block"><span>New value</span><p>{selected.newValue}</p></div><div className="audit-value-block"><span>Reason / note</span><p>{selected.reason}</p></div><p className="muted-copy">Historical entries cannot be edited or deleted in the admin interface.</p></div>
     </Dialog>}

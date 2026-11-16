@@ -52,7 +52,7 @@ export type AuditEventType =
   | 'Partner app account updated'
   | 'Settings modified'
   | 'Administrative role changed'
-  | 'Demo data reset'
+  | 'Local data reset'
 
 export type DocumentType = 'Identity proof' | 'Driving licence' | 'Vehicle registration' | 'Profile photo'
 export type ApplicationStatus = 'Submitted' | 'Approved' | 'Rejected'
@@ -221,7 +221,7 @@ export interface AuditLogEntry {
   eventType: AuditEventType
   operator: string
   operatorRole: AdminRole
-  targetType: 'Delivery' | 'Partner' | 'Document' | 'Offer' | 'Application' | 'Settings' | 'Admin user' | 'Demo data'
+  targetType: 'Delivery' | 'Partner' | 'Document' | 'Offer' | 'Application' | 'Settings' | 'Admin user' | 'Local data'
   targetId: string
   previousValue: string
   newValue: string

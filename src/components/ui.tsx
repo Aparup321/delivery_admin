@@ -60,10 +60,6 @@ export function StatusBadge({ status }: { status: DeliveryStatus | PartnerAvaila
   return <span className={`status-badge status-${key}`}><i className="status-dot" />{status}</span>
 }
 
-export function DemoTag() {
-  return <span className="demo-tag"><span />DEMO</span>
-}
-
 export function PageHeading({ title, subtitle, breadcrumbs, action, onNavigate }: { title: string; subtitle: string; breadcrumbs?: Array<{ label: string; path?: string }>; action?: ReactNode; onNavigate?: (path: string) => void }) {
   const backCrumb = breadcrumbs && onNavigate ? [...breadcrumbs].reverse().find((crumb) => crumb.path) : undefined
   return <div className="page-heading">
@@ -72,7 +68,7 @@ export function PageHeading({ title, subtitle, breadcrumbs, action, onNavigate }
         {backCrumb && <button className="heading-back" onClick={() => onNavigate?.(backCrumb.path!)} aria-label={`Back to ${backCrumb.label}`}><Icon name="arrow" size={13} className="icon-flip" /><span>Back to {backCrumb.label}</span></button>}
         {breadcrumbs && <div className="breadcrumbs">{breadcrumbs.map((crumb, index) => <span key={`${crumb.label}-${index}`}>{index > 0 && <Icon name="chevron" size={13} />}{crumb.path && onNavigate ? <button onClick={() => onNavigate(crumb.path!)}>{crumb.label}</button> : <span>{crumb.label}</span>}</span>)}</div>}
       </div>}
-      <div className="title-row"><h1>{title}</h1><DemoTag /></div>
+      <div className="title-row"><h1>{title}</h1></div>
       <p className="page-subtitle">{subtitle}</p>
     </div>
     {action && <div className="heading-action">{action}</div>}
@@ -95,7 +91,7 @@ export function EmptyState({ title, detail, action }: { title: string; detail: s
   return <div className="empty-state"><span className="empty-icon"><Icon name="sparkle" size={20} /></span><strong>{title}</strong><p>{detail}</p>{action}</div>
 }
 
-export function Dialog({ title, eyebrow = 'DEMO WORKFLOW', children, onClose, wide = false }: { title: string; eyebrow?: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+export function Dialog({ title, eyebrow = 'OPERATIONS WORKFLOW', children, onClose, wide = false }: { title: string; eyebrow?: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
     window.addEventListener('keydown', closeOnEscape)
@@ -133,6 +129,7 @@ export function formatDate(value: string | null | undefined, options: Intl.DateT
 
 export function relativeTime(value: string) {
   const delta = Math.round((new Date(value).getTime() - Date.now()) / 60_000)
+  if (delta === 0) return 'just now'
   if (delta < -60) return `${Math.abs(Math.floor(delta / 60))}h ago`
   if (delta < 0) return `${Math.abs(delta)}m ago`
   if (delta < 60) return `in ${delta}m`

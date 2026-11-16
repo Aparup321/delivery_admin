@@ -10,9 +10,9 @@ import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
 import type { PartnerAppConfig } from '../src/domain/model.ts'
-import { DEMO_ADMIN_EMAIL } from '../src/domain/admin.ts'
-import { DEMO_ADMIN_PASSWORD, clearAdminSession, createAdminSession, persistAdminSession, readAdminSession, validateDemoAdminCredentials } from '../src/auth/adminSession.ts'
-import { DEMO_OTP_CODE, createDemoOtpChallenge, verifyOtp } from '../src/services/otp.ts'
+import { DEFAULT_ADMIN_EMAIL } from '../src/domain/admin.ts'
+import { clearAdminSession, createAdminSession, createDemoAdminSession, DEMO_OTP_CODE, isDemoOtpValid, readAdminSession, readDemoAdminSession, storeDemoAdminSession } from '../src/auth/adminSession.ts'
+import type { FirebaseAdminSession } from '../src/services/firebaseAuth.ts'
 
 function frameWithDemo(): AppFrame {
   return { data: createDemoState(), feedback: null, sequence: 0 }
@@ -30,18 +30,13 @@ test('the operations team demo exposes one Administrator with complete account d
   const user = createDemoState().user
   assert.equal(user.role, 'Admin')
   assert.equal(user.id, 'ADM-OPS-01')
-  assert.equal(user.name, 'Operations Admin')
-  assert.equal(user.email, DEMO_ADMIN_EMAIL)
+  assert.equal(user.name, 'Operations Administrator')
+  assert.equal(user.email, DEFAULT_ADMIN_EMAIL)
   assert.equal(user.title, 'Delivery Operations Administrator')
-  assert.match(user.maskedPhone, /•/)
+  assert.equal(user.maskedPhone, 'Not provided')
 })
 
-test('Administrator demo sign-in validates credentials and persists a restorable local session', () => {
-  assert.equal(validateDemoAdminCredentials(DEMO_ADMIN_EMAIL, DEMO_ADMIN_PASSWORD), true)
-  assert.equal(validateDemoAdminCredentials(`  ${DEMO_ADMIN_EMAIL.toUpperCase()} `, DEMO_ADMIN_PASSWORD), true)
-  assert.equal(validateDemoAdminCredentials(DEMO_ADMIN_EMAIL, 'incorrect-password'), false)
-  assert.equal(validateDemoAdminCredentials('someone@picdrop.demo', DEMO_ADMIN_PASSWORD), false)
-
+test('Administrator session is derived from Firebase Authentication and cleared on sign-out', () => {
   const store = new Map<string, string>()
   Object.defineProperty(globalThis, 'window', {
     configurable: true,
@@ -55,11 +50,22 @@ test('Administrator demo sign-in validates credentials and persists a restorable
   })
   try {
     assert.equal(readAdminSession(), null)
-    const session = createAdminSession('2026-05-01T09:30:00.000Z')
-    assert.equal(session.role, 'Admin')
-    assert.equal(session.email, DEMO_ADMIN_EMAIL)
-    assert.equal(persistAdminSession(session), true)
-    assert.deepEqual(readAdminSession(), session)
+    const firebase: FirebaseAdminSession = {
+      uid: 'firebase-uid-1',
+      email: 'ops@example.com',
+      displayName: 'Ops Lead',
+      idToken: 'id-token',
+      refreshToken: 'refresh-token',
+      expiresAt: Date.now() + 3_600_000,
+      signedInAt: '2026-05-01T09:30:00.000Z',
+    }
+    store.set('picdrop-firebase-admin-session-v1', JSON.stringify(firebase))
+    const session = readAdminSession()
+    assert.equal(session?.userId, 'firebase-uid-1')
+    assert.equal(session?.email, 'ops@example.com')
+    assert.equal(session?.name, 'Ops Lead')
+    assert.equal(session?.mode, 'Firebase Authentication')
+    assert.deepEqual(createAdminSession(firebase), session)
     assert.equal(clearAdminSession(), true)
     assert.equal(readAdminSession(), null)
   } finally {
@@ -67,16 +73,41 @@ test('Administrator demo sign-in validates credentials and persists a restorable
   }
 })
 
-test('demo OTP accepts only the displayed code and expires after five minutes', () => {
-  const issuedAt = Date.UTC(2026, 4, 1, 9, 0, 0)
-  const challenge = createDemoOtpChallenge(DEMO_ADMIN_EMAIL, issuedAt)
-  assert.equal(challenge.destination, DEMO_ADMIN_EMAIL)
-  assert.equal(challenge.code, DEMO_OTP_CODE)
-  assert.equal(challenge.expiresAt, new Date(issuedAt + 5 * 60_000).toISOString())
-  assert.deepEqual(verifyOtp(challenge, DEMO_OTP_CODE, issuedAt + 60_000), { ok: true })
-  assert.deepEqual(verifyOtp(challenge, ' 123456 ', issuedAt + 60_000), { ok: true })
-  assert.deepEqual(verifyOtp(challenge, '000000', issuedAt + 60_000), { ok: false, reason: 'invalid' })
-  assert.deepEqual(verifyOtp(challenge, DEMO_OTP_CODE, issuedAt + 5 * 60_000), { ok: false, reason: 'expired' })
+test('demo access uses the documented one-time code and a local demo session', () => {
+  const store = new Map<string, string>()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value) },
+        removeItem: (key: string) => { store.delete(key) },
+      },
+    },
+  })
+  try {
+    assert.equal(isDemoOtpValid(DEMO_OTP_CODE), true)
+    assert.equal(isDemoOtpValid('000000'), false)
+    storeDemoAdminSession(createDemoAdminSession())
+    const demo = readDemoAdminSession()
+    assert.equal(demo?.mode, 'Demo access')
+    assert.equal(demo?.email, 'admin@picdrop.demo')
+    assert.equal(demo?.role, 'Admin')
+    assert.deepEqual(readAdminSession(), demo)
+    assert.equal(clearAdminSession(), true)
+    assert.equal(readDemoAdminSession(), null)
+  } finally {
+    delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test('the signed-in Firebase identity replaces the placeholder administrator in local state', () => {
+  const frame = frameWithDemo()
+  const identified = apply(frame, { type: 'user.identify', id: 'firebase-uid-1', name: 'Ops Lead', email: 'ops@example.com' })
+  assert.equal(identified.data.user.id, 'firebase-uid-1')
+  assert.equal(identified.data.user.name, 'Ops Lead')
+  assert.equal(identified.data.user.email, 'ops@example.com')
+  assert.equal(identified.feedback, null)
 })
 
 test('assignment validates eligibility and updates shared delivery, partner, history, audit, and notification records', () => {
@@ -237,7 +268,7 @@ test('partner suspension is recorded in activity and audit history, and an Admin
   const suspensionEvent = suspended.data.partnerHistory.find((item) => item.partnerId === 'DP-0192' && item.type === 'Suspended')
   assert.ok(suspensionEvent)
   assert.match(suspensionEvent.description, /Demo review hold/)
-  assert.equal(suspensionEvent.actor, 'Operations Admin')
+  assert.equal(suspensionEvent.actor, 'Operations Administrator')
   assert.ok(suspended.data.auditLogs.some((item) => item.eventType === 'Partner suspended' && item.targetId === 'DP-0192' && item.reason === 'Demo review hold'))
   assert.ok(suspended.data.notifications.some((item) => item.category === 'Partner Suspended' && item.relatedRecordId === 'DP-0192'))
 
@@ -709,7 +740,7 @@ test('demo reset restores interconnected seed records and records the reset even
   expectSuccess(frame)
   assert.equal(frame.data.deliveries.find((item) => item.id === 'DLV-1046')?.status, 'Unassigned')
   assert.equal(frame.data.partners.find((item) => item.id === 'DP-0187')?.availability, 'Available')
-  assert.ok(frame.data.auditLogs.some((item) => item.eventType === 'Demo data reset'))
+  assert.ok(frame.data.auditLogs.some((item) => item.eventType === 'Local data reset'))
 })
 
 test('live deliveries from delivery_app are normalized for the operations map', () => {

@@ -40,6 +40,7 @@ export type OperationAction =
   | { type: 'notification.read-all' }
   | { type: 'settings.save'; settings: OperationsState['settings'] }
   | { type: 'user.set-role'; role: AdminRole }
+  | { type: 'user.identify'; id: string; name: string; email: string }
   | { type: 'demo.reset' }
 
 const permissionByAction: Partial<Record<OperationAction['type'], Permission>> = {
@@ -338,14 +339,14 @@ function makeOffer(data: OperationsState, deliveryId: string, partnerId: string,
     expiresAt: new Date(new Date(at).getTime() + data.settings.offerTimeoutMinutes * 60_000).toISOString(),
     respondedAt: null,
     attempt,
-    note: sendNow ? 'Sent in local demo; awaiting simulated partner response.' : null,
+    note: sendNow ? 'Sent locally; awaiting partner response.' : null,
     stateHistory: sentStates,
   }
   data.offers.unshift(offer)
   return offer
 }
 
-function assignPartner(data: OperationsState, deliveryId: string, partnerId: string, at: string, reason = 'Manual demo assignment') {
+function assignPartner(data: OperationsState, deliveryId: string, partnerId: string, at: string, reason = 'Manual assignment') {
   const delivery = findDelivery(data, deliveryId)
   const partner = findPartner(data, partnerId)
   if (delivery.status === 'Completed') throw new Error('Completed deliveries cannot be reassigned.')
@@ -377,7 +378,7 @@ function assignPartner(data: OperationsState, deliveryId: string, partnerId: str
   delivery.assignmentId = assignment.id
   if (delivery.status !== 'Delayed') {
     if (!delivery.milestones[0]?.completedAt) {
-      delivery.milestones[0] = { name: DELIVERY_MILESTONES[0], completedAt: at, completedBy: `${partner.name} · Demo` }
+      delivery.milestones[0] = { name: DELIVERY_MILESTONES[0], completedAt: at, completedBy: partner.name }
     }
     const inTransitStarted = delivery.milestones[2]?.completedAt || delivery.milestones[3]?.completedAt
     delivery.status = inTransitStarted ? 'In Transit' : 'Assigned'
@@ -409,15 +410,15 @@ function fallbackAfterTimeout(data: OperationsState, deliveryId: string, at: str
   }
   if (activeOffers(data, deliveryId).length > 0) return
   if (attempts.length >= data.settings.maxAssignmentAttempts) {
-    notify(data, 'Unassigned Delivery', 'Maximum offer attempts reached', `${deliveryId} remains in the dispatch queue after ${attempts.length} demo offer attempts.`, `/admin/deliveries/${deliveryId}`, deliveryId, at)
+    notify(data, 'Unassigned Delivery', 'Maximum offer attempts reached', `${deliveryId} remains in the dispatch queue after ${attempts.length} offer attempts.`, `/admin/deliveries/${deliveryId}`, deliveryId, at)
     return
   }
   const alreadyOffered = new Set(attempts.map((offer) => offer.partnerId))
   const candidate = data.partners.find((partner) => !alreadyOffered.has(partner.id) && getPartnerEligibility(data, partner, delivery, new Date(at).getTime()).eligible)
   if (candidate) {
     const offer = makeOffer(data, deliveryId, candidate.id, at, true)
-    offer.note = 'Automatic next-eligible fallback offer · Demo policy enabled.'
-    audit(data, 'Assignment offer created', 'Offer', offer.id, 'No active offer', `${candidate.id} · attempt ${offer.attempt}`, 'Fallback explicitly enabled in demo settings.', at)
+    offer.note = 'Automatic next-eligible fallback offer · policy enabled.'
+    audit(data, 'Assignment offer created', 'Offer', offer.id, 'No active offer', `${candidate.id} · attempt ${offer.attempt}`, 'Fallback explicitly enabled in settings.', at)
   } else {
     notify(data, 'Unassigned Delivery', 'No eligible fallback partner', `${deliveryId} remains unassigned; no additional partner passed eligibility checks.`, `/admin/deliveries/${deliveryId}/assign`, deliveryId, at)
   }
@@ -428,9 +429,9 @@ function timeoutOffer(data: OperationsState, offerId: string, at: string) {
   if (offer.status !== 'Awaiting Response') throw new Error('Only offers awaiting a response can time out.')
   offer.status = 'Timed Out'
   offer.respondedAt = at
-  offer.note = 'Timed out in the local demo offer lifecycle.'
+  offer.note = 'Timed out in the offer lifecycle.'
   offer.stateHistory.push({ status: 'Timed Out', at })
-  audit(data, 'Assignment offer timed out', 'Offer', offer.id, 'Awaiting Response', 'Timed Out', 'Offer deadline elapsed in demo.', at)
+  audit(data, 'Assignment offer timed out', 'Offer', offer.id, 'Awaiting Response', 'Timed Out', 'Offer deadline elapsed.', at)
   notify(data, 'Assignment Offer Expired', 'Assignment offer expired', `${offer.id} for ${offer.deliveryId} timed out.`, `/admin/deliveries/${offer.deliveryId}`, offer.deliveryId, at)
   fallbackAfterTimeout(data, offer.deliveryId, at)
 }
@@ -450,18 +451,18 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       if (!Number.isFinite(starts.getTime()) || !Number.isFinite(ends.getTime()) || ends <= starts) throw new Error('Choose a valid delivery window.')
       const delivery: Delivery = {
         id, pickup: action.pickup.trim(), drop: action.drop.trim(),
-        pickupAddress: `Demo pickup point · ${action.pickup.trim()}`,
-        dropAddress: `Demo drop point · ${action.drop.trim()}`,
+        pickupAddress: `Pickup point · ${action.pickup.trim()}`,
+        dropAddress: `Drop point · ${action.drop.trim()}`,
         packageSize: action.packageSize, estimatedWeightKg: action.weight,
         vehicleRequirement: action.vehicle, scheduledStart: starts.toISOString(), scheduledEnd: ends.toISOString(),
-        specialInstructions: action.instructions.trim() || 'No special instructions · Demo',
+        specialInstructions: action.instructions.trim() || 'No special instructions',
         createdAt: at, status: 'Unassigned', statusBeforeDelay: null, delayReason: null, assignmentId: null,
         milestones: DELIVERY_MILESTONES.map((name) => ({ name, completedAt: null, completedBy: null })),
       }
       data.deliveries.unshift(delivery)
-      audit(data, 'Delivery created', 'Delivery', id, '—', 'Unassigned', 'Created as an illustrative demo delivery.', at)
+      audit(data, 'Delivery created', 'Delivery', id, '—', 'Unassigned', 'Created as a local delivery record.', at)
       notify(data, 'Unassigned Delivery', 'New unassigned delivery', `${id} is waiting for an eligible partner.`, `/admin/deliveries/${id}/assign`, id, at)
-      return { message: `${id} created in demo data.` }
+      return { message: `${id} created in local data.` }
     }
     case 'delivery.assign': {
       const delivery = findDelivery(data, action.deliveryId)
@@ -479,7 +480,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const index = delivery.milestones.findIndex((milestone) => !milestone.completedAt)
       if (index < 0) throw new Error('All delivery milestones are already complete.')
       if (index === 5 && !delivery.milestones[4]?.completedAt) throw new Error('Drop Arrived must be recorded before delivery can be completed.')
-      delivery.milestones[index] = { ...delivery.milestones[index], completedAt: at, completedBy: index === 5 ? data.user.name : `${findPartner(data, activeAssignment.partnerId).name} · Demo` }
+      delivery.milestones[index] = { ...delivery.milestones[index], completedAt: at, completedBy: index === 5 ? data.user.name : findPartner(data, activeAssignment.partnerId).name }
       const milestoneName = delivery.milestones[index].name
       const previous = delivery.status
       if (index === 5) {
@@ -545,17 +546,17 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const eligibility = getPartnerEligibility(data, partner, delivery, Date.now())
       if (!eligibility.eligible) throw new Error(`${partner.name} is ineligible: ${eligibility.reasons.join('; ')}.`)
       const offer = makeOffer(data, delivery.id, partner.id, at, false)
-      audit(data, 'Assignment offer created', 'Offer', offer.id, 'No offer', `Created · ${partner.id}`, 'Created in the local demo offer lifecycle.', at)
-      return { message: `Offer ${offer.id} created. Send it to begin the demo response window.` }
+      audit(data, 'Assignment offer created', 'Offer', offer.id, 'No offer', `Created · ${partner.id}`, 'Created in the offer lifecycle.', at)
+      return { message: `Offer ${offer.id} created. Send it to begin the response window.` }
     }
     case 'offer.send': {
       const offer = findOffer(data, action.offerId)
       if (offer.status !== 'Created' && offer.status !== 'Sent') throw new Error('Only a newly created offer can be sent.')
       offer.status = 'Awaiting Response'
       offer.expiresAt = new Date(new Date(at).getTime() + data.settings.offerTimeoutMinutes * 60_000).toISOString()
-      offer.note = 'Sent in local demo; awaiting simulated partner response.'
+      offer.note = 'Sent locally; awaiting partner response.'
       offer.stateHistory.push({ status: 'Sent', at }, { status: 'Awaiting Response', at })
-      return { message: `${offer.id} sent in the demo; awaiting response.` }
+      return { message: `${offer.id} sent; awaiting response.` }
     }
     case 'offer.accept': {
       const offer = findOffer(data, action.offerId)
@@ -573,7 +574,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       offer.stateHistory.push({ status: 'Accepted', at })
       assignPartner(data, delivery.id, partner.id, at, `Accepted simulated offer ${offer.id}`)
       offer.status = 'Accepted'
-      return { message: `${partner.name} accepted the demo offer and was assigned.` }
+      return { message: `${partner.name} accepted the offer and was assigned.` }
     }
     case 'offer.reject': {
       const offer = findOffer(data, action.offerId)
@@ -778,7 +779,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       data.partnerApp.lastError = null
       autoLinkPartnerAppRecords(data)
       const linkedCount = data.partners.filter((partner) => partner.partnerAppUid).length
-      audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records · ${linkedCount} linked partners`, 'Manual partner app sync from the connection screen.', at)
+      audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records · ${linkedCount} linked partners`, 'Partner records synced from delivery_app.', at)
       return { message: `${data.partnerAppRecords.length} partner app record${data.partnerAppRecords.length === 1 ? '' : 's'} synced.${linkedCount ? ` ${linkedCount} partner${linkedCount === 1 ? '' : 's'} linked by name.` : ' Link records to admin partners before using live account actions.'}` }
     }
     case 'partnerApp.failed': {
@@ -892,25 +893,31 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       if (!Number.isFinite(next.delayThresholdMinutes) || next.delayThresholdMinutes < 1 || next.delayThresholdMinutes > 180) throw new Error('Delay threshold must be between 1 and 180 minutes.')
       const previous = JSON.stringify(data.settings)
       data.settings = structuredClone(next)
-      audit(data, 'Settings modified', 'Settings', 'operations', previous, JSON.stringify(data.settings), 'Updated local demo configuration.', at)
-      return { message: 'Demo settings saved locally.' }
+      audit(data, 'Settings modified', 'Settings', 'operations', previous, JSON.stringify(data.settings), 'Updated local configuration.', at)
+      return { message: 'Settings saved locally.' }
     }
     case 'user.set-role': {
       const previous = data.user.role
-      audit(data, 'Administrative role changed', 'Admin user', data.user.id, previous, action.role, 'Role changed using the local demo role selector.', at)
+      audit(data, 'Administrative role changed', 'Admin user', data.user.id, previous, action.role, 'Role changed using the local role selector.', at)
       data.user.role = action.role
-      return { message: `Demo role changed to ${action.role}.` }
+      return { message: `Role changed to ${action.role}.` }
+    }
+    case 'user.identify': {
+      data.user.id = action.id.trim() || data.user.id
+      data.user.name = action.name.trim() || data.user.name
+      data.user.email = action.email.trim() || data.user.email
+      return { message: 'Administrator identity synchronized.' }
     }
     case 'demo.reset': {
       const reset = createDemoState()
       reset.auditLogs.push({
-        id: uid('EVT'), eventType: 'Demo data reset', operator: data.user.name, operatorRole: data.user.role,
-        targetType: 'Demo data', targetId: 'local-demo', previousValue: 'Saved local changes', newValue: 'Seed data restored',
+        id: uid('EVT'), eventType: 'Local data reset', operator: data.user.name, operatorRole: data.user.role,
+        targetType: 'Local data', targetId: 'local-data', previousValue: 'Saved local changes', newValue: 'Seed data restored',
         timestamp: at, reason: 'Reset confirmed by operator.',
       })
       reset.user = { ...reset.user, role: data.user.role }
       Object.assign(data, reset)
-      return { message: 'Demo records reset to their initial state.' }
+      return { message: 'Demo data reloaded with the sample partners and deliveries.' }
     }
     case 'offer.expire-due':
       throw new Error('Internal offer sweep must be handled by the scheduler.')
@@ -931,7 +938,7 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
     try {
       const count = expireDue(data, action.now)
       if (!count) return frame
-      return { ...frame, data, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'info', message: `${count} demo offer${count === 1 ? '' : 's'} timed out.` } }
+      return { ...frame, data, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'info', message: `${count} offer${count === 1 ? '' : 's'} timed out.` } }
     } catch (error) {
       return { ...frame, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'error', message: error instanceof Error ? error.message : 'Offer timeout could not be recorded.' } }
     }
@@ -940,16 +947,22 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
   const permission = permissionByAction[action.type]
   if (permission && !roleCan(frame.data.user.role, permission)) {
     const sequence = frame.sequence + 1
-    return { ...frame, sequence, feedback: { id: sequence, kind: 'error', message: `Your ${frame.data.user.role} demo role cannot perform this action.` } }
+    return { ...frame, sequence, feedback: { id: sequence, kind: 'error', message: `Your ${frame.data.user.role} role cannot perform this action.` } }
   }
 
   const data = structuredClone(frame.data)
   try {
     const result = applyAction(data, action)
     const sequence = frame.sequence + 1
-    return { data, sequence, feedback: { id: sequence, kind: result.kind ?? 'success', message: result.message } }
+    return {
+      data,
+      sequence,
+      feedback: action.type === 'user.identify'
+        ? null
+        : { id: sequence, kind: result.kind ?? 'success', message: result.message },
+    }
   } catch (error) {
     const sequence = frame.sequence + 1
-    return { ...frame, sequence, feedback: { id: sequence, kind: 'error', message: error instanceof Error ? error.message : 'The demo operation could not be completed.' } }
+    return { ...frame, sequence, feedback: { id: sequence, kind: 'error', message: error instanceof Error ? error.message : 'The operation could not be completed.' } }
   }
 }

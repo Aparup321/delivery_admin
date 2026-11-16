@@ -5,6 +5,7 @@ import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/servi
 import { MapPreview, type MapPoint } from '../components/MapPreview'
 import { Button, Icon, Panel, PanelHeading, relativeTime } from '../components/ui'
 import { useLiveDeliveries } from '../hooks/useLiveDeliveries'
+import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
 interface Props {
@@ -55,7 +56,7 @@ function activityByDay(data: OperationsState) {
 
 export function OverviewPage({ data, open }: Props) {
   const { frame } = useOperations()
-  const live = useLiveDeliveries(frame.data.partnerApp)
+  const live = useLiveDeliveries(frame.data.partnerApp, hasFirebaseAdminSession())
   const liveDelivery = useMemo(
     () => live.deliveries.find((delivery) => LIVE_ACTIVE_STATUSES.includes(delivery.nativeStatus)) ?? null,
     [live.deliveries],
@@ -142,7 +143,7 @@ export function OverviewPage({ data, open }: Props) {
     return result
   }, { text: '', cursor: 0 }).text.slice(0, -1)
   const metrics = [
-    { label: 'Total deliveries', value: data.deliveries.length, hint: 'All demo jobs', tone: 'purple', icon: 'deliveries' as const, path: '/admin/deliveries' },
+    { label: 'Total deliveries', value: data.deliveries.length, hint: 'All delivery jobs', tone: 'purple', icon: 'deliveries' as const, path: '/admin/deliveries' },
     { label: 'Awaiting dispatch', value: pending + unassigned, hint: `${pending} pending · ${unassigned} unassigned`, tone: 'orange', icon: 'clock' as const, path: '/admin/deliveries' },
     { label: 'In progress', value: assigned + inTransit, hint: `${assigned} assigned · ${inTransit} in transit`, tone: 'lavender', icon: 'route' as const, path: '/admin/deliveries' },
     { label: 'Completed', value: completed, hint: 'Delivered', tone: 'green', icon: 'check-circle' as const, path: '/admin/deliveries?status=Completed' },
@@ -158,7 +159,7 @@ export function OverviewPage({ data, open }: Props) {
 
     <div className="overview-columns">
       <Panel className="status-overview">
-        <PanelHeading title="Delivery status" detail={`${data.deliveries.length} demo records`} action={<button className="text-link" onClick={() => open('/admin/deliveries')}>View deliveries <Icon name="arrow" size={14} /></button>} />
+        <PanelHeading title="Delivery status" detail={`${data.deliveries.length} delivery records`} action={<button className="text-link" onClick={() => open('/admin/deliveries')}>View deliveries <Icon name="arrow" size={14} /></button>} />
         <div className="status-summary">
           <div className="status-donut" style={{ background: `conic-gradient(${gradient})` }}><div><strong>{data.deliveries.length}</strong><span>deliveries</span></div></div>
           <div className="status-legend">{counts.map((item) => <div key={item.status}><span><i style={{ backgroundColor: statusColors[item.status] }} />{item.status}</span><strong>{item.count}<small>{Math.round(item.count / total * 100)}%</small></strong></div>)}</div>
@@ -167,13 +168,13 @@ export function OverviewPage({ data, open }: Props) {
 
       <Panel className="activity-panel">
         <PanelHeading title="Delivery activity" detail="Created and completed · last 7 days" />
-        <div className="activity-chart" role="img" aria-label="Daily demo deliveries created and completed over the last seven days">
+        <div className="activity-chart" role="img" aria-label="Daily deliveries created and completed over the last seven days">
           {bars.map((bar) => <div className="activity-day" key={bar.label}>
             <div className="activity-bars"><span className="activity-created" style={{ height: `${Math.max(bar.created ? 10 : 2, bar.created / Math.max(1, ...bars.map((item) => item.created)) * 66)}px` }} title={`${bar.created} created`} /><span className="activity-completed" style={{ height: `${Math.max(bar.completed ? 10 : 2, bar.completed / Math.max(1, ...bars.map((item) => item.completed)) * 66)}px` }} title={`${bar.completed} completed`} /></div>
             <small>{bar.label}</small>
           </div>)}
         </div>
-        <div className="chart-legend-inline"><span><i className="legend-purple" />Created</span><span><i className="legend-green" />Completed</span><span className="demo-caption">Based on stored demo timestamps</span></div>
+        <div className="chart-legend-inline"><span><i className="legend-purple" />Created</span><span><i className="legend-green" />Completed</span><span className="demo-caption">Based on stored timestamps</span></div>
       </Panel>
     </div>
 
@@ -183,18 +184,18 @@ export function OverviewPage({ data, open }: Props) {
           title="Active delivery map"
           detail={mapRoute ? `${mapRoute.id} · ${mapRoute.summary}${mapRoute.source === 'live' && liveDelivery ? ` · ${liveDelivery.status}` : ''}` : 'No delivery record'}
           action={<span className="map-heading-actions">
-            {mapRoute && <span className={`source-tag source-${mapRoute.source}`}><i />{mapRoute.source === 'live' ? 'Live' : 'Demo'}</span>}
+            {mapRoute && <span className={`source-tag source-${mapRoute.source}`}><i />{mapRoute.source === 'live' ? 'Live' : 'Local'}</span>}
             {mapRoute?.detailPath && <button className="text-link" onClick={() => open(mapRoute.detailPath!)}>Open delivery <Icon name="arrow" size={14} /></button>}
           </span>}
         />
-        {live.error && <div className="soft-notice map-sync-notice"><Icon name="alert" size={15} /><span>Live delivery sync failed. {mapRoute?.source === 'live' ? 'The map may be stale.' : 'Showing the demo route instead.'}</span><Button size="small" variant="quiet" title={live.error} onClick={live.refresh}>Retry</Button></div>}
+        {live.error && <div className="soft-notice map-sync-notice"><Icon name="alert" size={15} /><span>Live delivery sync failed. {mapRoute?.source === 'live' ? 'The map may be stale.' : 'Showing the local route instead.'}</span><Button size="small" variant="quiet" title={live.error} onClick={live.refresh}>Retry</Button></div>}
         <MapPreview
           points={mapRoute?.points ?? []}
           ariaLabel={mapRoute ? `OpenStreetMap preview of ${mapRoute.summary}` : 'OpenStreetMap delivery area preview'}
         />
         <p className="osm-map-footnote"><Icon name="info" size={13} />{mapRoute?.source === 'live'
           ? <>Live delivery from delivery_app · {mapRoute.locationUpdatedAt ? `Partner position updated ${relativeTime(mapRoute.locationUpdatedAt)}. ` : "Waiting for the partner's GPS position. "}Routing and ETAs are approximate.</>
-          : <>Demo route · no active live delivery. OpenStreetMap tiles, shared with delivery_app. {mapRoute?.approximate ? 'Some area coordinates are approximate. ' : ''}Live GPS, routing and ETAs for demo jobs are not connected.</>}</p>
+          : <>Local route · no active live delivery. OpenStreetMap tiles, shared with delivery_app. {mapRoute?.approximate ? 'Some area coordinates are approximate. ' : ''}Live GPS, routing and ETAs for local jobs are not connected.</>}</p>
       </Panel>
 
       <Panel className="attention-panel">
@@ -211,15 +212,15 @@ export function OverviewPage({ data, open }: Props) {
     </div>
 
     <Panel className="recent-activity-panel">
-      <PanelHeading title="Recent operational activity" detail="Recorded from demo operations" action={<button className="text-link" onClick={() => open('/admin/audit-logs')}>Open audit log <Icon name="arrow" size={14} /></button>} />
+      <PanelHeading title="Recent operational activity" detail="Recorded from operations" action={<button className="text-link" onClick={() => open('/admin/audit-logs')}>Open audit log <Icon name="arrow" size={14} /></button>} />
       <div className="activity-feed">
         {data.auditLogs.slice(-5).reverse().map((event) => <button className="activity-feed-row" key={event.id} onClick={() => open(auditPath(event))}>
           <span className={`activity-event-icon ${event.eventType.includes('assigned') ? 'event-purple' : event.eventType.includes('Delayed') ? 'event-red' : 'event-gray'}`}><Icon name={event.eventType.includes('assigned') ? 'route' : event.eventType.includes('Delayed') ? 'alert' : 'check'} size={15} /></span>
           <span className="activity-event-copy"><b>{event.eventType}</b><small>{event.targetId} · {event.operator} · {event.reason}</small></span><time>{relativeTime(event.timestamp)}</time><Icon name="chevron" size={15} />
         </button>)}
-        {!data.auditLogs.length && <p className="empty-inline">Operational changes will appear here after a demo action.</p>}
+        {!data.auditLogs.length && <p className="empty-inline">Operational changes will appear here after an action.</p>}
       </div>
     </Panel>
-    <div className="overview-footnote"><Icon name="shield" size={14} /> Administrator decisions are mirrored to delivery_app. The map uses OpenStreetMap tiles shared with the partner app; demo jobs remain simulated.</div>
+    <div className="overview-footnote"><Icon name="shield" size={14} /> Administrator decisions are mirrored to delivery_app. The map uses OpenStreetMap tiles shared with the partner app; local jobs remain simulated.</div>
   </div>
 }

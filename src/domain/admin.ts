@@ -1,8 +1,8 @@
 import type { AdminUser } from './model.ts'
 
-export const DEMO_ADMIN_EMAIL = 'admin@picdrop.demo'
+export const DEFAULT_ADMIN_EMAIL = 'operations@picdrop.internal'
 
-export const DEMO_ADMIN_PERMISSIONS = [
+export const ADMIN_PERMISSIONS = [
   'Manage deliveries, assignments, and delivery milestones',
   'Create partner records, approve or reject onboarding KYC applications, and verify documents',
   'Suspend, restrict, restore, and review partner activity and eligibility',
@@ -12,16 +12,16 @@ export const DEMO_ADMIN_PERMISSIONS = [
 ]
 
 /**
- * The Operations team demo contains one Administrator account.
- * These details are illustrative and are not production identity records.
+ * Fallback identity used before the Firebase-authenticated user is loaded into
+ * the local operations state. The signed-in account replaces it at runtime.
  */
-export function createDemoAdmin(): AdminUser {
+export function createDefaultAdmin(): AdminUser {
   return {
     id: 'ADM-OPS-01',
-    name: 'Operations Admin',
-    email: DEMO_ADMIN_EMAIL,
+    name: 'Operations Administrator',
+    email: DEFAULT_ADMIN_EMAIL,
     role: 'Admin',
     title: 'Delivery Operations Administrator',
-    maskedPhone: '+91 ••••• 4821',
+    maskedPhone: 'Not provided',
   }
 }

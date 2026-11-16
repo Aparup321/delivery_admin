@@ -39,6 +39,34 @@ export const firebaseWebConfig: FirebaseEnvConfig = {
 
 export const hasFirebaseEnvConfig = Boolean(firebaseWebConfig.projectId)
 
+function readList(value: string | undefined) {
+  return readEnv(value)
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+/** Emails allowed into the console. Production builds fail closed when empty. */
+export const demoModeEnabled = env.VITE_DEMO_MODE !== 'false'
+
+export const adminEmailAllowList = readList(env.VITE_ADMIN_EMAILS)
+export const hasAdminEmailAllowList = adminEmailAllowList.length > 0
+
+export function isAdminEmailAllowed(email: string) {
+  // Vite injects MODE/DEV/PROD, so an empty env object means a direct Node
+  // import (tests). Development builds also permit any Firebase user locally.
+  if (!hasAdminEmailAllowList) return Object.keys(env).length === 0 || Boolean(env.DEV)
+  return adminEmailAllowList.includes(email.trim().toLowerCase())
+}
+
+export const firebaseConfigError = !firebaseWebConfig.projectId
+  ? 'VITE_FIREBASE_PROJECT_ID is not set.'
+  : !firebaseWebConfig.apiKey
+    ? 'VITE_FIREBASE_API_KEY is not set.'
+    : env.PROD && !hasAdminEmailAllowList
+      ? 'VITE_ADMIN_EMAILS is not set. Add at least one administrator email.'
+      : ''
+
 /**
  * Seeds the admin console's Firestore connector from `.env.local`.
  * A connection saved in Settings → Partner app always wins; only empty or

@@ -1,5 +1,5 @@
 import type { AdminSession } from '../auth/adminSession'
-import { DEMO_ADMIN_PERMISSIONS } from '../domain/admin'
+import { ADMIN_PERMISSIONS } from '../domain/admin'
 import type { AdminUser } from '../domain/model'
 import { Button, Dialog, formatDate, Icon, initials, StatusBadge } from './ui'
 
@@ -30,10 +30,10 @@ export function AdminAccountDialog({ user, session, onClose, onSignOut }: Props)
 
       <div className="admin-account-permissions">
         <span className="summary-card-label">ADMINISTRATOR PERMISSIONS</span>
-        <ul>{DEMO_ADMIN_PERMISSIONS.map((permission) => <li key={permission}><span><Icon name="check" size={12} /></span>{permission}</li>)}</ul>
+        <ul>{ADMIN_PERMISSIONS.map((permission) => <li key={permission}><span><Icon name="check" size={12} /></span>{permission}</li>)}</ul>
       </div>
 
-      <div className="admin-account-note"><Icon name="shield" size={15} /><span>The Operations team demo exposes one Administrator account. This local profile and sign-in are illustrative and are not connected to an identity provider.</span></div>
+      <div className="admin-account-note"><Icon name="shield" size={15} /><span>This profile is tied to the Firebase Authentication session for this browser tab. The password is never stored by the console.</span></div>
       <div className="dialog-actions"><Button onClick={onClose}>Close</Button><Button variant="danger" onClick={onSignOut}><Icon name="logout" size={15} />Sign out</Button></div>
     </div>
   </Dialog>
