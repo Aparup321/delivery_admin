@@ -33,7 +33,7 @@ export function AdminAccountDialog({ user, session, onClose, onSignOut }: Props)
         <ul>{ADMIN_PERMISSIONS.map((permission) => <li key={permission}><span><Icon name="check" size={12} /></span>{permission}</li>)}</ul>
       </div>
 
-      <div className="admin-account-note"><Icon name="shield" size={15} /><span>This profile is tied to the Firebase Authentication session for this browser tab. The password is never stored by the console.</span></div>
+      <div className="admin-account-note"><Icon name="shield" size={15} /><span>This profile stays connected on this browser until you sign out. The password is never stored by the console; sign out on shared computers.</span></div>
       <div className="dialog-actions"><Button onClick={onClose}>Close</Button><Button variant="danger" onClick={onSignOut}><Icon name="logout" size={15} />Sign out</Button></div>
     </div>
   </Dialog>

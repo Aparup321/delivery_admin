@@ -139,17 +139,36 @@ function normalizeLinkName(value: string) {
  * unique normalized name gives the Administrator a useful starting point
  * without guessing when two people have the same name.
  */
+function phoneDigits(value: string | null | undefined) {
+  return (value ?? '').replace(/\D/g, '')
+}
+
+function fullPhoneKey(value: string | null | undefined) {
+  const digits = phoneDigits(value)
+  return digits.length >= 10 ? digits.slice(-10) : ''
+}
+
 function autoLinkPartnerAppRecords(data: OperationsState) {
   const recordsByName = new Map<string, PartnerAppRecord[]>()
+  const recordsByPhone = new Map<string, PartnerAppRecord[]>()
   for (const record of data.partnerAppRecords) {
-    const key = normalizeLinkName(record.name)
-    if (!key) continue
-    recordsByName.set(key, [...(recordsByName.get(key) ?? []), record])
+    const nameKey = normalizeLinkName(record.name)
+    if (nameKey) recordsByName.set(nameKey, [...(recordsByName.get(nameKey) ?? []), record])
+    const phoneKey = fullPhoneKey(record.phone)
+    if (phoneKey) recordsByPhone.set(phoneKey, [...(recordsByPhone.get(phoneKey) ?? []), record])
   }
 
   for (const partner of data.partners) {
     if (partner.partnerAppUid) continue
     const candidates = recordsByName.get(normalizeLinkName(partner.name)) ?? []
+    if (candidates.length === 1) partner.partnerAppUid = candidates[0].id
+  }
+
+  // Demo partner numbers link the local sample record to the live partner app
+  // document so an admin decision can be demonstrated end to end.
+  for (const partner of data.partners) {
+    if (partner.partnerAppUid || !partner.demoPhone) continue
+    const candidates = recordsByPhone.get(fullPhoneKey(partner.demoPhone)) ?? []
     if (candidates.length === 1) partner.partnerAppUid = candidates[0].id
   }
 
@@ -235,6 +254,7 @@ function approveApplication(data: OperationsState, application: PartnerApplicati
       id: partnerId,
       name: application.applicantName,
       maskedPhone: application.maskedPhone,
+      demoPhone: null,
       maskedEmail: application.maskedEmail,
       registeredAt: at,
       vehicle: application.vehicle,
@@ -624,6 +644,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
         id: partnerId,
         name,
         maskedPhone,
+        demoPhone: null,
         maskedEmail: maskEmailAddress(email || null),
         registeredAt: at,
         vehicle: action.vehicle,

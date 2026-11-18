@@ -6,18 +6,25 @@ import {
   DEMO_LOGIN_EMAIL,
   DEMO_OTP_CODE,
   isDemoOtpValid,
+  readDemoAdminSession,
   storeDemoAdminSession,
   type AdminSession,
 } from '../auth/adminSession'
 import { demoModeEnabled, firebaseConfigError, firebaseWebConfig, isAdminEmailAllowed } from '../config/firebase'
-import { signInFirebaseAdmin } from '../services/firebaseAuth'
+import { clearFirebaseAdminSession, signInFirebaseAdmin } from '../services/firebaseAuth'
 import { BrandMark, Button, Icon } from '../components/ui'
 
 type AccessMode = 'demo' | 'firebase'
 type DemoStep = 'email' | 'otp'
 
+function initialAccessMode(): AccessMode {
+  const requested = new URLSearchParams(window.location.search).get('signin')
+  if (requested === 'firebase') return 'firebase'
+  return demoModeEnabled ? 'demo' : 'firebase'
+}
+
 export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSession) => void }) {
-  const [accessMode, setAccessMode] = useState<AccessMode>(demoModeEnabled ? 'demo' : 'firebase')
+  const [accessMode, setAccessMode] = useState<AccessMode>(initialAccessMode)
   const [demoStep, setDemoStep] = useState<DemoStep>('email')
   const [demoEmail, setDemoEmail] = useState(DEMO_LOGIN_EMAIL)
   const [demoOtp, setDemoOtp] = useState('')
@@ -27,6 +34,7 @@ export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSess
   const [showPassword, setShowPassword] = useState(false)
   const [error, setError] = useState('')
   const [signingIn, setSigningIn] = useState(false)
+  const connectingData = new URLSearchParams(window.location.search).get('connect') === 'data'
   const configured = !firebaseConfigError
 
   function sendDemoOtp(event: FormEvent<HTMLFormElement>) {
@@ -69,11 +77,17 @@ export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSess
     setSigningIn(true)
     setError('')
     try {
-      clearAdminSession()
+      // A data connection must not replace the active demo console session.
+      if (connectingData) clearFirebaseAdminSession()
+      else clearAdminSession()
       const firebaseSession = await signInFirebaseAdmin(email, password, firebaseWebConfig.apiKey)
       if (!isAdminEmailAllowed(firebaseSession.email)) {
         clearAdminSession()
         throw new Error('This account is not on the operations administrator allow-list.')
+      }
+      if (connectingData && readDemoAdminSession()) {
+        window.location.assign('/admin')
+        return
       }
       onSignedIn(createAdminSession(firebaseSession))
     } catch (signInError) {
@@ -84,6 +98,12 @@ export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSess
   }
 
   const demoAccess = accessMode === 'demo'
+  const heading = connectingData ? 'Connect live partner data' : demoAccess ? 'Open the operations demo' : 'Sign in to operations'
+  const description = connectingData
+    ? 'Sign in with the Firebase administrator account. The demo console stays signed in while partner records come from Firestore.'
+    : demoAccess
+      ? 'Use the demo email and one-time code to explore preloaded partners, deliveries, KYC, and audit history.'
+      : 'Use the Firebase administrator account allowed by your delivery_app security rules.'
 
   return <div className="login-shell">
     <section className="login-brand-panel">
@@ -107,9 +127,9 @@ export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSess
         <div className="login-heading">
           <span className="login-heading-icon"><Icon name="lock" size={18} /></span>
           <div>
-            <span className="eyebrow">{demoAccess ? 'MANAGER DEMO' : 'ADMIN ACCESS'}</span>
-            <h2>{demoAccess ? 'Open the operations demo' : 'Sign in to operations'}</h2>
-            <p>{demoAccess ? 'Use the demo email and one-time code to explore preloaded partners, deliveries, KYC, and audit history.' : 'Use the Firebase administrator account allowed by your delivery_app security rules.'}</p>
+            <span className="eyebrow">{connectingData ? 'LIVE DATA CONNECTION' : demoAccess ? 'MANAGER DEMO' : 'ADMIN ACCESS'}</span>
+            <h2>{heading}</h2>
+            <p>{description}</p>
           </div>
         </div>
 
@@ -119,7 +139,7 @@ export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSess
         </div>}
 
         {demoAccess ? <>
-          <div className="login-demo-note"><Icon name="info" size={16} /><div><strong>Demo mode</strong><span>Partners and deliveries are preloaded. Opening the demo restores the sample data.</span></div></div>
+          <div className="login-demo-note"><Icon name="info" size={16} /><div><strong>Demo mode</strong><span>Partners and deliveries are preloaded. Opening the demo restores the sample data; live partner data can be connected from Partner app.</span></div></div>
           {demoError && <div className="login-error" role="alert"><Icon name="alert" size={15} /><span>{demoError}</span></div>}
 
           {demoStep === 'email' ? <form className="login-form" onSubmit={sendDemoOtp}>
@@ -141,11 +161,12 @@ export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSess
             <label className="field-label">Administrator email<input type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@company.com" required /></label>
             <span className="login-field-note">This must be a Firebase Authentication user whose UID is allow-listed in the delivery_app Firestore rules. Partner data syncs automatically after sign-in.</span>
             <label className="field-label">Password<span className="login-password-field"><input type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Enter your password" required /><button type="button" aria-label={showPassword ? 'Hide password' : 'Show password'} onClick={() => setShowPassword((value) => !value)}><Icon name="eye" size={15} /></button></span></label>
-            <Button type="submit" variant="primary" className="login-submit" disabled={signingIn || !configured}><Icon name="lock" size={15} />{signingIn ? 'Signing in…' : 'Sign in'}</Button>
+            <Button type="submit" variant="primary" className="login-submit" disabled={signingIn || !configured}><Icon name="lock" size={15} />{signingIn ? 'Connecting…' : connectingData ? 'Connect Firebase data' : 'Sign in'}</Button>
+            {connectingData && <button type="button" className="login-text-button" onClick={() => window.location.assign('/admin')}>Back to demo console</button>}
           </form>
 
-          <p className="login-security-note"><Icon name="shield" size={14} />Authentication is handled by Firebase. Passwords are never stored by this app, and the session ends when this browser tab closes.</p>
-          <p className="login-security-note"><Icon name="info" size={14} />Need access? Ask an existing administrator to create your Firebase user and add your UID to the delivery_app Firestore rules.</p>
+          <p className="login-security-note"><Icon name="shield" size={14} />Authentication is handled by Firebase. Passwords are never stored, and this browser stays connected until you sign out.</p>
+          <p className="login-security-note"><Icon name="info" size={14} />{connectingData ? 'This Firebase account authorizes live partner data only; your demo administrator identity stays active.' : 'Need access? Ask an existing administrator to create your Firebase user and add your UID to the delivery_app Firestore rules.'}</p>
         </>}
 
         <p className="login-footer">PicDrop + HopNgo · Internal delivery operations</p>

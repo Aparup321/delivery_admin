@@ -6,7 +6,7 @@ import type {
   PartnerAppRecord,
 } from './model.ts'
 
-export type KycDecisionStatus = 'Submitted' | 'Approved' | 'Rejected'
+export type KycDecisionStatus = 'KYC pending' | 'Submitted' | 'Approved' | 'Rejected'
 
 /**
  * One row in the KYC Review queue. Admin applications and live delivery_app
@@ -93,15 +93,13 @@ function applicationItem(data: OperationsState, application: PartnerApplication)
 }
 
 function recordItem(data: OperationsState, record: PartnerAppRecord, status: KycDecisionStatus): KycQueueItem | null {
-  // A delivery_app account created at sign-in has no applicant name yet. It is
-  // not an onboarding application until the partner completes the wizard.
-  if (!record.name.trim() || record.name === record.id) return null
-
   const partner = linkedPartner(data, record)
   // The local application is the authoritative review row when one exists.
   if (partner && data.applications.some((application) => application.partnerId === partner.id)) return null
 
   const fallbackPartnerId = record.partnerId && /^DP-\d{4}$/.test(record.partnerId) ? record.partnerId : null
+  const hasApplication = status !== 'KYC pending'
+  const namedApplicant = Boolean(record.name.trim()) && record.name !== record.id
 
   return {
     key: `record:${record.id}`,
@@ -110,10 +108,14 @@ function recordItem(data: OperationsState, record: PartnerAppRecord, status: Kyc
     recordId: record.id,
     partnerId: partner?.id ?? fallbackPartnerId,
     partnerAppUid: record.id,
-    applicantName: record.name,
-    businessName: fieldValue(record, ['businessName', 'business', 'company']) ?? 'delivery_app onboarding',
-    contact: record.email ?? record.phone ?? 'Not provided',
-    vehicle: record.vehicle ?? '—',
+    // A partner document created at sign-in only has the verified phone
+    // number, so show that until onboarding writes the applicant name.
+    applicantName: namedApplicant ? record.name : record.phone ?? 'New delivery partner',
+    businessName: hasApplication
+      ? fieldValue(record, ['businessName', 'business', 'company']) ?? 'delivery_app onboarding'
+      : 'Onboarding in progress',
+    contact: record.phone ?? record.email ?? 'Not provided',
+    vehicle: record.vehicle ?? (hasApplication ? '—' : 'Not selected'),
     serviceAreas: [...record.serviceAreas],
     submittedAt: record.updatedAt ?? record.syncedAt,
     documents: [],
@@ -129,13 +131,17 @@ function recordItem(data: OperationsState, record: PartnerAppRecord, status: Kyc
 /**
  * Builds the single KYC Review queue from admin applications plus any synced
  * delivery_app onboarding records that do not yet have a local application.
+ * A sign-in-only record is included as KYC pending so the Administrator can
+ * see the partner before the onboarding wizard is submitted.
  */
 export function buildKycQueue(data: OperationsState): KycQueueItem[] {
   const items = data.applications.map((application) => applicationItem(data, application))
   for (const record of data.partnerAppRecords) {
     if (data.applications.some((application) => application.partnerAppUid === record.id)) continue
-    const status = liveApplicationStatus(record.applicationStatus)
-    if (!status) continue
+    const namedApplicant = Boolean(record.name.trim()) && record.name !== record.id
+    const status = namedApplicant
+      ? liveApplicationStatus(record.applicationStatus) ?? 'KYC pending'
+      : 'KYC pending'
     const item = recordItem(data, record, status)
     if (item) items.push(item)
   }

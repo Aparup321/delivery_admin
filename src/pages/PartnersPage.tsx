@@ -3,7 +3,8 @@ import type { DocumentStatus, OperationsState, Partner, PartnerAppRecord, Partne
 import { getActiveAssignment, getPartnerEligibility, isDocumentCurrent } from '../domain/operations'
 import { Button, ConfirmDialog, Dialog, EmptyState, formatDate, Icon, initials, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
-import { partnerAppEndpoint } from '../services/partnerApp'
+import { beginFirebaseDataConnection } from '../auth/adminSession'
+import { partnerAppEndpoint, readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { roleCan } from '../state/operationsReducer'
 import { PartnerCreatePage } from './PartnerCreatePage'
@@ -115,10 +116,11 @@ function PartnerAppRecordDialog({ record, data, onClose, open }: { record: Partn
 }
 
 function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
-  const { partnerAppWriteFailures, retryPartnerAppWrites } = useOperations()
+  const { dispatch, partnerAppWriteFailures, retryPartnerAppWrites } = useOperations()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [recordId, setRecordId] = useState<string | null>(null)
+  const [syncing, setSyncing] = useState(false)
   const pageSize = 10
   const config = data.partnerApp
   const configured = config.mode === 'firestore' ? Boolean(config.projectId.trim() && config.partnersCollection.trim()) : Boolean(config.endpointUrl.trim())
@@ -135,13 +137,39 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
   const record = recordId ? data.partnerAppRecords.find((item) => item.id === recordId) : undefined
+  const firebaseSignedIn = hasFirebaseAdminSession()
+
+  async function refreshLive() {
+    if (!firebaseSignedIn) {
+      beginFirebaseDataConnection()
+      return
+    }
+    if (!configured) {
+      open('/admin/settings?tab=partner-app')
+      return
+    }
+    setSyncing(true)
+    try {
+      const records = await syncPartnerAppRecords(config, readPartnerAppToken())
+      dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString() })
+    } catch (error) {
+      dispatch({ type: 'partnerApp.failed', message: error instanceof Error ? error.message : 'Partner data refresh failed.' })
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   return <>
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>partner app records</span><span className="dot-separator" />{data.partners.filter((partner) => partner.partnerAppUid).length} linked partners · {config.lastSyncAt ? `Synced ${formatDate(config.lastSyncAt)}` : 'Never synced'}</div><Button size="small" onClick={() => open('/admin/settings?tab=partner-app')}><Icon name="settings" size={14} />Connection settings</Button></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>partner app records</span><span className="dot-separator" />{data.partners.filter((partner) => partner.partnerAppUid).length} linked partners · {config.lastSyncAt ? `Synced ${formatDate(config.lastSyncAt)}` : 'Never synced'}</div><div className="row-action-group">{firebaseSignedIn
+        ? <Button size="small" onClick={refreshLive} disabled={syncing || !configured}><Icon name="refresh" size={14} />{syncing ? 'Refreshing…' : 'Refresh live data'}</Button>
+        : <Button size="small" variant="primary" onClick={beginFirebaseDataConnection} disabled={!configured}><Icon name="lock" size={14} />Sign in to load live partners</Button>}<Button size="small" onClick={() => open('/admin/settings?tab=partner-app')}><Icon name="settings" size={14} />Connection settings</Button></div></div>
+      {!firebaseSignedIn && <div className="soft-notice"><Icon name="info" size={15} /><span className="partner-app-notice-copy">You are viewing the demo workspace. The new delivery_app partner will appear after signing in with the Firebase administrator account and refreshing live data.</span></div>}
       {!configured ? <EmptyState title="Partner app not connected" detail="Enter the delivery_admin Firebase config (same project as delivery_app) in Settings → Partner app, then sync partner records." action={<Button variant="primary" onClick={() => open('/admin/settings?tab=partner-app')}>Configure partner app</Button>} /> : <>
         {config.lastError && <div className="soft-notice"><Icon name="alert" size={15} /><span className="partner-app-notice-copy">Last delivery_app update failed: {config.lastError}{requestUrl && <small className="partner-app-error-url">Request: {requestUrl}</small>}</span>{partnerAppWriteFailures > 0 && <Button size="small" variant="primary" onClick={retryPartnerAppWrites}>Retry {partnerAppWriteFailures} update{partnerAppWriteFailures === 1 ? '' : 's'}</Button>}</div>}
-        {data.partnerAppRecords.length === 0 ? <EmptyState title="No partner app records synced" detail="Run Sync partner data from Settings → Partner app. Records returned by delivery_app appear here after a successful sync." action={<Button variant="primary" onClick={() => open('/admin/settings?tab=partner-app')}>Open connection settings</Button>} /> : <>
+        {data.partnerAppRecords.length === 0 ? <EmptyState title="No partner app records synced" detail={firebaseSignedIn ? 'Refresh live data to load the partners collection from delivery_app.' : 'Sign in with the Firebase administrator account to load the live partners collection. Demo records do not call Firebase.'} action={firebaseSignedIn
+          ? <Button variant="primary" onClick={refreshLive} disabled={syncing || !configured}><Icon name="refresh" size={14} />{syncing ? 'Refreshing…' : 'Refresh live data'}</Button>
+          : <Button variant="primary" onClick={beginFirebaseDataConnection} disabled={!configured}><Icon name="lock" size={14} />Sign in with Firebase</Button>} /> : <>
           <div className="filter-toolbar kyc-filter-toolbar"><label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search record, partner ID, contact, vehicle, status, or application" aria-label="Search partner app records" /></label></div>
           <div className="table-scroll"><table className="data-table app-data-table"><thead><tr><th>App record</th><th>Contact</th><th>Vehicle / areas</th><th>Application</th><th>Account</th><th>Admin partner</th><th>Updated</th><th /></tr></thead><tbody>
             {visible.map((item) => {

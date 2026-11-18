@@ -88,6 +88,13 @@ export function SettingsPage({ data, initialTab }: { data: OperationsState; init
             <div className="settings-note"><Icon name="info" size={15} /><span>Resetting replaces local changes with the original demo partners, deliveries, KYC applications, notifications, and audit history.</span></div>
             <div className="reset-data-row"><div><strong>Reload demo data</strong><span>Discard changes and restore the sample records.</span></div><Button variant="danger" disabled={!canManage} onClick={() => setResetOpen(true)}><Icon name="refresh" size={15} />Reload demo data</Button></div>
           </div>
+          <div className="settings-section">
+            <div className="settings-section-title"><strong>Partner app demo logins</strong><span>Use these synthetic numbers with the partner app's demo OTP. No SMS is sent.</span></div>
+            <div className="demo-data-summary demo-login-summary">
+              {data.partners.filter((partner) => partner.demoPhone).map((partner) => <div key={partner.id}><span>{partner.id} · {partner.name}</span><strong>{partner.demoPhone}</strong></div>)}
+            </div>
+            <div className="settings-note"><Icon name="info" size={15} /><span>A synced partner app record with the same number links to this demo partner automatically. Approve KYC, then use Suspend/Restore to write the decision back to the partner app.</span></div>
+          </div>
         </>}
       </Panel>
     </div>

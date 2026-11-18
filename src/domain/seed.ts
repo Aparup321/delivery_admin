@@ -16,7 +16,7 @@ function makeMilestones(completedCount: number, now: number, baseOffset: number)
   }))
 }
 
-const partnerSeedRows: Array<Omit<Partner, 'maskedPhone' | 'maskedEmail' | 'registeredAt' | 'maskedRegistration' | 'restrictedReason' | 'suspendedReason' | 'needsOperationalReview' | 'partnerAppUid'>> = [
+const partnerSeedRows: Array<Omit<Partner, 'maskedPhone' | 'demoPhone' | 'maskedEmail' | 'registeredAt' | 'maskedRegistration' | 'restrictedReason' | 'suspendedReason' | 'needsOperationalReview' | 'partnerAppUid'>> = [
   { id: 'DP-0192', name: 'Anirban G.', vehicle: 'Bike', serviceAreas: ['Barasat', 'New Town', 'Rajarhat'], availability: 'On Delivery' },
   { id: 'DP-0189', name: 'Mohit S.', vehicle: 'Scooter', serviceAreas: ['Dum Dum', 'Salt Lake', 'Kolkata'], availability: 'On Delivery' },
   { id: 'DP-0178', name: 'Rakesh P.', vehicle: 'Van', serviceAreas: ['Lake Town', 'Sector V', 'Salt Lake'], availability: 'On Delivery' },
@@ -30,10 +30,19 @@ const partnerSeedRows: Array<Omit<Partner, 'maskedPhone' | 'maskedEmail' | 'regi
   { id: 'DP-0169', name: 'Ayan P.', vehicle: 'Bike', serviceAreas: ['Kolkata', 'Bidhannagar'], availability: 'Available' },
 ]
 
+function demoPhoneFor(index: number) {
+  return `+91 90000 0${String(4100 + index * 137).slice(-4)}`
+}
+
+export const DEMO_PARTNER_PHONES: Record<string, string> = Object.fromEntries(
+  partnerSeedRows.map((partner, index) => [partner.id, demoPhoneFor(index)]),
+)
+
 function makePartners(now: number): Partner[] {
   return partnerSeedRows.map((partner, index) => ({
     ...partner,
     maskedPhone: `+91 ••••• ${String(4100 + index * 137).slice(-4)}`,
+    demoPhone: demoPhoneFor(index),
     maskedEmail: `${partner.name.split(' ')[0].toLowerCase()}••@picdrop.in`,
     registeredAt: isoFrom(now, -(90 + index * 23) * 24 * 60),
     maskedRegistration: `WB-••-${String(2100 + index * 79).slice(-4)}`,

@@ -106,3 +106,10 @@ export function clearAdminSession() {
   clearPartnerAppToken()
   return true
 }
+
+/** Opens the Firebase form to attach live data while keeping demo access. */
+export function beginFirebaseDataConnection() {
+  clearFirebaseAdminSession()
+  clearPartnerAppToken()
+  window.location.assign('/admin?signin=firebase&connect=data')
+}

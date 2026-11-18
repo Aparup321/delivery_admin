@@ -214,6 +214,8 @@ a { color: inherit; }
 .status-assigned .status-dot, .status-in-transit .status-dot, .status-accepted .status-dot { background: #713CE0; }
 .status-pending, .status-created, .status-awaiting-response, .status-submitted, .status-under-review, .status-unassigned { color: #91600d; background: #fff6e8; border-color: #f2e6ce; }
 .status-pending .status-dot, .status-awaiting-response .status-dot, .status-unassigned .status-dot { background: #d28b24; }
+.status-kyc-pending { color: #5b4b7a; background: #f2eefb; border-color: #e5dcf7; }
+.status-kyc-pending .status-dot { background: #8b6ac7; }
 .status-delayed, .status-rejected, .status-expired, .status-suspended, .status-cancelled, .status-timed-out, .status-ineligible { color: #a43d49; background: #fff0f1; border-color: #f3dfe1; }
 .status-delayed .status-dot, .status-rejected .status-dot, .status-expired .status-dot, .status-suspended .status-dot, .status-cancelled .status-dot, .status-timed-out .status-dot, .status-ineligible .status-dot { background: #c84c58; }
 .status-offline, .status-released, .status-missing { color: #706b78; background: #f1f0f3; border-color: #e8e6eb; }
@@ -863,6 +865,7 @@ a { color: inherit; }
 .demo-data-summary > div { display: grid; gap: 6px; min-height: 59px; padding: 11px; border-right: 1px solid #efedf3; border-bottom: 1px solid #efedf3; }
 .demo-data-summary span { color: #898492; font-size: 8px; }
 .demo-data-summary strong { color: #494352; font-size: 10px; }
+.demo-login-summary strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: -.2px; }
 .reset-data-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 15px; padding-top: 13px; border-top: 1px solid #efedf3; }
 .reset-data-row > div { display: grid; gap: 4px; }
 .reset-data-row > div strong { color: #504a58; font-size: 9px; }

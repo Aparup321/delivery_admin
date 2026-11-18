@@ -12,7 +12,7 @@ import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/
 import type { PartnerAppConfig } from '../src/domain/model.ts'
 import { DEFAULT_ADMIN_EMAIL } from '../src/domain/admin.ts'
 import { clearAdminSession, createAdminSession, createDemoAdminSession, DEMO_OTP_CODE, isDemoOtpValid, readAdminSession, readDemoAdminSession, storeDemoAdminSession } from '../src/auth/adminSession.ts'
-import type { FirebaseAdminSession } from '../src/services/firebaseAuth.ts'
+import { clearFirebaseAdminSession, readFirebaseAdminSession, storeFirebaseAdminSession, type FirebaseAdminSession } from '../src/services/firebaseAuth.ts'
 
 function frameWithDemo(): AppFrame {
   return { data: createDemoState(), feedback: null, sequence: 0 }
@@ -69,6 +69,87 @@ test('Administrator session is derived from Firebase Authentication and cleared 
     assert.equal(clearAdminSession(), true)
     assert.equal(readAdminSession(), null)
   } finally {
+    delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test('the persistent Firebase session reconnects after an app restart without storing an ID token', () => {
+  const tabStore = new Map<string, string>()
+  const diskStore = new Map<string, string>()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: {
+        getItem: (key: string) => tabStore.get(key) ?? null,
+        setItem: (key: string, value: string) => { tabStore.set(key, value) },
+        removeItem: (key: string) => { tabStore.delete(key) },
+      },
+      localStorage: {
+        getItem: (key: string) => diskStore.get(key) ?? null,
+        setItem: (key: string, value: string) => { diskStore.set(key, value) },
+        removeItem: (key: string) => { diskStore.delete(key) },
+      },
+    },
+  })
+  try {
+    const firebase: FirebaseAdminSession = {
+      uid: 'firebase-uid-2',
+      email: 'ops@example.com',
+      displayName: 'Ops Lead',
+      idToken: 'short-lived-id-token',
+      refreshToken: 'long-lived-refresh-token',
+      expiresAt: Date.now() + 3_600_000,
+      signedInAt: '2026-05-01T09:30:00.000Z',
+    }
+    storeFirebaseAdminSession(firebase)
+    const persistedRaw = diskStore.get('picdrop-firebase-admin-session-persisted-v1')
+    assert.ok(persistedRaw)
+    const persisted = JSON.parse(persistedRaw) as FirebaseAdminSession
+    assert.equal(persisted.refreshToken, 'long-lived-refresh-token')
+    assert.equal(persisted.idToken, '')
+    assert.equal(persisted.expiresAt, 0)
+
+    // Simulate a browser restart: the tab session is gone, only disk remains.
+    clearFirebaseAdminSession()
+    diskStore.set('picdrop-firebase-admin-session-persisted-v1', persistedRaw)
+    const restored = readFirebaseAdminSession()
+    assert.equal(restored?.uid, 'firebase-uid-2')
+    assert.equal(restored?.refreshToken, 'long-lived-refresh-token')
+    assert.equal(restored?.idToken, '')
+    assert.equal(readAdminSession()?.mode, 'Firebase Authentication')
+  } finally {
+    clearFirebaseAdminSession()
+    delete (globalThis as { window?: unknown }).window
+  }
+})
+
+test('demo access can keep a separate Firebase data connection', () => {
+  const store = new Map<string, string>()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      sessionStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value) },
+        removeItem: (key: string) => { store.delete(key) },
+      },
+    },
+  })
+  try {
+    clearAdminSession()
+    storeDemoAdminSession(createDemoAdminSession())
+    storeFirebaseAdminSession({
+      uid: 'firebase-data-uid',
+      email: 'ops@example.com',
+      idToken: 'id-token',
+      refreshToken: 'refresh-token',
+      expiresAt: Date.now() + 3_600_000,
+      signedInAt: '2026-05-01T09:30:00.000Z',
+    })
+    assert.equal(readAdminSession()?.mode, 'Demo access')
+    assert.equal(readFirebaseAdminSession()?.uid, 'firebase-data-uid')
+  } finally {
+    clearAdminSession()
     delete (globalThis as { window?: unknown }).window
   }
 })
@@ -407,7 +488,11 @@ test('the KYC queue unifies local applications with synced delivery_app onboardi
   assert.equal(liveItem.applicantName, 'Aparup Santra')
   assert.equal(liveItem.businessName, 'delivery_app onboarding')
   assert.equal(liveItem.documentsKnown, false)
-  assert.equal(liveQueue.some((item) => item.recordId === 'session-only-uid'), false)
+  const sessionOnly = liveQueue.find((item) => item.recordId === 'session-only-uid')!
+  assert.equal(sessionOnly.status, 'KYC pending')
+  assert.equal(sessionOnly.applicantName, '+91 90000 00000')
+  assert.equal(sessionOnly.businessName, 'Onboarding in progress')
+  assert.equal(sessionOnly.documentsKnown, false)
 
   const approved = apply(synced, { type: 'partnerApp.review', recordId: 'live-kyc-uid', decision: 'Approved', note: 'Verified in delivery_app' })
   expectSuccess(approved)
@@ -548,6 +633,28 @@ test('a live delivery_app application can be reviewed, approved, and linked with
     assert.equal(restoreIntent.active, true)
     assert.equal(restoreIntent.reason, 'Investigation closed')
   }
+})
+
+test('demo partner phone numbers auto-link synced partner app records', () => {
+  const synced = apply(frameWithDemo(), {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'live-anirban-uid', partnerId: null, name: 'Unknown Device', phone: '+91 90000 04100',
+      email: null, vehicle: 'Bike', status: 'active', applicationStatus: 'approved',
+      serviceAreas: ['Barasat'], updatedAt: '2026-06-01T09:55:00.000Z',
+      fields: { phone: '+91 90000 04100' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }, {
+      id: 'live-subhajit-uid', partnerId: null, name: 'Unknown Device Two', phone: '+91 90000 04511',
+      email: null, vehicle: 'Bike', status: 'pending', applicationStatus: 'submitted',
+      serviceAreas: ['Kolkata'], updatedAt: '2026-06-01T09:56:00.000Z',
+      fields: { phone: '+91 90000 04511' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  expectSuccess(synced)
+  assert.equal(synced.data.partners.find((partner) => partner.id === 'DP-0192')?.partnerAppUid, 'live-anirban-uid')
+  assert.equal(synced.data.partners.find((partner) => partner.id === 'DP-0195')?.partnerAppUid, 'live-subhajit-uid')
+  assert.equal(synced.data.applications.find((application) => application.id === 'APP-2038')?.partnerAppUid, 'live-subhajit-uid')
 })
 
 test('a successful delivery_app write updates the cached record while a failed write keeps it unchanged', () => {

@@ -55,6 +55,8 @@ function isActive(pathname: string, path: string) {
 export default function App() {
   const { dispatch } = useOperations()
   const [session, setSession] = useState<AdminSession | null>(() => readAdminSession())
+  // A connect/data flow keeps the demo session alive underneath the login form.
+  const forceLogin = new URLSearchParams(window.location.search).get('signin') === 'firebase'
 
   useEffect(() => {
     if (!session) return
@@ -62,11 +64,12 @@ export default function App() {
   }, [session, dispatch])
 
   function handleSignedIn(nextSession: AdminSession) {
+    window.history.replaceState({}, '', '/admin')
     if (nextSession.mode === 'Demo access') dispatch({ type: 'demo.reset' })
     setSession(nextSession)
   }
 
-  if (!session) return <AdminLoginPage onSignedIn={handleSignedIn} />
+  if (!session || forceLogin) return <AdminLoginPage onSignedIn={handleSignedIn} />
   return <AdminWorkspace session={session} onSignedOut={() => setSession(null)} />
 }
 

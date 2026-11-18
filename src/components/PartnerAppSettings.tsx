@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { beginFirebaseDataConnection } from '../auth/adminSession'
 import { hasFirebaseEnvConfig } from '../config/firebase'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
@@ -43,7 +44,7 @@ export function PartnerAppSettings() {
 
   return <>
     <div className="settings-section-title"><strong>Partner records</strong><span>delivery_app → delivery_admin</span></div>
-    <div className="settings-note"><Icon name={firebaseSession ? 'check-circle' : 'info'} size={15} /><span>{firebaseSession ? <>Signed in as <strong>{firebaseSession.email}</strong>. Partner data syncs automatically after Firebase sign-in.</> : 'Demo access is active. Sample partners and deliveries are preloaded; a real Firebase login loads live partner records automatically.'}</span></div>
+    <div className="settings-note"><Icon name={firebaseSession ? 'check-circle' : 'info'} size={15} /><span>{firebaseSession ? <>Connected as <strong>{firebaseSession.email}</strong>. Live partner data syncs automatically; the console identity stays unchanged.</> : 'Demo access is active. Connect a Firebase administrator to load live partner records without leaving the demo console.'}</span></div>
 
     <div className="partner-app-status">
       <div><span>Connection</span><strong>{firebaseSession ? 'Firebase Authentication' : 'Demo access'}</strong></div>
@@ -57,10 +58,14 @@ export function PartnerAppSettings() {
     {notice && <div className={`partner-app-notice ${notice.kind}`}><Icon name={notice.kind === 'error' ? 'alert' : notice.kind === 'success' ? 'check-circle' : 'info'} size={14} /><span className="partner-app-notice-copy">{notice.message}</span></div>}
 
     <div className="partner-app-actions">
-      <Button variant="primary" onClick={syncNow} disabled={busy || !configured || !firebaseSession} title={!firebaseSession ? 'Sign in with Firebase to sync live partners' : undefined}>
-        <Icon name="refresh" size={14} />{busy ? 'Syncing…' : 'Sync partner data'}
-      </Button>
-      <span className="field-help">No token or project fields are needed. The signed-in Firebase account is used automatically.</span>
+      {firebaseSession
+        ? <Button variant="primary" onClick={syncNow} disabled={busy || !configured}>
+          <Icon name="refresh" size={14} />{busy ? 'Syncing…' : 'Sync partner data'}
+        </Button>
+        : <Button variant="primary" onClick={beginFirebaseDataConnection} disabled={!hasFirebaseEnvConfig}>
+          <Icon name="lock" size={14} />Sign in to load live partners
+        </Button>}
+      <span className="field-help">{firebaseSession ? 'No token or project fields are needed. The signed-in Firebase account is used automatically.' : 'Demo records are local samples. Sign in with the Firebase administrator account to read the live partners collection.'}</span>
     </div>
     <div className="settings-note"><Icon name="lock" size={15} /><span>Reads and live account actions use the same Firebase project as delivery_app. Firestore rules must allow the signed-in administrator UID.</span></div>
   </>

@@ -157,6 +157,8 @@ export interface Partner {
   id: string
   name: string
   maskedPhone: string
+  /** Synthetic number shown only for demo partner-app sign-in. */
+  demoPhone: string | null
   maskedEmail: string
   registeredAt: string
   vehicle: VehicleType

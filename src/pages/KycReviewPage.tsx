@@ -4,7 +4,7 @@ import { buildKycQueue } from '../domain/kyc'
 import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 
-type StatusFilter = 'Needs review' | 'All' | 'Approved' | 'Rejected'
+type StatusFilter = 'Needs review' | 'KYC pending' | 'All' | 'Approved' | 'Rejected'
 
 function vehicleIcon(vehicle: string): 'bike' | 'scooter' | 'van' | 'route' {
   const normalized = vehicle.toLowerCase()
@@ -102,6 +102,7 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
   const canReview = frame.data.user.role === 'Admin'
   const queue = useMemo(() => buildKycQueue(data), [data])
   const pending = queue.filter((item) => item.status === 'Submitted').length
+  const onboardingPending = queue.filter((item) => item.status === 'KYC pending').length
   const liveCount = queue.filter((item) => item.source === 'delivery_app').length
   const vehicles = [...new Set(queue.map((item) => item.vehicle).filter((value) => value && value !== '—'))].sort()
 
@@ -116,8 +117,12 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
       item.vehicle,
       ...item.serviceAreas,
     ].join(' ').toLowerCase().includes(query)
+    const matchesStatus = status === 'All'
+      || (status === 'Needs review'
+        ? item.status === 'Submitted' || item.status === 'KYC pending'
+        : item.status === status)
     return matchesQuery
-      && (status === 'All' || (status === 'Needs review' ? item.status === 'Submitted' : item.status === status))
+      && matchesStatus
       && (vehicle === 'All' || item.vehicle === vehicle)
   }), [queue, search, status, vehicle])
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
@@ -131,13 +136,13 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
 
   return <>
     <Panel className="records-panel kyc-queue-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>KYC applications</span><span className="dot-separator" />{pending} awaiting review · {liveCount} from delivery_app</div><span className="demo-caption">Administrator approval only</span></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>KYC applications</span><span className="dot-separator" />{pending} awaiting review · {onboardingPending} KYC pending · {liveCount} from delivery_app</div><span className="demo-caption">Administrator approval only</span></div>
       <div className="filter-toolbar kyc-filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search applicant, business, ID, contact, or area" aria-label="Search KYC applications" /></label>
-        <label className="filter-control"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value as StatusFilter); setPage(1) }}><option>Needs review</option><option>All</option><option>Approved</option><option>Rejected</option></select></label>
+        <label className="filter-control"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value as StatusFilter); setPage(1) }}><option>Needs review</option><option>KYC pending</option><option>All</option><option>Approved</option><option>Rejected</option></select></label>
         <label className="filter-control"><span>Vehicle</span><select value={vehicle} onChange={(event) => { setVehicle(event.target.value); setPage(1) }}><option>All</option>{vehicles.map((item) => <option key={item}>{item}</option>)}</select></label>
       </div>
-      <div className="table-scroll"><table className="data-table applications-table"><thead><tr><th>Applicant</th><th>Vehicle / areas</th><th>Documents</th><th>Submitted</th><th>Status</th><th>Decision / reviewer</th><th>Actions</th></tr></thead><tbody>
+      <div className="table-scroll"><table className="data-table applications-table"><thead><tr><th>Applicant</th><th>Vehicle / areas</th><th>Documents</th><th>Submitted / signed in</th><th>Status</th><th>Decision / reviewer</th><th>Actions</th></tr></thead><tbody>
         {visible.map((item) => {
           const missing = item.documentsKnown ? data.settings.requiredDocuments.filter((type) => !item.documents.includes(type)) : []
           return <tr key={item.key}>
@@ -145,18 +150,22 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
             <td><span className="application-documents"><strong><Icon name={vehicleIcon(item.vehicle)} size={15} /> {item.vehicle}</strong><small>{item.serviceAreas.join(', ') || 'No service areas'}</small></span></td>
             <td>{item.documentsKnown
               ? <span className="application-documents"><strong>{item.documents.length} submitted</strong><small>{missing.length ? `Missing: ${missing.join(', ')}` : 'All mandatory documents attached'}</small></span>
-              : <span className="application-documents"><strong>delivery_app</strong><small>No local document record</small></span>}</td>
+              : item.status === 'KYC pending'
+                ? <span className="application-documents"><strong>Not submitted</strong><small>Onboarding required</small></span>
+                : <span className="application-documents"><strong>delivery_app</strong><small>No local document record</small></span>}</td>
             <td>{formatDate(item.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
             <td><StatusBadge status={item.status} /></td>
-            <td><span className={item.status === 'Rejected' ? 'kyc-issue-text' : 'kyc-reviewer-text'}>{item.decisionReason ?? item.reviewedBy ?? (item.status === 'Submitted' ? 'Awaiting Administrator review' : 'Decision recorded')}</span>{item.reviewedAt && <small className="muted-text">{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}{item.resubmitted && <small className="kyc-issue-text">Resubmitted from delivery_app</small>}{!item.resubmitted && item.source === 'admin' && item.partnerAppUid && <small className="muted-text">delivery_app account linked</small>}</td>
+            <td><span className={item.status === 'Rejected' ? 'kyc-issue-text' : 'kyc-reviewer-text'}>{item.status === 'KYC pending' ? 'Onboarding not submitted' : item.decisionReason ?? item.reviewedBy ?? (item.status === 'Submitted' ? 'Awaiting Administrator review' : 'Decision recorded')}</span>{item.reviewedAt && <small className="muted-text">{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}{item.resubmitted && <small className="kyc-issue-text">Resubmitted from delivery_app</small>}{!item.resubmitted && item.source === 'admin' && item.partnerAppUid && <small className="muted-text">delivery_app account linked</small>}</td>
             <td>{item.status === 'Submitted'
               ? <span className="row-action-group"><Button size="small" variant="primary" disabled={!canReview} title={canReview ? 'Approve this KYC application' : 'Administrator access required'} onClick={() => setReview({ key: item.key, decision: 'Approved' })}>Approve</Button><Button size="small" variant="danger" disabled={!canReview} title={canReview ? 'Reject this KYC application' : 'Administrator access required'} onClick={() => setReview({ key: item.key, decision: 'Rejected' })}>Reject</Button></span>
-              : <Button size="small" variant="quiet" onClick={() => item.partnerId ? open(`/admin/partners/${item.partnerId}`) : undefined} disabled={!item.partnerId}>{item.partnerId ? 'Open partner' : 'Decision recorded'}</Button>}</td>
+              : item.status === 'KYC pending'
+                ? <Button size="small" variant="quiet" disabled title="The partner must submit onboarding before KYC review">Awaiting onboarding</Button>
+                : <Button size="small" variant="quiet" onClick={() => item.partnerId ? open(`/admin/partners/${item.partnerId}`) : undefined} disabled={!item.partnerId}>{item.partnerId ? 'Open partner' : 'Decision recorded'}</Button>}</td>
           </tr>
         })}
-      </tbody></table>{visible.length === 0 && <EmptyState title="No KYC applications match" detail="Adjust the status or vehicle filters. Pending applications are shown by default." />}</div>
+      </tbody></table>{visible.length === 0 && <EmptyState title="No KYC applications match" detail="Adjust the status or vehicle filters. New sign-ins and submitted applications are shown by default." />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
-      <div className="notification-history-note"><Icon name="shield" size={14} />Only an Administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. delivery_app applications appear after a sync in Settings → Partner app.</div>
+      <div className="notification-history-note"><Icon name="shield" size={14} />Only an Administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. Sign-in-only partner accounts appear as KYC pending until onboarding is submitted; delivery_app records sync automatically after Firebase sign-in and periodically refresh.</div>
     </Panel>
     {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} initialDecision={review.decision} onClose={() => setReview(null)} />}
     {review && !reviewLive && reviewApplication && <ApplicationReviewDialog key={`${reviewApplication.id}-${review.decision}`} application={reviewApplication} initialDecision={review.decision} onClose={() => setReview(null)} />}

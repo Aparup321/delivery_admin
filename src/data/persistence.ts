@@ -1,6 +1,6 @@
 import { applyFirebaseConnectionDefaults } from '../config/firebase.ts'
 import type { OperationsState } from '../domain/model'
-import { createDemoState } from '../domain/seed.ts'
+import { createDemoState, DEMO_PARTNER_PHONES } from '../domain/seed.ts'
 
 const STORAGE_KEY = 'picdrop-hopngo-operations-demo-v3'
 
@@ -37,6 +37,7 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
     partnerApp: applyFirebaseConnectionDefaults(parsed.partnerApp),
     partners: parsed.partners.map((partner) => ({
       ...partner,
+      demoPhone: typeof partner.demoPhone === 'string' ? partner.demoPhone : DEMO_PARTNER_PHONES[partner.id] ?? null,
       partnerAppUid: linkedRecordId(partner.partnerAppUid),
     })),
     applications: parsed.applications.map((application) => ({
