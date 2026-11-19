@@ -147,10 +147,21 @@ function detailFieldLabel(key: string) {
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+const detailDateKeys = new Set(['adminReview.reviewedAt', 'adminSuspension.updatedAt', 'statusUpdatedAt'])
+
+function detailFieldValue(key: string, value: string) {
+  if (!detailDateKeys.has(key)) return value
+  return formatDate(value, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+
+function sentenceCase(value: string) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value
+}
+
 export function KycApplicationDetailsDialog({ item, application, record, onClose, onReview, onOpenPartner }: { item: KycQueueItem; application?: PartnerApplication; record?: PartnerAppRecord; onClose: () => void; onReview?: () => void; onOpenPartner?: () => void }) {
   const documents = application?.documents ?? item.documents
-  const phone = record?.phone ?? application?.maskedPhone ?? (item.source === 'delivery_app' ? item.contact : null)
-  const email = record?.email ?? application?.maskedEmail ?? (item.source === 'admin' ? item.contact : null)
+  const phone = record?.phone ?? application?.maskedPhone ?? null
+  const email = record?.email ?? application?.maskedEmail ?? null
   const detailFields = record
     ? Object.entries(record.fields)
         .filter(([key, value]) => value.trim() && !detailSummaryKeys.has(key) && !detailHiddenKeys.has(key))
@@ -158,14 +169,17 @@ export function KycApplicationDetailsDialog({ item, application, record, onClose
     : []
 
   return <Dialog title="Application details" eyebrow="KYC APPLICATION DETAILS" onClose={onClose} wide>
-    <div className="dialog-form">
-      <div className="details-dialog-header"><div><strong>{item.applicantName}</strong><span>{item.businessName}</span></div><StatusBadge status={item.status} /></div>
-      <div className="application-review-summary">
+    <div className="dialog-form kyc-details-dialog">
+      <div className="details-dialog-header">
+        <span className="details-avatar">{initials(item.applicantName)}</span>
+        <div className="details-identity"><strong>{item.applicantName}</strong><span>{item.businessName}</span></div>
+        <div className="details-header-status"><StatusBadge status={item.status} /><small>{item.source === 'delivery_app' ? 'delivery_app application' : 'Admin application'}</small></div>
+      </div>
+      <div className="application-review-summary details-summary">
         <div><span>Application ID</span><strong>{item.applicationId ?? record?.id ?? '—'}</strong></div>
-        <div><span>Source</span><strong>{item.source === 'delivery_app' ? 'delivery_app' : 'Admin application'}</strong></div>
         <div><span>Phone</span><strong>{phone || '—'}</strong></div>
         <div><span>Email</span><strong>{email || '—'}</strong></div>
-        <div><span>Vehicle</span><strong>{item.vehicle || '—'}</strong></div>
+        <div><span>Vehicle</span><strong>{sentenceCase(item.vehicle) || '—'}</strong></div>
         <div><span>Service areas</span><strong>{item.serviceAreas.join(', ') || '—'}</strong></div>
         <div><span>Submitted</span><strong>{formatDate(item.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></div>
         {item.reviewedAt && <div><span>Reviewed</span><strong>{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></div>}
@@ -174,9 +188,29 @@ export function KycApplicationDetailsDialog({ item, application, record, onClose
         {item.reviewedBy && <div><span>Reviewed by</span><strong>{item.reviewedBy}</strong></div>}
         {item.decisionReason && <div><span>Decision note</span><strong>{item.decisionReason}</strong></div>}
       </div>
-      <div className="application-doc-checklist"><span className="application-doc-checklist-label">Submitted documents</span>{documents.length > 0 ? documents.map((document) => <div key={document} className="attached"><span><Icon name="check-circle" size={13} />{document}</span><small>Attached</small></div>) : <div className="details-empty"><span>No document details available</span><small>{item.status === 'KYC pending' ? 'Onboarding has not been submitted' : 'KYC files stay in delivery_app and are not copied into this synced record'}</small></div>}</div>
-      {detailFields.length > 0 && <div className="application-doc-checklist"><span className="application-doc-checklist-label">Additional submitted information</span>{detailFields.map(([key, value]) => <div key={key} className="details-field"><span>{detailFieldLabel(key)}</span><strong>{value}</strong></div>)}</div>}
-      <div className="dialog-actions"><Button onClick={onClose}>Close</Button>{onOpenPartner && <Button onClick={onOpenPartner}>Open partner</Button>}{onReview && <Button variant="primary" onClick={onReview}>Review decision</Button>}</div>
+      <section className="details-section">
+        <div className="details-section-head">
+          <span className="details-section-icon"><Icon name="file" size={14} /></span>
+          <div><strong>Submitted documents</strong><small>KYC checklist</small></div>
+          <span className="details-section-count">{documents.length > 0 ? `${documents.length} attached` : 'Not available'}</span>
+        </div>
+        <div className="application-doc-checklist details-document-list">
+          {documents.length > 0
+            ? documents.map((document) => <div key={document} className="attached"><span><Icon name="check-circle" size={13} />{document}</span><small>Attached</small></div>)
+            : <div className="details-empty"><span>No document details available</span><small>{item.status === 'KYC pending' ? 'Onboarding has not been submitted' : 'KYC files stay in delivery_app and are not copied into this synced record'}</small></div>}
+        </div>
+      </section>
+      {detailFields.length > 0 && <section className="details-section">
+        <div className="details-section-head">
+          <span className="details-section-icon"><Icon name="info" size={14} /></span>
+          <div><strong>Additional submitted information</strong><small>Synced from delivery_app</small></div>
+          <span className="details-section-count">{detailFields.length} fields</span>
+        </div>
+        <div className="details-field-grid">
+          {detailFields.map(([key, value]) => <div key={key} className="details-tile"><span>{detailFieldLabel(key)}</span><strong>{detailFieldValue(key, value)}</strong></div>)}
+        </div>
+      </section>}
+      <div className="dialog-actions"><Button onClick={onClose}>Close</Button>{onOpenPartner && <Button onClick={onOpenPartner}><Icon name="external" size={13} />Open partner</Button>}{onReview && <Button variant="primary" onClick={onReview}><Icon name="shield" size={13} />Review decision</Button>}</div>
     </div>
   </Dialog>
 }
