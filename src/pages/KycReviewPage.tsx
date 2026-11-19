@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import type { OperationsState, Partner, PartnerAppRecord, PartnerApplication } from '../domain/model'
-import { buildKycQueue } from '../domain/kyc'
+import { buildKycQueue, type KycQueueItem } from '../domain/kyc'
 import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 
@@ -91,29 +91,91 @@ export function LiveApplicationReviewDialog({ record, application, linkedPartner
   </Dialog>
 }
 
-export function KycApplicationDetailsDialog({ item, application, record, onClose, onReview }: { item: ReturnType<typeof buildKycQueue>[number]; application?: PartnerApplication; record?: PartnerAppRecord; onClose: () => void; onReview?: () => void }) {
-  const fields = record ? Object.entries(record.fields).filter(([, value]) => value.trim()) : []
-  const documents = application?.documents ?? item.documents
+const detailFieldLabels: Record<string, string> = {
+  dateOfBirth: 'Date of birth',
+  addressLine: 'Address',
+  city: 'City',
+  pincode: 'PIN code',
+  joinedOn: 'Joined on',
+  rating: 'Rating',
+  'bank.accountHolder': 'Bank account holder',
+  'bank.accountNumber': 'Bank account number',
+  'bank.ifsc': 'IFSC code',
+  'adminSuspension.active': 'Account suspended',
+  'adminSuspension.reason': 'Suspension reason',
+  'adminSuspension.updatedBy': 'Suspended by',
+  'adminSuspension.updatedAt': 'Suspended at',
+  'adminReview.reviewedBy': 'Reviewed by',
+  'adminReview.reason': 'Decision reason',
+  'adminReview.reviewedAt': 'Reviewed at',
+  statusUpdatedAt: 'Status updated at',
+  adminPartnerId: 'Admin partner ID',
+}
 
-  return <Dialog title={`Application details`} eyebrow="KYC APPLICATION DETAILS" onClose={onClose} wide>
+const detailSummaryKeys = new Set([
+  'partnerId',
+  'fullName',
+  'phone',
+  'email',
+  'vehicleType',
+  'applicationStatus',
+  'status',
+  'submittedAt',
+  'updatedAt',
+  'adminReview.decision',
+  'adminReview.applicationId',
+  'adminReview.adminPartnerId',
+])
+
+const detailHiddenKeys = new Set([
+  'profilePhotoUrl',
+  'profilePhotoPath',
+  'lastLocation',
+  'lastLocationUpdatedAt',
+  'isOnline',
+  'lastSeen',
+  'fcmToken',
+  'deviceToken',
+])
+
+function detailFieldLabel(key: string) {
+  if (detailFieldLabels[key]) return detailFieldLabels[key]
+  return key
+    .replace(/[._]+/g, ' ')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+export function KycApplicationDetailsDialog({ item, application, record, onClose, onReview, onOpenPartner }: { item: KycQueueItem; application?: PartnerApplication; record?: PartnerAppRecord; onClose: () => void; onReview?: () => void; onOpenPartner?: () => void }) {
+  const documents = application?.documents ?? item.documents
+  const phone = record?.phone ?? application?.maskedPhone ?? (item.source === 'delivery_app' ? item.contact : null)
+  const email = record?.email ?? application?.maskedEmail ?? (item.source === 'admin' ? item.contact : null)
+  const detailFields = record
+    ? Object.entries(record.fields)
+        .filter(([key, value]) => value.trim() && !detailSummaryKeys.has(key) && !detailHiddenKeys.has(key))
+        .sort(([left], [right]) => left.localeCompare(right))
+    : []
+
+  return <Dialog title="Application details" eyebrow="KYC APPLICATION DETAILS" onClose={onClose} wide>
     <div className="dialog-form">
       <div className="details-dialog-header"><div><strong>{item.applicantName}</strong><span>{item.businessName}</span></div><StatusBadge status={item.status} /></div>
       <div className="application-review-summary">
-        <div><span>Application ID</span><strong>{item.applicationId ?? '—'}</strong></div>
+        <div><span>Application ID</span><strong>{item.applicationId ?? record?.id ?? '—'}</strong></div>
         <div><span>Source</span><strong>{item.source === 'delivery_app' ? 'delivery_app' : 'Admin application'}</strong></div>
-        <div><span>Applicant</span><strong>{item.applicantName}</strong></div>
-        <div><span>Business</span><strong>{item.businessName}</strong></div>
-        <div><span>Contact</span><strong>{item.contact || '—'}</strong></div>
+        <div><span>Phone</span><strong>{phone || '—'}</strong></div>
+        <div><span>Email</span><strong>{email || '—'}</strong></div>
         <div><span>Vehicle</span><strong>{item.vehicle || '—'}</strong></div>
         <div><span>Service areas</span><strong>{item.serviceAreas.join(', ') || '—'}</strong></div>
         <div><span>Submitted</span><strong>{formatDate(item.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></div>
-        {record && <div><span>delivery_app UID</span><strong>{record.id}</strong></div>}
+        {item.reviewedAt && <div><span>Reviewed</span><strong>{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></div>}
+        {record && item.applicationId && <div><span>delivery_app UID</span><strong>{record.id}</strong></div>}
+        {item.partnerId && <div><span>Admin partner</span><strong>{item.partnerId}</strong></div>}
         {item.reviewedBy && <div><span>Reviewed by</span><strong>{item.reviewedBy}</strong></div>}
         {item.decisionReason && <div><span>Decision note</span><strong>{item.decisionReason}</strong></div>}
       </div>
-      <div className="application-doc-checklist"><span className="application-doc-checklist-label">Submitted documents</span>{documents.length > 0 ? documents.map((document) => <div key={document} className="attached"><span><Icon name="check-circle" size={13} />{document}</span><small>Attached</small></div>) : <div className="details-empty"><span>No document details available</span><small>{item.status === 'KYC pending' ? 'Onboarding has not been submitted' : 'delivery_app does not provide local document records'}</small></div>}</div>
-      {fields.length > 0 && <div className="application-doc-checklist"><span className="application-doc-checklist-label">Additional submitted information</span>{fields.map(([key, value]) => <div key={key} className="details-field"><span>{key}</span><strong>{value}</strong></div>)}</div>}
-      <div className="dialog-actions"><Button onClick={onClose}>Close</Button>{onReview && <Button variant="primary" onClick={onReview}>Review decision</Button>}</div>
+      <div className="application-doc-checklist"><span className="application-doc-checklist-label">Submitted documents</span>{documents.length > 0 ? documents.map((document) => <div key={document} className="attached"><span><Icon name="check-circle" size={13} />{document}</span><small>Attached</small></div>) : <div className="details-empty"><span>No document details available</span><small>{item.status === 'KYC pending' ? 'Onboarding has not been submitted' : 'KYC files stay in delivery_app and are not copied into this synced record'}</small></div>}</div>
+      {detailFields.length > 0 && <div className="application-doc-checklist"><span className="application-doc-checklist-label">Additional submitted information</span>{detailFields.map(([key, value]) => <div key={key} className="details-field"><span>{detailFieldLabel(key)}</span><strong>{value}</strong></div>)}</div>}
+      <div className="dialog-actions"><Button onClick={onClose}>Close</Button>{onOpenPartner && <Button onClick={onOpenPartner}>Open partner</Button>}{onReview && <Button variant="primary" onClick={onReview}>Review decision</Button>}</div>
     </div>
   </Dialog>
 }
@@ -200,6 +262,6 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
     </Panel>
     {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} initialDecision={review.decision} onClose={() => setReview(null)} />}
     {review && !reviewLive && reviewApplication && <ApplicationReviewDialog key={`${reviewApplication.id}-${review.decision}`} application={reviewApplication} initialDecision={review.decision} onClose={() => setReview(null)} />}
-    {detailsItem && <KycApplicationDetailsDialog item={detailsItem} application={detailsApplication} record={detailsRecord} onClose={() => setDetails(null)} onReview={detailsItem.status === 'Submitted' && canReview ? () => { setDetails(null); setReview({ key: detailsItem.key, decision: 'Approved' }) } : undefined} />}
+    {detailsItem && <KycApplicationDetailsDialog item={detailsItem} application={detailsApplication} record={detailsRecord} onClose={() => setDetails(null)} onReview={detailsItem.status === 'Submitted' && canReview ? () => { setDetails(null); setReview({ key: detailsItem.key, decision: 'Approved' }) } : undefined} onOpenPartner={detailsItem.partnerId ? () => { setDetails(null); open(`/admin/partners/${detailsItem.partnerId}`) } : undefined} />}
   </>
 }

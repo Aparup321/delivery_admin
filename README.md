@@ -75,7 +75,7 @@ This runs the production TypeScript/Vite build and the Node test suite.
 - `/admin/partners?view=new` — create a partner record with mandatory KYC documents marked missing.
 - `/admin/partners?view=activity` — partner activity history with suspension and reinstatement controls.
 - `/admin/partners?view=app` — delivery_app partner records synced from Firestore, with linking and live account actions.
-- `/admin/kyc` — unified onboarding KYC queue for local and synced delivery_app applications, including sign-in-only records as KYC pending.
+- `/admin/kyc` — unified onboarding KYC queue for local and synced delivery_app applications, including sign-in-only records as KYC pending. A read-only **Details** action shows the submitted application, applicant contact, KYC documents, and synced delivery_app fields before an Administrator decides.
 - `/admin/notifications` — event-driven notifications with read state and record navigation.
 - `/admin/audit-logs` — searchable, filterable administrative audit history and CSV export.
 - `/admin/settings` — simple **General**, **Partner sync**, and **Demo data** tabs.
@@ -123,6 +123,7 @@ For a manager walkthrough build, demo mode can stay enabled and Firebase values 
 ## Current limitations
 
 - Partner records and live deliveries are read from/written to Firebase. KYC decisions, delivery assignment, offers, notifications, documents, and audit history are stored in the current browser’s `localStorage`; they are not yet a server-backed source of truth. KYC-pending rows are informational until the partner submits onboarding. Clearing browser data or using another device loses those local records. Signing out clears the sessions but leaves those local workflow records in the browser profile.
+- The KYC **Details** view reads the synced delivery_app partner document. The separate `partner_documents`, `vehicles`, and `training_progress` documents are not copied into the admin cache, so uploaded KYC files stay in delivery_app and the dialog says so instead of inventing document data.
 - The delivery_app demo creates one stable Email/Password Firebase account per mobile number, so re-entering a number resolves to the same UID and its submitted application after sign-out, a number switch, a browser restart or on another device. Existing anonymous accounts are linked to that credential on the next sign-in. A sign-in-only row remains **KYC pending** until onboarding is submitted; rows left by earlier anonymous test accounts remain in the queue until their partner documents are removed from Firestore.
 - Demo access is a walkthrough shortcut, not an authentication mechanism. Disable it with `VITE_DEMO_MODE=false` before production.
 - The app does not include partner-app messaging, payments, document upload, external notifications, routing, or ETAs.
