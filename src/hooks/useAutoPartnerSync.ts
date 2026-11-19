@@ -44,7 +44,6 @@ function recordsChanged(previous: PartnerAppRecord[], next: PartnerAppRecord[]) 
  */
 export function useAutoPartnerSync(session: AdminSession) {
   const { frame, dispatch } = useOperations()
-  const syncing = useRef(false)
   const lastAttempt = useRef(0)
   const recordsRef = useRef(frame.data.partnerAppRecords)
   const config = frame.data.partnerApp
@@ -69,13 +68,17 @@ export function useAutoPartnerSync(session: AdminSession) {
     if (!configured) return
 
     let active = true
+    // Keep the in-flight flag per effect run. React StrictMode starts a second
+    // run while the first request is still pending; a shared ref would make the
+    // second run skip the request while the first run discards its result.
+    let inFlight = false
 
     const refresh = async (force: boolean) => {
-      if (!active || syncing.current) return
+      if (!active || inFlight) return
       const now = Date.now()
       if (!force && now - lastAttempt.current < FOCUS_REFRESH_MS) return
       lastAttempt.current = now
-      syncing.current = true
+      inFlight = true
       try {
         const records = await syncPartnerAppRecords(config, readPartnerAppToken())
         if (!active) return
@@ -88,7 +91,7 @@ export function useAutoPartnerSync(session: AdminSession) {
           message: error instanceof Error ? error.message : 'Automatic partner sync failed.',
         })
       } finally {
-        syncing.current = false
+        inFlight = false
       }
     }
 
