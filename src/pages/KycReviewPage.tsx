@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react'
+import { userCan } from '../domain/admin'
 import type { OperationsState, Partner, PartnerAppRecord, PartnerApplication } from '../domain/model'
 import { buildKycQueue, type KycQueueItem } from '../domain/kyc'
 import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
@@ -19,7 +20,7 @@ export function ApplicationReviewDialog({ application, initialDecision, onClose 
   const [decision, setDecision] = useState<'Approved' | 'Rejected'>(initialDecision)
   const [note, setNote] = useState('')
   const isRejected = decision === 'Rejected'
-  const isAdmin = frame.data.user.role === 'Admin'
+  const isAdmin = userCan(frame.data.user, 'application-review')
   const requiredDocuments = frame.data.settings.requiredDocuments
 
   function submit(event: FormEvent<HTMLFormElement>) {
@@ -48,7 +49,7 @@ export function ApplicationReviewDialog({ application, initialDecision, onClose 
       <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
       <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
       {!isRejected && <p className="dialog-description">Approving adds the applicant to the partner directory and queues their submitted documents for KYC review.</p>}
-      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
+      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Main administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
     </form>
   </Dialog>
 }
@@ -58,7 +59,7 @@ export function LiveApplicationReviewDialog({ record, application, linkedPartner
   const [decision, setDecision] = useState<'Approved' | 'Rejected'>(initialDecision)
   const [note, setNote] = useState('')
   const isRejected = decision === 'Rejected'
-  const isAdmin = frame.data.user.role === 'Admin'
+  const isAdmin = userCan(frame.data.user, 'application-review')
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -86,7 +87,7 @@ export function LiveApplicationReviewDialog({ record, application, linkedPartner
       <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
       <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
       <p className="dialog-description">{isRejected ? 'The reason appears in delivery_app on the partner’s application status screen.' : 'Approval activates the delivery_app account so the partner can go online.'}</p>
-      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
+      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Main administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
     </form>
   </Dialog>
 }
@@ -189,7 +190,7 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
   const [review, setReview] = useState<{ key: string; decision: 'Approved' | 'Rejected' } | null>(null)
   const [details, setDetails] = useState<string | null>(null)
   const pageSize = 10
-  const canReview = frame.data.user.role === 'Admin'
+  const canReview = userCan(frame.data.user, 'application-review')
   const queue = useMemo(() => buildKycQueue(data), [data])
   const pending = queue.filter((item) => item.status === 'Submitted').length
   const onboardingPending = queue.filter((item) => item.status === 'KYC pending').length
@@ -229,7 +230,7 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
 
   return <>
     <Panel className="records-panel kyc-queue-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>KYC applications</span><span className="dot-separator" />{pending} awaiting review · {onboardingPending} KYC pending · {liveCount} from delivery_app</div><span className="demo-caption">Administrator approval only</span></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>KYC applications</span><span className="dot-separator" />{pending} awaiting review · {onboardingPending} KYC pending · {liveCount} from delivery_app</div><span className="demo-caption">Main administrator approval only</span></div>
       <div className="filter-toolbar kyc-filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search applicant, business, ID, contact, or area" aria-label="Search KYC applications" /></label>
         <label className="filter-control"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value as StatusFilter); setPage(1) }}><option>Needs review</option><option>KYC pending</option><option>All</option><option>Approved</option><option>Rejected</option></select></label>
@@ -250,7 +251,7 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
             <td><StatusBadge status={item.status} /></td>
             <td><span className={item.status === 'Rejected' ? 'kyc-issue-text' : 'kyc-reviewer-text'}>{item.status === 'KYC pending' ? 'Onboarding not submitted' : item.decisionReason ?? item.reviewedBy ?? (item.status === 'Submitted' ? 'Awaiting Administrator review' : 'Decision recorded')}</span>{item.reviewedAt && <small className="muted-text">{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}{item.resubmitted && <small className="kyc-issue-text">Resubmitted from delivery_app</small>}{!item.resubmitted && item.source === 'admin' && item.partnerAppUid && <small className="muted-text">delivery_app account linked</small>}</td>
             <td><span className="row-action-group"><Button size="small" variant="quiet" onClick={() => setDetails(item.key)}><Icon name="eye" size={13} />Details</Button>{item.status === 'Submitted'
-              ? <><Button size="small" variant="primary" disabled={!canReview} title={canReview ? 'Approve this KYC application' : 'Administrator access required'} onClick={() => setReview({ key: item.key, decision: 'Approved' })}>Approve</Button><Button size="small" variant="danger" disabled={!canReview} title={canReview ? 'Reject this KYC application' : 'Administrator access required'} onClick={() => setReview({ key: item.key, decision: 'Rejected' })}>Reject</Button></>
+              ? <><Button size="small" variant="primary" disabled={!canReview} title={canReview ? 'Approve this KYC application' : 'Main administrator access required'} onClick={() => setReview({ key: item.key, decision: 'Approved' })}>Approve</Button><Button size="small" variant="danger" disabled={!canReview} title={canReview ? 'Reject this KYC application' : 'Main administrator access required'} onClick={() => setReview({ key: item.key, decision: 'Rejected' })}>Reject</Button></>
               : item.status === 'KYC pending'
                 ? <Button size="small" variant="quiet" disabled title="The partner must submit onboarding before KYC review">Awaiting onboarding</Button>
                 : <Button size="small" variant="quiet" onClick={() => item.partnerId ? open(`/admin/partners/${item.partnerId}`) : undefined} disabled={!item.partnerId}>{item.partnerId ? 'Open partner' : 'Decision recorded'}</Button>}</span></td>
@@ -258,7 +259,7 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
         })}
       </tbody></table>{visible.length === 0 && <EmptyState title="No KYC applications match" detail="Adjust the status or vehicle filters. New sign-ins and submitted applications are shown by default." />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
-      <div className="notification-history-note"><Icon name="shield" size={14} />Only an Administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. Sign-in-only partner accounts appear as KYC pending until onboarding is submitted; delivery_app records sync automatically after Firebase sign-in and periodically refresh.</div>
+      <div className="notification-history-note"><Icon name="shield" size={14} />Only a main administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. Sign-in-only partner accounts appear as KYC pending until onboarding is submitted; delivery_app records sync automatically after Firebase sign-in and periodically refresh.</div>
     </Panel>
     {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} initialDecision={review.decision} onClose={() => setReview(null)} />}
     {review && !reviewLive && reviewApplication && <ApplicationReviewDialog key={`${reviewApplication.id}-${review.decision}`} application={reviewApplication} initialDecision={review.decision} onClose={() => setReview(null)} />}

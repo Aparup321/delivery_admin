@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { Delivery, OperationsState, PackageSize, VehicleType } from '../domain/model'
 import { Button, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
+import { userCan } from '../domain/admin'
 import { useOperations } from '../state/OperationsProvider'
 
 const statusFilters = ['All', 'Pending', 'Unassigned', 'Assigned', 'In Transit', 'Delayed', 'Completed', 'Cancelled']
@@ -111,7 +112,8 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
   const selectedVisible = visible.length > 0 && visible.every((delivery) => selected.includes(delivery.id))
-  const canAssign = ['Admin', 'Operations Manager', 'Operations Staff'].includes(frame.data.user.role)
+  const canAssign = userCan(frame.data.user, 'assignment')
+  const canCreate = userCan(frame.data.user, 'delivery-management')
 
   useEffect(() => { setSearch(initialSearch); setPage(1) }, [initialSearch])
   useEffect(() => { if (statusFilters.includes(statusFromUrl ?? '')) setStatus(statusFromUrl!); else setStatus('All') }, [statusFromUrl])
@@ -137,7 +139,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
 
   return <div className="page-stack">
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery records</span><span className="dot-separator" />{data.deliveries.length} total</div><div className="records-actions">{selected.length > 0 && <Button size="small" variant="secondary" onClick={bulkAssign} disabled={!canAssign}><Icon name="route" size={14} />Assign selected ({selected.length})</Button>}<Button size="small" variant="primary" onClick={() => setCreateOpen(true)} disabled={!['Admin', 'Operations Manager'].includes(frame.data.user.role)} title="Administrator access required"><Icon name="plus" size={15} />Create delivery</Button></div></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery records</span><span className="dot-separator" />{data.deliveries.length} total</div><div className="records-actions">{selected.length > 0 && <Button size="small" variant="secondary" onClick={bulkAssign} disabled={!canAssign}><Icon name="route" size={14} />Assign selected ({selected.length})</Button>}<Button size="small" variant="primary" onClick={() => setCreateOpen(true)} disabled={!canCreate} title={canCreate ? undefined : 'Delivery management access required'}><Icon name="plus" size={15} />Create delivery</Button></div></div>
       <div className="filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search ID, location, or partner" aria-label="Search deliveries" /></label>
         <label className="filter-control"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1) }}>{statusFilters.map((value) => <option key={value}>{value}</option>)}</select></label>

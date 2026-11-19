@@ -42,7 +42,7 @@ function recordsChanged(previous: PartnerAppRecord[], next: PartnerAppRecord[]) 
  * remain Demo access; the Firebase session only authorizes delivery_app data.
  * Without a Firebase session the seeded sample partners are left untouched.
  */
-export function useAutoPartnerSync(session: AdminSession) {
+export function useAutoPartnerSync(session: AdminSession, enabled = true) {
   const { frame, dispatch } = useOperations()
   const lastAttempt = useRef(0)
   const recordsRef = useRef(frame.data.partnerAppRecords)
@@ -61,7 +61,7 @@ export function useAutoPartnerSync(session: AdminSession) {
   }, [frame.data.partnerAppRecords])
 
   useEffect(() => {
-    if (!readFirebaseAdminSession()) return
+    if (!enabled || !readFirebaseAdminSession()) return
     const configured = config.mode === 'firestore'
       ? Boolean(config.projectId.trim() && config.partnersCollection.trim())
       : Boolean(config.endpointUrl.trim())
@@ -118,5 +118,5 @@ export function useAutoPartnerSync(session: AdminSession) {
     }
     // `connectionKey` captures every setting that changes the request target.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.mode, session.userId, connectionKey, dispatch])
+  }, [enabled, session.mode, session.userId, connectionKey, dispatch])
 }

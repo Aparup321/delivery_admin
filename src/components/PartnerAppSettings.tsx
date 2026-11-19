@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { beginFirebaseDataConnection } from '../auth/adminSession'
 import { hasFirebaseEnvConfig } from '../config/firebase'
+import { userCan } from '../domain/admin'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
 import { Button, formatDate, Icon } from './ui'
@@ -9,6 +10,7 @@ import { useOperations } from '../state/OperationsProvider'
 export function PartnerAppSettings() {
   const { frame, dispatch } = useOperations()
   const saved = frame.data.partnerApp
+  const canManage = userCan(frame.data.user, 'settings')
   const firebaseSession = readFirebaseAdminSession()
   const [busy, setBusy] = useState(false)
   const [notice, setNotice] = useState<{ kind: 'success' | 'error' | 'info'; message: string } | null>(null)
@@ -17,6 +19,7 @@ export function PartnerAppSettings() {
     : Boolean(saved.endpointUrl.trim())
 
   async function syncNow() {
+    if (!canManage) return
     if (!firebaseSession) {
       setNotice({ kind: 'info', message: 'Demo access uses the built-in sample partners. Sign in with a real Firebase account to sync live records.' })
       return
@@ -57,12 +60,13 @@ export function PartnerAppSettings() {
     {saved.lastError && notice?.message !== saved.lastError && <div className="partner-app-notice error"><Icon name="alert" size={14} /><span className="partner-app-notice-copy">{saved.lastError}</span></div>}
     {notice && <div className={`partner-app-notice ${notice.kind}`}><Icon name={notice.kind === 'error' ? 'alert' : notice.kind === 'success' ? 'check-circle' : 'info'} size={14} /><span className="partner-app-notice-copy">{notice.message}</span></div>}
 
+    {!canManage && <div className="settings-note"><Icon name="lock" size={15} /><span>Your account has read-only Settings access. A main administrator must grant the <strong>Change settings</strong> action to connect the partner backend or sync from this screen.</span></div>}
     <div className="partner-app-actions">
       {firebaseSession
-        ? <Button variant="primary" onClick={syncNow} disabled={busy || !configured}>
+        ? <Button variant="primary" onClick={syncNow} disabled={!canManage || busy || !configured}>
           <Icon name="refresh" size={14} />{busy ? 'Syncing…' : 'Sync partner data'}
         </Button>
-        : <Button variant="primary" onClick={beginFirebaseDataConnection} disabled={!hasFirebaseEnvConfig}>
+        : <Button variant="primary" onClick={beginFirebaseDataConnection} disabled={!canManage || !hasFirebaseEnvConfig}>
           <Icon name="lock" size={14} />Sign in to load live partners
         </Button>}
       <span className="field-help">{firebaseSession ? 'No token or project fields are needed. The signed-in Firebase account is used automatically.' : 'Demo records are local samples. Sign in with the Firebase administrator account to read the live partners collection.'}</span>

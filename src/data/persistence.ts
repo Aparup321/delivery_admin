@@ -1,5 +1,6 @@
 import { applyFirebaseConnectionDefaults } from '../config/firebase.ts'
-import type { OperationsState } from '../domain/model'
+import { createDefaultAdmin, createDemoAdminDirectory, normalizeAdminAccess, normalizeAdminEmail } from '../domain/admin.ts'
+import type { AdminAccount, AdminSection, OperationsState, Permission } from '../domain/model'
 import { createDemoState, DEMO_PARTNER_PHONES } from '../domain/seed.ts'
 
 const STORAGE_KEY = 'picdrop-hopngo-operations-demo-v3'
@@ -26,14 +27,76 @@ function linkedRecordId(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
+function normalizeAdminAccount(value: unknown): AdminAccount | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Partial<AdminAccount>
+  if (!candidate.id || !candidate.name || !candidate.email) return null
+  const role = candidate.role === 'Main Administrator' ? 'Main Administrator' : 'Restricted Administrator'
+  const access = normalizeAdminAccess(
+    role,
+    Array.isArray(candidate.sections) ? candidate.sections.filter((section): section is AdminSection => typeof section === 'string') : [],
+    Array.isArray(candidate.permissions) ? candidate.permissions.filter((permission): permission is Permission => typeof permission === 'string') : [],
+  )
+  return {
+    id: candidate.id,
+    name: candidate.name.trim() || candidate.email,
+    email: normalizeAdminEmail(candidate.email),
+    role,
+    title: candidate.title?.trim() || 'Delivery Operations Administrator',
+    maskedPhone: candidate.maskedPhone?.trim() || 'Not provided',
+    sections: access.sections,
+    permissions: access.permissions,
+    active: candidate.active !== false,
+    createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
+    lastSignedInAt: typeof candidate.lastSignedInAt === 'string' ? candidate.lastSignedInAt : null,
+  }
+}
+
+/**
+ * Repairs an older or hand-edited directory: email addresses stay unique,
+ * there are never more than two active main administrators, and at least one
+ * active main administrator always remains.
+ */
+function normalizeAdminDirectory(value: unknown): AdminAccount[] {
+  const parsed = Array.isArray(value)
+    ? value.map(normalizeAdminAccount).filter((account): account is AdminAccount => Boolean(account))
+    : []
+  const unique = new Map<string, AdminAccount>()
+  for (const account of parsed) {
+    if (!unique.has(account.email)) unique.set(account.email, account)
+  }
+  const accounts = [...unique.values()]
+  if (!accounts.length) return createDemoAdminDirectory()
+
+  const activeMains = accounts.filter((account) => account.active && account.role === 'Main Administrator')
+  for (const extra of activeMains.slice(2)) {
+    extra.role = 'Restricted Administrator'
+    const access = normalizeAdminAccess(extra.role, extra.sections, extra.permissions)
+    extra.sections = access.sections
+    extra.permissions = access.permissions
+  }
+
+  if (!accounts.some((account) => account.active && account.role === 'Main Administrator')) {
+    const fallback = accounts.find((account) => account.active) ?? accounts[0]
+    fallback.active = true
+    fallback.role = 'Main Administrator'
+    const access = normalizeAdminAccess(fallback.role, fallback.sections, fallback.permissions)
+    fallback.sections = access.sections
+    fallback.permissions = access.permissions
+  }
+
+  return accounts
+}
+
 function normalizeSavedState(parsed: OperationsState): OperationsState {
-  // Older local records predate the delivery_app link fields. Normalize them
-  // so every partner, application, and cached record has a stable shape.
+  // Older local records predate the delivery_app link fields and the
+  // administrator directory. Normalize them so every record has a stable
+  // shape. The signed-in identity is applied by the app shell after sign-in;
+  // local storage never grants a different console role.
   return {
     ...parsed,
-    // The console exposes one Administrator role. The signed-in Firebase
-    // identity supplies the display fields; local storage cannot grant another role.
-    user: { ...parsed.user, role: 'Admin' },
+    user: createDefaultAdmin(),
+    admins: normalizeAdminDirectory(parsed.admins),
     partnerApp: applyFirebaseConnectionDefaults(parsed.partnerApp),
     partners: parsed.partners.map((partner) => ({
       ...partner,

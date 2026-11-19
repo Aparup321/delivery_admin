@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { userCan, userHasSection } from '../domain/admin'
 import type { Delivery, OperationsState } from '../domain/model'
 import { buildKycQueue } from '../domain/kyc'
 import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/serviceAreas'
@@ -76,6 +77,9 @@ export function OverviewPage({ data, open }: Props) {
   const expiringOffers = activeOffers.filter((offer) => new Date(offer.expiresAt).getTime() - currentTime < 10 * 60_000)
   const approaching = data.deliveries.filter((delivery) => !['Completed', 'Cancelled', 'Delayed'].includes(delivery.status) && new Date(delivery.scheduledEnd).getTime() > currentTime && new Date(delivery.scheduledEnd).getTime() - currentTime < 60 * 60_000)
   const pendingKyc = buildKycQueue(data).filter((item) => item.status === 'Submitted' || item.status === 'KYC pending').length
+  const canViewDeliveries = userHasSection(frame.data.user, 'deliveries')
+  const canReviewOnboarding = userCan(frame.data.user, 'application-review')
+  const canViewAudit = userHasSection(frame.data.user, 'audit-logs')
   const mapRoute = useMemo(() => {
     if (liveDelivery) {
       const points: MapPoint[] = [
@@ -201,18 +205,18 @@ export function OverviewPage({ data, open }: Props) {
       <Panel className="attention-panel">
         <PanelHeading title="Operational attention" detail="Items that may need a review" />
         <div className="attention-list">
-          {delayed > 0 && <button className="attention-row" onClick={() => open('/admin/deliveries?status=Delayed')}><span className="attention-icon attention-red"><Icon name="alert" size={15} /></span><span><b>{delayed} delayed delivery{delayed === 1 ? '' : 'ies'}</b><small>Review exceptions and preserved milestones</small></span><Icon name="chevron" size={15} /></button>}
-          {unassigned > 0 && <button className="attention-row" onClick={() => open('/admin/deliveries?status=Unassigned')}><span className="attention-icon attention-orange"><Icon name="user" size={15} /></span><span><b>{unassigned} unassigned deliver{unassigned === 1 ? 'y' : 'ies'}</b><small>Find an eligible partner</small></span><Icon name="chevron" size={15} /></button>}
-          {expiringOffers.length > 0 && <button className="attention-row" onClick={() => open(`/admin/deliveries/${expiringOffers[0].deliveryId}`)}><span className="attention-icon attention-orange"><Icon name="clock" size={15} /></span><span><b>{expiringOffers.length} offer{expiringOffers.length === 1 ? '' : 's'} expiring soon</b><small>Simulated offer response window</small></span><Icon name="chevron" size={15} /></button>}
-          {approaching.length > 0 && <button className="attention-row" onClick={() => open(`/admin/deliveries/${approaching[0].id}`)}><span className="attention-icon attention-blue"><Icon name="calendar" size={15} /></span><span><b>{approaching.length} deadline{approaching.length === 1 ? '' : 's'} approaching</b><small>Scheduled end is within one hour</small></span><Icon name="chevron" size={15} /></button>}
-          {pendingKyc > 0 && <button className="attention-row" onClick={() => open('/admin/kyc')}><span className="attention-icon attention-purple"><Icon name="file" size={15} /></span><span><b>{pendingKyc} partner{pendingKyc === 1 ? '' : 's'} awaiting KYC</b><small>New sign-ins and submitted applications</small></span><Icon name="chevron" size={15} /></button>}
-          {!delayed && !unassigned && !expiringOffers.length && !approaching.length && !pendingKyc && <p className="attention-clear"><Icon name="check-circle" size={16} />No attention items right now.</p>}
+          {canViewDeliveries && delayed > 0 && <button className="attention-row" onClick={() => open('/admin/deliveries?status=Delayed')}><span className="attention-icon attention-red"><Icon name="alert" size={15} /></span><span><b>{delayed} delayed delivery{delayed === 1 ? '' : 'ies'}</b><small>Review exceptions and preserved milestones</small></span><Icon name="chevron" size={15} /></button>}
+          {canViewDeliveries && unassigned > 0 && <button className="attention-row" onClick={() => open('/admin/deliveries?status=Unassigned')}><span className="attention-icon attention-orange"><Icon name="user" size={15} /></span><span><b>{unassigned} unassigned deliver{unassigned === 1 ? 'y' : 'ies'}</b><small>Find an eligible partner</small></span><Icon name="chevron" size={15} /></button>}
+          {canViewDeliveries && expiringOffers.length > 0 && <button className="attention-row" onClick={() => open(`/admin/deliveries/${expiringOffers[0].deliveryId}`)}><span className="attention-icon attention-orange"><Icon name="clock" size={15} /></span><span><b>{expiringOffers.length} offer{expiringOffers.length === 1 ? '' : 's'} expiring soon</b><small>Simulated offer response window</small></span><Icon name="chevron" size={15} /></button>}
+          {canViewDeliveries && approaching.length > 0 && <button className="attention-row" onClick={() => open(`/admin/deliveries/${approaching[0].id}`)}><span className="attention-icon attention-blue"><Icon name="calendar" size={15} /></span><span><b>{approaching.length} deadline{approaching.length === 1 ? '' : 's'} approaching</b><small>Scheduled end is within one hour</small></span><Icon name="chevron" size={15} /></button>}
+          {canReviewOnboarding && pendingKyc > 0 && <button className="attention-row" onClick={() => open('/admin/kyc')}><span className="attention-icon attention-purple"><Icon name="file" size={15} /></span><span><b>{pendingKyc} partner{pendingKyc === 1 ? '' : 's'} awaiting KYC</b><small>New sign-ins and submitted applications</small></span><Icon name="chevron" size={15} /></button>}
+          {!(canViewDeliveries && (delayed || unassigned || expiringOffers.length || approaching.length)) && !(canReviewOnboarding && pendingKyc) && <p className="attention-clear"><Icon name="check-circle" size={16} />No attention items right now.</p>}
         </div>
       </Panel>
     </div>
 
     <Panel className="recent-activity-panel">
-      <PanelHeading title="Recent operational activity" detail="Recorded from operations" action={<button className="text-link" onClick={() => open('/admin/audit-logs')}>Open audit log <Icon name="arrow" size={14} /></button>} />
+      <PanelHeading title="Recent operational activity" detail="Recorded from operations" action={canViewAudit ? <button className="text-link" onClick={() => open('/admin/audit-logs')}>Open audit log <Icon name="arrow" size={14} /></button> : undefined} />
       <div className="activity-feed">
         {data.auditLogs.slice(-5).reverse().map((event) => <button className="activity-feed-row" key={event.id} onClick={() => open(auditPath(event))}>
           <span className={`activity-event-icon ${event.eventType.includes('assigned') ? 'event-purple' : event.eventType.includes('Delayed') ? 'event-red' : 'event-gray'}`}><Icon name={event.eventType.includes('assigned') ? 'route' : event.eventType.includes('Delayed') ? 'alert' : 'check'} size={15} /></span>

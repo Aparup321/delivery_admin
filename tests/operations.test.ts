@@ -9,8 +9,8 @@ import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppEndpoint
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
-import type { PartnerAppConfig } from '../src/domain/model.ts'
-import { DEFAULT_ADMIN_EMAIL } from '../src/domain/admin.ts'
+import type { AdminSection, PartnerAppConfig, Permission } from '../src/domain/model.ts'
+import { DEFAULT_ADMIN_EMAIL, DEMO_RESTRICTED_ADMIN_EMAIL } from '../src/domain/admin.ts'
 import { clearAdminSession, createAdminSession, createDemoAdminSession, DEMO_OTP_CODE, isDemoOtpValid, readAdminSession, readDemoAdminSession, storeDemoAdminSession } from '../src/auth/adminSession.ts'
 import { clearFirebaseAdminSession, readFirebaseAdminSession, storeFirebaseAdminSession, type FirebaseAdminSession } from '../src/services/firebaseAuth.ts'
 
@@ -26,14 +26,36 @@ function expectSuccess(frame: AppFrame) {
   assert.notEqual(frame.feedback?.kind, 'error', frame.feedback?.message)
 }
 
-test('the operations team demo exposes one Administrator with complete account details', () => {
-  const user = createDemoState().user
-  assert.equal(user.role, 'Admin')
+/** Replaces the signed-in main administrator with a restricted account. */
+function restrictUser(
+  frame: AppFrame,
+  permissions: Permission[] = ['read'],
+  sections: AdminSection[] = ['deliveries'],
+) {
+  frame.data.user.role = 'Restricted Administrator'
+  frame.data.user.permissions = permissions
+  frame.data.user.sections = sections
+  frame.data.user.provisioned = true
+  return frame
+}
+
+/** Re-resolves the signed-in identity through the seeded administrator directory. */
+function identifyMainAdmin(frame: AppFrame) {
+  return apply(frame, { type: 'user.identify', id: 'DEMO-OPS-01', name: 'Operations Administrator', email: DEFAULT_ADMIN_EMAIL })
+}
+
+test('the operations team demo exposes a main administrator with complete account details', () => {
+  const state = createDemoState()
+  const user = state.user
+  assert.equal(user.role, 'Main Administrator')
   assert.equal(user.id, 'ADM-OPS-01')
   assert.equal(user.name, 'Operations Administrator')
   assert.equal(user.email, DEFAULT_ADMIN_EMAIL)
   assert.equal(user.title, 'Delivery Operations Administrator')
   assert.equal(user.maskedPhone, 'Not provided')
+  assert.equal(user.provisioned, true)
+  assert.equal(state.admins.filter((account) => account.role === 'Main Administrator').length, 1)
+  assert.equal(state.admins.filter((account) => account.role === 'Restricted Administrator').length, 1)
 })
 
 test('Administrator session is derived from Firebase Authentication and cleared on sign-out', () => {
@@ -173,7 +195,7 @@ test('demo access uses the documented one-time code and a local demo session', (
     const demo = readDemoAdminSession()
     assert.equal(demo?.mode, 'Demo access')
     assert.equal(demo?.email, 'admin@picdrop.demo')
-    assert.equal(demo?.role, 'Admin')
+    assert.equal(demo?.userId, 'DEMO-OPS-01')
     assert.deepEqual(readAdminSession(), demo)
     assert.equal(clearAdminSession(), true)
     assert.equal(readDemoAdminSession(), null)
@@ -182,12 +204,14 @@ test('demo access uses the documented one-time code and a local demo session', (
   }
 })
 
-test('the signed-in Firebase identity replaces the placeholder administrator in local state', () => {
+test('the signed-in Firebase identity resolves its access from the administrator directory', () => {
   const frame = frameWithDemo()
-  const identified = apply(frame, { type: 'user.identify', id: 'firebase-uid-1', name: 'Ops Lead', email: 'ops@example.com' })
+  const identified = apply(frame, { type: 'user.identify', id: 'firebase-uid-1', name: 'Ops Lead', email: DEFAULT_ADMIN_EMAIL })
   assert.equal(identified.data.user.id, 'firebase-uid-1')
-  assert.equal(identified.data.user.name, 'Ops Lead')
-  assert.equal(identified.data.user.email, 'ops@example.com')
+  assert.equal(identified.data.user.name, 'Operations Administrator')
+  assert.equal(identified.data.user.email, DEFAULT_ADMIN_EMAIL)
+  assert.equal(identified.data.user.role, 'Main Administrator')
+  assert.equal(identified.data.user.provisioned, true)
   assert.equal(identified.feedback, null)
 })
 
@@ -216,15 +240,119 @@ test('ineligible or duplicate partner assignment is rejected with an actionable 
   assert.match(duplicate.feedback?.message ?? '', /already on an active delivery|already assigned/i)
 })
 
-test('the shared action layer rejects writes for Viewer and permits local demo persona switching', () => {
-  const frame = frameWithDemo()
-  frame.data.user.role = 'Viewer'
+test('the shared action layer rejects writes for a restricted viewer and resolves a main administrator from the directory', () => {
+  const frame = restrictUser(frameWithDemo())
   const blocked = apply(frame, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId: 'DP-0187' })
   assert.equal(blocked.feedback?.kind, 'error')
   assert.equal(blocked.data.deliveries.find((item) => item.id === 'DLV-1046')?.status, 'Unassigned')
-  const switched = apply(blocked, { type: 'user.set-role', role: 'Admin' })
-  expectSuccess(switched)
-  assert.equal(switched.data.user.role, 'Admin')
+
+  const resolved = identifyMainAdmin(blocked)
+  expectSuccess(resolved)
+  assert.equal(resolved.data.user.role, 'Main Administrator')
+  const assigned = apply(resolved, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId: 'DP-0187' })
+  expectSuccess(assigned)
+})
+
+test('an email without an active directory record is denied every administrative action', () => {
+  const identified = apply(frameWithDemo(), { type: 'user.identify', id: 'firebase-unknown', name: 'Unknown Operator', email: 'unknown@example.com' })
+  assert.equal(identified.data.user.provisioned, false)
+  assert.equal(identified.data.user.role, 'Restricted Administrator')
+  assert.deepEqual(identified.data.user.permissions, [])
+  const blocked = apply(identified, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId: 'DP-0187' })
+  assert.equal(blocked.feedback?.kind, 'error')
+  assert.match(blocked.feedback?.message ?? '', /cannot perform/i)
+})
+
+test('a restricted administrator only receives the directory sections and actions, and deactivation revokes sign-in', () => {
+  const restricted = apply(frameWithDemo(), { type: 'user.identify', id: 'demo-dispatch', name: 'Demo Dispatch Coordinator', email: DEMO_RESTRICTED_ADMIN_EMAIL })
+  assert.equal(restricted.data.user.role, 'Restricted Administrator')
+  assert.equal(restricted.data.user.provisioned, true)
+  assert.deepEqual(restricted.data.user.sections, ['deliveries', 'partners'])
+  assert.deepEqual(restricted.data.user.permissions, ['read', 'assignment', 'delivery-management', 'partner-management', 'document-review'])
+
+  const blockedApproval = apply(restricted, { type: 'application.approve', applicationId: 'APP-2041', note: '' })
+  assert.equal(blockedApproval.feedback?.kind, 'error')
+  const blockedAdminCreate = apply(restricted, { type: 'admin.create', name: 'Shadow Admin', email: 'shadow@picdrop.demo', title: '', role: 'Restricted Administrator', sections: [], permissions: [] })
+  assert.equal(blockedAdminCreate.feedback?.kind, 'error')
+
+  const main = identifyMainAdmin(blockedAdminCreate)
+  const account = main.data.admins.find((item) => item.email === DEMO_RESTRICTED_ADMIN_EMAIL)!
+  const deactivated = apply(main, { type: 'admin.set-active', adminId: account.id, active: false, reason: 'Access review' })
+  expectSuccess(deactivated)
+  assert.ok(deactivated.data.auditLogs.some((item) => item.eventType === 'Administrator deactivated' && item.targetId === account.id))
+
+  const revoked = apply(deactivated, { type: 'user.identify', id: 'demo-dispatch', name: 'Demo Dispatch Coordinator', email: DEMO_RESTRICTED_ADMIN_EMAIL })
+  assert.equal(revoked.data.user.provisioned, false)
+  assert.deepEqual(revoked.data.user.permissions, [])
+})
+
+test('main administrators can create restricted accounts without delegating onboarding or administrator access', () => {
+  const created = apply(frameWithDemo(), {
+    type: 'admin.create', name: 'Rita Das', email: 'Rita.Das@Example.com', title: 'KYC Reviewer',
+    role: 'Restricted Administrator', sections: ['partners'], permissions: ['read', 'application-review', 'admin', 'document-review'],
+  })
+  expectSuccess(created)
+  const account = created.data.admins.find((item) => item.email === 'rita.das@example.com')!
+  assert.equal(account.active, true)
+  assert.equal(account.role, 'Restricted Administrator')
+  assert.deepEqual(account.sections, ['partners'])
+  assert.deepEqual(account.permissions, ['read', 'document-review'])
+  assert.ok(created.data.auditLogs.some((item) => item.eventType === 'Administrator created' && item.targetId === account.id))
+
+  const duplicate = apply(created, {
+    type: 'admin.create', name: 'Rita Duplicate', email: 'rita.das@example.com', title: '', role: 'Restricted Administrator', sections: [], permissions: [],
+  })
+  assert.equal(duplicate.feedback?.kind, 'error')
+  assert.match(duplicate.feedback?.message ?? '', /already/i)
+})
+
+test('the administrator directory enforces the two-main-administrator limit', () => {
+  const withSecond = apply(frameWithDemo(), {
+    type: 'admin.create', name: 'Second Main', email: 'second@picdrop.demo', title: 'Operations Lead',
+    role: 'Main Administrator', sections: [], permissions: [],
+  })
+  expectSuccess(withSecond)
+  assert.equal(withSecond.data.admins.filter((item) => item.active && item.role === 'Main Administrator').length, 2)
+
+  const second = withSecond.data.admins.find((item) => item.email === 'second@picdrop.demo')!
+  assert.deepEqual(second.sections, ['deliveries', 'partners', 'audit-logs', 'settings'])
+
+  const third = apply(withSecond, {
+    type: 'admin.create', name: 'Third Main', email: 'third@picdrop.demo', title: 'Operations Lead',
+    role: 'Main Administrator', sections: [], permissions: [],
+  })
+  assert.equal(third.feedback?.kind, 'error')
+  assert.match(third.feedback?.message ?? '', /only two/i)
+
+  const downgraded = apply(withSecond, {
+    type: 'admin.update', adminId: second.id, name: second.name, title: second.title,
+    role: 'Restricted Administrator', sections: ['partners'], permissions: ['read', 'partner-management'],
+  })
+  expectSuccess(downgraded)
+  assert.equal(downgraded.data.admins.filter((item) => item.active && item.role === 'Main Administrator').length, 1)
+
+  const thirdAllowed = apply(downgraded, {
+    type: 'admin.create', name: 'Third Main', email: 'third@picdrop.demo', title: 'Operations Lead',
+    role: 'Main Administrator', sections: [], permissions: [],
+  })
+  expectSuccess(thirdAllowed)
+  assert.equal(thirdAllowed.data.admins.filter((item) => item.active && item.role === 'Main Administrator').length, 2)
+})
+
+test('the administrator directory always keeps one active main administrator', () => {
+  const frame = frameWithDemo()
+  const main = frame.data.admins.find((item) => item.role === 'Main Administrator')!
+  const downgraded = apply(frame, {
+    type: 'admin.update', adminId: main.id, name: main.name, title: main.title,
+    role: 'Restricted Administrator', sections: ['deliveries'], permissions: ['read'],
+  })
+  assert.equal(downgraded.feedback?.kind, 'error')
+  assert.match(downgraded.feedback?.message ?? '', /at least one/i)
+  assert.equal(downgraded.data.admins.find((item) => item.id === main.id)?.role, 'Main Administrator')
+
+  const deactivated = apply(frame, { type: 'admin.set-active', adminId: main.id, active: false, reason: 'Access review' })
+  assert.equal(deactivated.feedback?.kind, 'error')
+  assert.equal(deactivated.data.admins.find((item) => item.id === main.id)?.active, true)
 })
 
 test('delivery milestones advance in order and completion releases partner availability', () => {
@@ -362,15 +490,16 @@ test('partner suspension is recorded in activity and audit history, and an Admin
   assert.ok(restored.data.partnerHistory.some((item) => item.partnerId === 'DP-0192' && item.type === 'Eligibility restored' && item.description.includes('Operations review completed')))
 })
 
-test('only an Administrator can approve an onboarding application, which onboards the partner and queues KYC documents', () => {
-  const frame = frameWithDemo()
-  frame.data.user.role = 'Operations Manager'
+test('only a main administrator can approve an onboarding application, which onboards the partner and queues KYC documents', () => {
+  const frame = restrictUser(frameWithDemo(), ['read', 'document-review'], ['partners'])
   const blocked = apply(frame, { type: 'application.approve', applicationId: 'APP-2041', note: '' })
   assert.equal(blocked.feedback?.kind, 'error')
   assert.equal(blocked.data.applications.find((item) => item.id === 'APP-2041')?.status, 'Submitted')
+  const blockedRejection = apply(blocked, { type: 'application.reject', applicationId: 'APP-2041', reason: 'Not eligible' })
+  assert.equal(blockedRejection.feedback?.kind, 'error')
+  assert.equal(blockedRejection.data.applications.find((item) => item.id === 'APP-2041')?.status, 'Submitted')
 
-  blocked.data.user.role = 'Admin'
-  const approved = apply(blocked, { type: 'application.approve', applicationId: 'APP-2041', note: 'Demo onboarding approval' })
+  const approved = apply(identifyMainAdmin(blocked), { type: 'application.approve', applicationId: 'APP-2041', note: 'Demo onboarding approval' })
   expectSuccess(approved)
   const application = approved.data.applications.find((item) => item.id === 'APP-2041')!
   assert.equal(application.status, 'Approved')
@@ -401,22 +530,20 @@ test('rejecting an onboarding application requires a reason and never creates a 
   assert.ok(rejected.data.auditLogs.some((item) => item.eventType === 'Application rejected' && item.targetId === 'APP-2040'))
 })
 
-test('an Administrator can create a partner directory record with missing mandatory documents', () => {
+test('a main administrator can create a partner directory record with missing mandatory documents', () => {
   const frame = frameWithDemo()
   const partnerId = nextPartnerId(frame.data)
   assert.match(partnerId, /^DP-\d{4}$/)
   assert.equal(Number(partnerId.slice(3)), Math.max(...frame.data.partners.map((partner) => Number(partner.id.slice(3)))) + 1)
 
-  frame.data.user.role = 'Viewer'
-  const blocked = apply(frame, {
+  const blocked = apply(restrictUser(frame), {
     type: 'partner.create', partnerId, name: 'Sneha Bose', phone: '+91 98765 43210', email: 'sneha@example.com',
     vehicle: 'Scooter', serviceAreas: ['Barasat'], registrationLast4: '1234', note: '',
   })
   assert.equal(blocked.feedback?.kind, 'error')
   assert.equal(blocked.data.partners.some((partner) => partner.id === partnerId), false)
 
-  blocked.data.user.role = 'Admin'
-  const created = apply(blocked, {
+  const created = apply(identifyMainAdmin(blocked), {
     type: 'partner.create', partnerId, name: '  Sneha   Bose ', phone: '+91 98765 43210', email: 'sneha@example.com',
     vehicle: 'Scooter', serviceAreas: [' Barasat ', 'New Town', 'Barasat'], registrationLast4: '1234', note: 'Added from the admin console',
   })
@@ -534,19 +661,18 @@ test('a rejected live application becomes reviewable again after delivery_app re
   assert.equal(approved.data.applications.find((item) => item.partnerAppUid === 'live-kyc-uid')?.status, 'Approved')
 })
 
-test('partner app connection is administrator-only, validates manual details, and caches synced records', () => {
-  const frame = frameWithDemo()
-  frame.data.user.role = 'Operations Manager'
+test('partner app connection requires settings access, validates manual details, and caches synced records', () => {
+  const frame = restrictUser(frameWithDemo())
   const blocked = apply(frame, { type: 'partnerApp.save', config: { mode: 'firestore', projectId: 'delivery-app-demo', apiKey: '', databaseId: '(default)', partnersCollection: 'partners', endpointUrl: '' } })
   assert.equal(blocked.feedback?.kind, 'error')
 
-  blocked.data.user.role = 'Admin'
-  const invalidProject = apply(blocked, { type: 'partnerApp.save', config: { mode: 'firestore', projectId: ' ', apiKey: '', databaseId: '(default)', partnersCollection: 'partners', endpointUrl: '' } })
+  const settingsFrame = identifyMainAdmin(blocked)
+  const invalidProject = apply(settingsFrame, { type: 'partnerApp.save', config: { mode: 'firestore', projectId: ' ', apiKey: '', databaseId: '(default)', partnersCollection: 'partners', endpointUrl: '' } })
   assert.equal(invalidProject.feedback?.kind, 'error')
-  const invalidEndpoint = apply(blocked, { type: 'partnerApp.save', config: { mode: 'endpoint', projectId: '', apiKey: '', databaseId: '(default)', partnersCollection: '', endpointUrl: 'ftp://example.com/partners' } })
+  const invalidEndpoint = apply(settingsFrame, { type: 'partnerApp.save', config: { mode: 'endpoint', projectId: '', apiKey: '', databaseId: '(default)', partnersCollection: '', endpointUrl: 'ftp://example.com/partners' } })
   assert.equal(invalidEndpoint.feedback?.kind, 'error')
 
-  const saved = apply(blocked, { type: 'partnerApp.save', config: { mode: 'firestore', projectId: 'delivery-app-demo', apiKey: 'demo-key', databaseId: '(default)', partnersCollection: 'partners', endpointUrl: '' } })
+  const saved = apply(settingsFrame, { type: 'partnerApp.save', config: { mode: 'firestore', projectId: 'delivery-app-demo', apiKey: 'demo-key', databaseId: '(default)', partnersCollection: 'partners', endpointUrl: '' } })
   expectSuccess(saved)
   assert.equal(saved.data.partnerApp.projectId, 'delivery-app-demo')
   assert.ok(saved.data.auditLogs.some((item) => item.eventType === 'Partner app connection updated'))
@@ -571,6 +697,31 @@ test('partner app connection is administrator-only, validates manual details, an
   assert.equal(synced.data.partners.find((partner) => partner.id === 'DP-0192')?.partnerAppUid, 'partner-001')
 })
 
+test('a restricted partner administrator can sync and link records without changing connection settings', () => {
+  const frame = restrictUser(frameWithDemo(), ['read', 'partner-management'], ['partners'])
+  const synced = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-05-01T10:00:00.000Z',
+    records: [{
+      id: 'restricted-sync-record', partnerId: null, name: 'Restricted Sync Partner', phone: '+91 81111 22222', email: null,
+      vehicle: 'Scooter', status: 'Online', serviceAreas: ['Barasat'], updatedAt: '2026-05-01T09:55:00.000Z',
+      fields: { name: 'Restricted Sync Partner' }, syncedAt: '2026-05-01T10:00:00.000Z',
+    }],
+  })
+  expectSuccess(synced)
+  assert.equal(synced.data.partnerAppRecords.length, 1)
+
+  const linked = apply(synced, { type: 'partnerApp.link', recordId: 'restricted-sync-record', partnerId: 'DP-0192' })
+  expectSuccess(linked)
+  assert.equal(linked.data.partners.find((partner) => partner.id === 'DP-0192')?.partnerAppUid, 'restricted-sync-record')
+
+  const blockedSave = apply(linked, {
+    type: 'partnerApp.save',
+    config: { mode: 'firestore', projectId: 'delivery-app-demo', apiKey: 'demo-key', databaseId: '(default)', partnersCollection: 'partners', endpointUrl: '' },
+  })
+  assert.equal(blockedSave.feedback?.kind, 'error')
+})
+
 test('a live delivery_app application can be reviewed, approved, and linked without a local application record', () => {
   const frame = frameWithDemo()
   const records = apply(frame, {
@@ -584,17 +735,17 @@ test('a live delivery_app application can be reviewed, approved, and linked with
     }],
   })
   expectSuccess(records)
-  records.data.user.role = 'Operations Manager'
+  restrictUser(records, ['read', 'partner-management'], ['partners'])
 
   const blocked = apply(records, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Approved', note: '' })
   assert.equal(blocked.feedback?.kind, 'error')
   assert.equal(blocked.data.applications.some((item) => item.partnerAppUid === 'live-partner-uid'), false)
 
-  blocked.data.user.role = 'Admin'
-  const rejectedWithoutReason = apply(blocked, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Rejected', note: ' ' })
+  const mainAdmin = identifyMainAdmin(blocked)
+  const rejectedWithoutReason = apply(mainAdmin, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Rejected', note: ' ' })
   assert.equal(rejectedWithoutReason.feedback?.kind, 'error')
 
-  const approved = apply(blocked, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Approved', note: 'Checked in delivery_app' })
+  const approved = apply(mainAdmin, { type: 'partnerApp.review', recordId: 'live-partner-uid', decision: 'Approved', note: 'Checked in delivery_app' })
   expectSuccess(approved)
   const application = approved.data.applications.find((item) => item.partnerAppUid === 'live-partner-uid')!
   assert.equal(application.status, 'Approved')
@@ -815,12 +966,13 @@ test('notification read state and administrative changes are persisted through t
   }
   Object.defineProperty(globalThis, 'window', { value: fakeWindow, configurable: true })
   try {
-    // Older local records may contain a lower internal role. Persistence must
-    // normalize the saved profile back to the single Administrator account.
-    next.data.user.role = 'Viewer'
+    // Local storage never grants access: the saved profile is normalized back
+    // to the default main administrator until sign-in resolves the directory.
+    next.data.user.role = 'Restricted Administrator'
+    next.data.user.permissions = []
     assert.equal(saveOperationsState(next.data), true)
     const loaded = loadOperationsState()
-    assert.equal(loaded.user.role, 'Admin')
+    assert.equal(loaded.user.role, 'Main Administrator')
     assert.equal(loaded.user.id, 'ADM-OPS-01')
     assert.equal(loaded.notifications.find((item) => item.id === notification.id)?.readAt, next.data.notifications.find((item) => item.id === notification.id)?.readAt)
     assert.equal(loaded.deliveries.length, next.data.deliveries.length)
@@ -834,7 +986,7 @@ test('invalid settings and unauthorized administrative writes leave saved settin
   const invalid = apply(frame, { type: 'settings.save', settings: { ...frame.data.settings, offerTimeoutMinutes: 0 } })
   assert.equal(invalid.feedback?.kind, 'error')
   assert.equal(invalid.data.settings.offerTimeoutMinutes, frame.data.settings.offerTimeoutMinutes)
-  frame.data.user.role = 'Operations Staff'
+  restrictUser(frame, ['read'], ['deliveries'])
   const unauthorized = apply(frame, { type: 'settings.save', settings: { ...frame.data.settings, offerTimeoutMinutes: 9 } })
   assert.equal(unauthorized.feedback?.kind, 'error')
   assert.equal(unauthorized.data.settings.offerTimeoutMinutes, frame.data.settings.offerTimeoutMinutes)
@@ -847,6 +999,8 @@ test('demo reset restores interconnected seed records and records the reset even
   expectSuccess(frame)
   assert.equal(frame.data.deliveries.find((item) => item.id === 'DLV-1046')?.status, 'Unassigned')
   assert.equal(frame.data.partners.find((item) => item.id === 'DP-0187')?.availability, 'Available')
+  assert.equal(frame.data.admins.length, 2)
+  assert.equal(frame.data.user.role, 'Main Administrator')
   assert.ok(frame.data.auditLogs.some((item) => item.eventType === 'Local data reset'))
 })
 

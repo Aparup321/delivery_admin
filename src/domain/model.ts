@@ -14,7 +14,8 @@ export type VehicleType = 'Bike' | 'Scooter' | 'Van'
 export type PartnerAvailability = 'Available' | 'On Delivery' | 'Offline' | 'Restricted' | 'Suspended'
 export type DocumentStatus = 'Missing' | 'Submitted' | 'Under Review' | 'Verified' | 'Rejected' | 'Expired'
 export type OfferStatus = 'Created' | 'Sent' | 'Awaiting Response' | 'Accepted' | 'Rejected' | 'Timed Out' | 'Cancelled'
-export type AdminRole = 'Admin' | 'Operations Manager' | 'Operations Staff' | 'Viewer'
+export type AdminRole = 'Main Administrator' | 'Restricted Administrator'
+export type AdminSection = 'deliveries' | 'partners' | 'audit-logs' | 'settings'
 export type NotificationCategory =
   | 'Delivery Assigned'
   | 'Delivery Delayed'
@@ -51,7 +52,10 @@ export type AuditEventType =
   | 'Partner app data synced'
   | 'Partner app account updated'
   | 'Settings modified'
-  | 'Administrative role changed'
+  | 'Administrator created'
+  | 'Administrator access changed'
+  | 'Administrator deactivated'
+  | 'Administrator reactivated'
   | 'Local data reset'
 
 export type DocumentType = 'Identity proof' | 'Driving licence' | 'Vehicle registration' | 'Profile photo'
@@ -238,6 +242,26 @@ export interface AdminUser {
   role: AdminRole
   title: string
   maskedPhone: string
+  /** Console pages this account may open. Main administrators have every section. */
+  sections: AdminSection[]
+  /** Actions this account may perform. Main administrators have every permission. */
+  permissions: Permission[]
+  /** False when the signed-in Firebase or demo email has no active directory record. */
+  provisioned: boolean
+}
+
+export interface AdminAccount {
+  id: string
+  name: string
+  email: string
+  role: AdminRole
+  title: string
+  maskedPhone: string
+  sections: AdminSection[]
+  permissions: Permission[]
+  active: boolean
+  createdAt: string
+  lastSignedInAt: string | null
 }
 
 export interface OperationsSettings {
@@ -267,6 +291,7 @@ export interface OperationsState {
   partnerHistory: PartnerHistoryEntry[]
   notifications: NotificationRecord[]
   auditLogs: AuditLogEntry[]
+  admins: AdminAccount[]
   user: AdminUser
   settings: OperationsSettings
 }

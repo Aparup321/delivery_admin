@@ -1,9 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react'
+import { userCan } from '../domain/admin'
 import type { OperationsState, Partner } from '../domain/model'
 import { nextPartnerId } from '../domain/operations'
 import { Button, formatDate, Icon, Panel, PanelHeading } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
-import { roleCan } from '../state/operationsReducer'
 
 export function PartnerCreatePage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
   const { frame, dispatch } = useOperations()
@@ -15,7 +15,7 @@ export function PartnerCreatePage({ data, open }: { data: OperationsState; open:
   const [registration, setRegistration] = useState('')
   const [note, setNote] = useState('')
   const [createdId, setCreatedId] = useState<string | null>(null)
-  const canCreate = roleCan(frame.data.user.role, 'partner-management')
+  const canCreate = userCan(frame.data.user, 'partner-management')
   const nextId = nextPartnerId(data)
   const created = createdId ? data.partners.find((partner) => partner.id === createdId) : undefined
   const recent = [...data.partners].sort((a, b) => b.registeredAt.localeCompare(a.registeredAt)).slice(0, 5)
@@ -47,7 +47,7 @@ export function PartnerCreatePage({ data, open }: { data: OperationsState; open:
           <PanelHeading title="Create a new partner" detail={`Next partner ID · ${nextId}`} />
           <form className="partner-create-form" onSubmit={submit}>
             <p className="dialog-description">Create an admin partner record. New partners start offline with every mandatory KYC document marked missing.</p>
-            {!canCreate && <div className="settings-note"><Icon name="lock" size={15} /><span>Your {frame.data.user.role} role can view partner records but cannot create them. Switch to Administrator or Operations Manager to add a user.</span></div>}
+            {!canCreate && <div className="settings-note"><Icon name="lock" size={15} /><span>Your {frame.data.user.role} account can view partner records but cannot create them. Ask a main administrator for partner-management access.</span></div>}
             <div className="form-grid two-columns">
               <label className="field-label span-two">Full name<input autoFocus value={name} disabled={!canCreate} onChange={(event) => setName(event.target.value)} required maxLength={80} placeholder="e.g. Rohan Mitra" /></label>
               <label className="field-label">Phone number<input type="tel" value={phone} disabled={!canCreate} onChange={(event) => setPhone(event.target.value)} required minLength={7} maxLength={20} placeholder="+91 98765 43210" /><span className="field-help">Stored masked in the directory.</span></label>

@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Button, BrandMark, Icon, PageHeading, initials } from './components/ui'
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react'
+import { Button, BrandMark, Icon, PageHeading, initials, type IconName } from './components/ui'
 import { AdminAccountDialog } from './components/AdminAccountDialog'
 import { clearAdminSession, readAdminSession, type AdminSession } from './auth/adminSession'
+import { isMainAdministrator, userHasSection } from './domain/admin'
+import type { AdminSection } from './domain/model'
 import { useOperations } from './state/OperationsProvider'
 import { OverviewPage } from './pages/OverviewPage'
 import { DeliveriesPage } from './pages/DeliveriesPage'
@@ -13,6 +15,7 @@ import { KycReviewPage } from './pages/KycReviewPage'
 import { NotificationsPage } from './pages/NotificationsPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { AdministratorsPage } from './pages/AdministratorsPage'
 import { useAutoPartnerSync } from './hooks/useAutoPartnerSync'
 
 interface RouteState {
@@ -34,17 +37,19 @@ function routeLabel(pathname: string) {
   if (pathname === '/admin/notifications') return 'Notifications'
   if (pathname === '/admin/audit-logs') return 'Audit Logs'
   if (pathname === '/admin/settings') return 'Settings'
+  if (pathname === '/admin/administrators') return 'Administrators'
   return 'Overview'
 }
 
-const navItems = [
-  { label: 'Overview', path: '/admin', icon: 'overview' as const },
-  { label: 'Deliveries', path: '/admin/deliveries', icon: 'deliveries' as const },
-  { label: 'Partners', path: '/admin/partners', icon: 'partners' as const },
-  { label: 'KYC Review', path: '/admin/kyc', icon: 'kyc' as const },
-  { label: 'Notifications', path: '/admin/notifications', icon: 'notifications' as const },
-  { label: 'Audit Logs', path: '/admin/audit-logs', icon: 'audit' as const },
-  { label: 'Settings', path: '/admin/settings', icon: 'settings' as const },
+const navItems: Array<{ label: string; path: string; icon: IconName; section?: AdminSection; mainOnly?: boolean }> = [
+  { label: 'Overview', path: '/admin', icon: 'overview' },
+  { label: 'Deliveries', path: '/admin/deliveries', icon: 'deliveries', section: 'deliveries' },
+  { label: 'Partners', path: '/admin/partners', icon: 'partners', section: 'partners' },
+  { label: 'KYC Review', path: '/admin/kyc', icon: 'kyc', mainOnly: true },
+  { label: 'Notifications', path: '/admin/notifications', icon: 'notifications' },
+  { label: 'Audit Logs', path: '/admin/audit-logs', icon: 'audit', section: 'audit-logs' },
+  { label: 'Settings', path: '/admin/settings', icon: 'settings', section: 'settings' },
+  { label: 'Administrators', path: '/admin/administrators', icon: 'shield', mainOnly: true },
 ]
 
 function isActive(pathname: string, path: string) {
@@ -58,13 +63,18 @@ export default function App() {
   // A connect/data flow keeps the demo session alive underneath the login form.
   const forceLogin = new URLSearchParams(window.location.search).get('signin') === 'firebase'
 
-  useEffect(() => {
+  // Resolve directory-backed access before paint so a restricted account never
+  // briefly renders the full-access shell from persisted local state.
+  useLayoutEffect(() => {
     if (!session) return
     dispatch({ type: 'user.identify', id: session.userId, name: session.name, email: session.email })
   }, [session, dispatch])
 
   function handleSignedIn(nextSession: AdminSession) {
     window.history.replaceState({}, '', '/admin')
+    // Resolve the new identity before resetting demo data so the rest of the
+    // walkthrough keeps the directory access of the account that just signed in.
+    dispatch({ type: 'user.identify', id: nextSession.userId, name: nextSession.name, email: nextSession.email })
     if (nextSession.mode === 'Demo access') dispatch({ type: 'demo.reset' })
     setSession(nextSession)
   }
@@ -75,7 +85,9 @@ export default function App() {
 
 function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSignedOut: () => void }) {
   const { frame, storageAvailable } = useOperations()
-  useAutoPartnerSync(session)
+  const user = frame.data.user
+  const mainAdmin = isMainAdministrator(user)
+  useAutoPartnerSync(session, user.provisioned)
   const [route, setRoute] = useState<RouteState>(() => currentRoute())
   const [collapsed, setCollapsed] = useState(false)
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
@@ -87,6 +99,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
   const routePath = legacyKycRoute ? '/admin/kyc' : route.pathname
   const activeLabel = routeLabel(routePath)
   const unreadCount = frame.data.notifications.filter((notification) => !notification.readAt).length
+  const visibleNavItems = navItems.filter((item) => item.mainOnly ? mainAdmin : !item.section || userHasSection(user, item.section))
 
   useEffect(() => {
     const onPopState = () => {
@@ -148,10 +161,14 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
   const matches = useMemo(() => {
     const query = search.trim().toLowerCase()
     if (!query) return []
-    const deliveries = frame.data.deliveries.filter((delivery) => `${delivery.id} ${delivery.pickup} ${delivery.drop}`.toLowerCase().includes(query)).slice(0, 5).map((delivery) => ({ label: delivery.id, detail: `${delivery.pickup} → ${delivery.drop}`, path: `/admin/deliveries/${delivery.id}`, type: 'Delivery' }))
-    const partners = frame.data.partners.filter((partner) => `${partner.id} ${partner.name} ${partner.serviceAreas.join(' ')}`.toLowerCase().includes(query)).slice(0, 4).map((partner) => ({ label: partner.name, detail: `${partner.id} · ${partner.availability}`, path: `/admin/partners/${partner.id}`, type: 'Partner' }))
+    const deliveries = userHasSection(user, 'deliveries')
+      ? frame.data.deliveries.filter((delivery) => `${delivery.id} ${delivery.pickup} ${delivery.drop}`.toLowerCase().includes(query)).slice(0, 5).map((delivery) => ({ label: delivery.id, detail: `${delivery.pickup} → ${delivery.drop}`, path: `/admin/deliveries/${delivery.id}`, type: 'Delivery' }))
+      : []
+    const partners = userHasSection(user, 'partners')
+      ? frame.data.partners.filter((partner) => `${partner.id} ${partner.name} ${partner.serviceAreas.join(' ')}`.toLowerCase().includes(query)).slice(0, 4).map((partner) => ({ label: partner.name, detail: `${partner.id} · ${partner.availability}`, path: `/admin/partners/${partner.id}`, type: 'Partner' }))
+      : []
     return [...deliveries, ...partners].slice(0, 7)
-  }, [frame.data.deliveries, frame.data.partners, search])
+  }, [frame.data.deliveries, frame.data.partners, search, user])
 
   function submitSearch() {
     if (matches.length) open(matches[0].path)
@@ -167,21 +184,35 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
   const selectedDelivery = deliveryMatch ? frame.data.deliveries.find((delivery) => delivery.id === decodeURIComponent(deliveryMatch[1])) : undefined
   const selectedPartnerId = partnerMatch ? decodeURIComponent(partnerMatch[1]) : ''
 
+  function canOpenRoute(pathname: string) {
+    if (mainAdmin) return true
+    if (pathname === '/admin' || pathname === '/admin/notifications') return true
+    if (pathname === '/admin/kyc' || pathname === '/admin/administrators') return false
+    if (pathname === '/admin/settings') return userHasSection(user, 'settings')
+    if (pathname === '/admin/audit-logs') return userHasSection(user, 'audit-logs')
+    if (pathname === '/admin/deliveries' || pathname.startsWith('/admin/deliveries/')) return userHasSection(user, 'deliveries')
+    if (pathname === '/admin/partners' || pathname.startsWith('/admin/partners/')) return userHasSection(user, 'partners')
+    return false
+  }
+
   const pageTitle = activeLabel === 'Overview' ? 'Operations Overview'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? `Assign partner · ${selectedDelivery?.id ?? ''}` : isDeliveryDetail ? `Delivery ${selectedDelivery?.id ?? ''}` : 'Deliveries'
       : activeLabel === 'Partners' ? partnerMatch ? `Partner · ${selectedPartnerId}` : partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : 'Delivery partners'
-        : activeLabel === 'KYC Review' ? 'KYC Review'
-          : activeLabel
+        : activeLabel === 'Administrators' ? 'Administrators'
+          : activeLabel === 'KYC Review' ? 'KYC Review'
+            : activeLabel
   const pageSubtitle = activeLabel === 'Overview' ? 'A clear view of the delivery queue, partner availability, and operational exceptions.'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? '' : isDeliveryDetail ? 'Operational record, assignment history, and delivery milestones.' : 'Search, filter, assign, and review delivery jobs.'
       : activeLabel === 'Partners' ? partnerMatch ? 'Verification, eligibility, availability, and delivery history.' : partnersView === 'new' ? 'Create a partner directory record. Mandatory KYC documents are queued as missing.' : partnersView === 'app' ? 'Read-only delivery_app records synced from the partner backend.' : partnersView === 'activity' ? 'Audit partner activity and suspend or restore a partner when required.' : 'Review delivery-partner availability, verification, and assignment eligibility.'
-        : activeLabel === 'KYC Review' ? 'Review onboarding KYC applications from this console and delivery_app. Administrator approval only.'
-          : activeLabel === 'Notifications' ? 'Event-driven operational notifications.'
-            : activeLabel === 'Audit Logs' ? 'Append-only history of administrative operations.'
-              : 'Simple configuration and demo data controls.'
+        : activeLabel === 'Administrators' ? 'Main administrators have full access. Restricted administrators only receive the sections and actions selected here.'
+          : activeLabel === 'KYC Review' ? 'Review onboarding KYC applications from this console and delivery_app. Main administrator approval only.'
+            : activeLabel === 'Notifications' ? 'Event-driven operational notifications.'
+              : activeLabel === 'Audit Logs' ? 'Append-only history of administrative operations.'
+                : 'Simple configuration and demo data controls.'
 
-  const routeKnown = ['/admin', '/admin/deliveries', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
-  const showHeading = routeKnown && !isAssignmentRoute
+  const routeKnown = ['/admin', '/admin/deliveries', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings', '/admin/administrators'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
+  const accessDenied = routeKnown && !canOpenRoute(routePath)
+  const showHeading = routeKnown && !isAssignmentRoute && !accessDenied
   const partnerViewLabel = partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : ''
   const breadcrumbs = isDeliveryDetail && selectedDelivery ? [{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: selectedDelivery.id }] : partnerMatch ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: selectedPartnerId }] : activeLabel === 'Overview' ? undefined : activeLabel === 'Partners' && partnerViewLabel ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: partnerViewLabel }] : [{ label: 'Overview', path: '/admin' }, { label: activeLabel }]
 
@@ -193,6 +224,19 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
     onSignedOut()
   }
 
+  if (!user.provisioned) {
+    return <div className="access-denied-shell">
+      <section className="access-denied-card">
+        <BrandMark />
+        <span className="eyebrow">ADMINISTRATOR ACCESS</span>
+        <h1>Access not provisioned</h1>
+        <p><strong>{user.email}</strong> does not have an active administrator record in this console. Ask a main administrator to add your email and choose your sections and actions, then sign in again.</p>
+        <div className="access-denied-note"><Icon name="shield" size={15} /><span>Firebase Authentication proves who you are. The main administrator controls what this console allows.</span></div>
+        <Button variant="primary" onClick={signOut}><Icon name="logout" size={15} />Sign out</Button>
+      </section>
+    </div>
+  }
+
   return <div className={`app-shell ${collapsed ? 'sidebar-collapsed' : ''} ${mobileNavOpen ? 'mobile-nav-open' : ''}`}>
     <a className="skip-link" href="#main-content">Skip to content</a>
     <aside className="sidebar">
@@ -200,7 +244,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
       <div className="sidebar-environment"><span className="environment-dot" />INTERNAL CONSOLE</div>
       <nav className="side-nav" id="primary-navigation" aria-label="Main navigation">
         <span className="side-nav-label">OPERATIONS</span>
-        {navItems.map((item) => <button key={item.path} className={`nav-item ${isActive(routePath, item.path) ? 'active' : ''}`} onClick={() => open(item.path)} title={collapsed ? item.label : undefined} aria-current={isActive(routePath, item.path) ? 'page' : undefined}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.label === 'Notifications' && unreadCount > 0 && <b className="nav-count">{unreadCount}</b>}</button>)}
+        {visibleNavItems.map((item) => <button key={item.path} className={`nav-item ${isActive(routePath, item.path) ? 'active' : ''}`} onClick={() => open(item.path)} title={collapsed ? item.label : undefined} aria-current={isActive(routePath, item.path) ? 'page' : undefined}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.label === 'Notifications' && unreadCount > 0 && <b className="nav-count">{unreadCount}</b>}</button>)}
       </nav>
       <div className="sidebar-bottom"><div className="side-support-note"><Icon name="shield" size={15} /><span>Firebase secured<br />Authorized operators</span></div><button className="profile-card" onClick={() => setAccountOpen(true)} aria-haspopup="dialog" aria-label="Open Administrator account details"><span className="avatar">{initials(frame.data.user.name)}</span><span className="profile-copy"><strong>{frame.data.user.name}</strong><small>{frame.data.user.role}</small></span><Icon name="more" size={16} /></button></div>
     </aside>
@@ -223,18 +267,22 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
       <main className="page-content" id="main-content">
         {!storageAvailable && <div className="storage-warning"><Icon name="alert" size={16} /><span>Browser storage is unavailable. Changes may not persist after refresh.</span></div>}
         {showHeading && <PageHeading title={pageTitle} subtitle={pageSubtitle} breadcrumbs={breadcrumbs} onNavigate={open} />}
-        {routePath === '/admin' && <OverviewPage data={frame.data} open={open} />}
-        {routePath === '/admin/deliveries' && <DeliveriesPage data={frame.data} open={open} statusFromUrl={query.get('status') ?? undefined} initialSearch={query.get('q') ?? ''} />}
-        {isDeliveryDetail && selectedDelivery && <DeliveryDetailPage data={frame.data} delivery={selectedDelivery} open={open} />}
-        {isAssignmentRoute && selectedDelivery && <AssignmentPage data={frame.data} delivery={selectedDelivery} open={open} />}
-        {deliveryMatch && !selectedDelivery && <div className="route-not-found"><Icon name="alert" size={22} /><h2>Delivery not found</h2><p>The requested record is not available.</p><Button onClick={() => open('/admin/deliveries')}>Back to deliveries</Button></div>}
-        {routePath === '/admin/partners' && <PartnersPage data={frame.data} open={open} viewFromUrl={partnersView ?? undefined} />}
-        {routePath === '/admin/kyc' && <KycReviewPage data={frame.data} open={open} />}
-        {partnerMatch && <PartnerProfilePage data={frame.data} open={open} partnerId={selectedPartnerId} initialDocumentId={query.get('document')} />}
-        {routePath === '/admin/notifications' && <NotificationsPage data={frame.data} open={open} />}
-        {routePath === '/admin/audit-logs' && <AuditLogsPage data={frame.data} />}
-        {routePath === '/admin/settings' && <SettingsPage data={frame.data} initialTab={query.get('tab') ?? undefined} />}
-        {!['/admin', '/admin/deliveries', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings'].includes(routePath) && !deliveryMatch && !partnerMatch && <div className="route-not-found"><Icon name="search" size={22} /><h2>Page not found</h2><p>This route is not part of the Delivery Operations console.</p><Button variant="primary" onClick={() => open('/admin')}>Go to overview</Button></div>}
+        {accessDenied && <div className="route-not-found"><Icon name="lock" size={22} /><h2>Administrator access required</h2><p>Your account does not have access to this section. Ask a main administrator to update your sections and actions.</p><Button variant="primary" onClick={() => open('/admin')}>Back to overview</Button></div>}
+        {!accessDenied && <>
+          {routePath === '/admin' && <OverviewPage data={frame.data} open={open} />}
+          {routePath === '/admin/deliveries' && <DeliveriesPage data={frame.data} open={open} statusFromUrl={query.get('status') ?? undefined} initialSearch={query.get('q') ?? ''} />}
+          {isDeliveryDetail && selectedDelivery && <DeliveryDetailPage data={frame.data} delivery={selectedDelivery} open={open} />}
+          {isAssignmentRoute && selectedDelivery && <AssignmentPage data={frame.data} delivery={selectedDelivery} open={open} />}
+          {deliveryMatch && !selectedDelivery && <div className="route-not-found"><Icon name="alert" size={22} /><h2>Delivery not found</h2><p>The requested record is not available.</p><Button onClick={() => open('/admin/deliveries')}>Back to deliveries</Button></div>}
+          {routePath === '/admin/partners' && <PartnersPage data={frame.data} open={open} viewFromUrl={partnersView ?? undefined} />}
+          {routePath === '/admin/kyc' && <KycReviewPage data={frame.data} open={open} />}
+          {partnerMatch && <PartnerProfilePage data={frame.data} open={open} partnerId={selectedPartnerId} initialDocumentId={query.get('document')} />}
+          {routePath === '/admin/notifications' && <NotificationsPage data={frame.data} open={open} />}
+          {routePath === '/admin/audit-logs' && <AuditLogsPage data={frame.data} />}
+          {routePath === '/admin/settings' && <SettingsPage data={frame.data} initialTab={query.get('tab') ?? undefined} />}
+          {routePath === '/admin/administrators' && <AdministratorsPage data={frame.data} />}
+        </>}
+        {!routeKnown && <div className="route-not-found"><Icon name="search" size={22} /><h2>Page not found</h2><p>This route is not part of the Delivery Operations console.</p><Button variant="primary" onClick={() => open('/admin')}>Go to overview</Button></div>}
       </main>
     </div>
     {toast && <div className={`toast toast-${toast.kind}`} role={toast.kind === 'error' ? 'alert' : 'status'}><span className="toast-icon"><Icon name={toast.kind === 'error' ? 'alert' : toast.kind === 'info' ? 'info' : 'check'} size={15} /></span>{toast.message}<button aria-label="Dismiss notification" onClick={() => setToast(null)}><Icon name="close" size={14} /></button></div>}

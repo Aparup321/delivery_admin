@@ -11,7 +11,6 @@ export interface AdminSession {
   userId: string
   name: string
   email: string
-  role: 'Admin'
   signedInAt: string
   mode: 'Firebase Authentication' | 'Demo access'
 }
@@ -28,7 +27,6 @@ export function createAdminSession(firebase: FirebaseAdminSession): AdminSession
     userId: firebase.uid,
     name: firebase.displayName?.trim() || fallbackName(firebase.email),
     email: firebase.email,
-    role: 'Admin',
     signedInAt: firebase.signedInAt,
     mode: 'Firebase Authentication',
   }
@@ -37,9 +35,8 @@ export function createAdminSession(firebase: FirebaseAdminSession): AdminSession
 export function createDemoAdminSession(): AdminSession {
   return {
     userId: 'DEMO-OPS-01',
-    name: 'Demo Operations Manager',
+    name: 'Operations Administrator',
     email: DEMO_LOGIN_EMAIL,
-    role: 'Admin',
     signedInAt: new Date().toISOString(),
     mode: 'Demo access',
   }
@@ -55,9 +52,8 @@ export function readDemoAdminSession(): AdminSession | null {
     if (candidate.mode !== 'Demo access' || !candidate.userId || !candidate.email || !candidate.signedInAt) return null
     return {
       userId: candidate.userId,
-      name: candidate.name?.trim() || 'Demo Operations Manager',
+      name: candidate.name?.trim() || 'Operations Administrator',
       email: candidate.email,
-      role: 'Admin',
       signedInAt: candidate.signedInAt,
       mode: 'Demo access',
     }

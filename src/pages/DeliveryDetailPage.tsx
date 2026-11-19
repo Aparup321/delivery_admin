@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { userCan } from '../domain/admin'
 import { DELIVERY_MILESTONES, type Delivery, type OperationsState } from '../domain/model'
 import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/serviceAreas'
 import { MapPreview } from '../components/MapPreview'
@@ -33,8 +34,8 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
   const offers = data.offers.filter((offer) => offer.deliveryId === delivery.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   const nextMilestone = delivery.milestones.findIndex((milestone) => !milestone.completedAt)
   const isTerminal = delivery.status === 'Completed' || delivery.status === 'Cancelled'
-  const canOperate = frame.data.user.role !== 'Viewer'
-  const canManage = ['Admin', 'Operations Manager'].includes(frame.data.user.role)
+  const canOperate = userCan(frame.data.user, 'assignment')
+  const canManage = userCan(frame.data.user, 'delivery-management')
   const mapRoute = useMemo(() => ({
     approximate: !hasServiceAreaCoordinate(delivery.pickup) || !hasServiceAreaCoordinate(delivery.drop),
     points: [

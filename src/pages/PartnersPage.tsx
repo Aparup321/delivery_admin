@@ -6,7 +6,7 @@ import { useOperations } from '../state/OperationsProvider'
 import { beginFirebaseDataConnection } from '../auth/adminSession'
 import { partnerAppEndpoint, readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
-import { roleCan } from '../state/operationsReducer'
+import { userCan } from '../domain/admin'
 import { PartnerCreatePage } from './PartnerCreatePage'
 
 type PartnersSection = 'directory' | 'activity' | 'new' | 'app'
@@ -53,7 +53,7 @@ function PartnerAppRecordDialog({ record, data, onClose, open }: { record: Partn
   const { frame, dispatch } = useOperations()
   const [accountDialog, setAccountDialog] = useState<'suspend' | 'restore' | null>(null)
   const [linkPartnerId, setLinkPartnerId] = useState('')
-  const canManage = frame.data.user.role === 'Admin'
+  const canManage = userCan(frame.data.user, 'partner-management')
   const entries = Object.entries(record.fields).sort(([a], [b]) => a.localeCompare(b))
   const linkedPartner = linkedPartnerForRecord(data, record)
   const application = applicationForRecord(data, record, linkedPartner)
@@ -89,7 +89,7 @@ function PartnerAppRecordDialog({ record, data, onClose, open }: { record: Partn
         <div>
           <strong>Live delivery_app account</strong>
           <span>{linkedByUid
-            ? `Administrator account actions write to this partner document when a Firebase administrator is signed in under Settings → Partner app.${firebaseSignedIn ? '' : ' No Firebase administrator is signed in yet.'}`
+            ? `Partner account actions write to this partner document when a Firebase administrator is signed in under Settings → Partner app.${firebaseSignedIn ? '' : ' No Firebase administrator is signed in yet.'}`
             : 'Link this record to an admin partner before suspending or reinstating the delivery_app account. KYC approval is handled from KYC Review.'}</span>
         </div>
         <div className="row-action-group">
@@ -116,7 +116,7 @@ function PartnerAppRecordDialog({ record, data, onClose, open }: { record: Partn
 }
 
 function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
-  const { dispatch, partnerAppWriteFailures, retryPartnerAppWrites } = useOperations()
+  const { frame, dispatch, partnerAppWriteFailures, retryPartnerAppWrites } = useOperations()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(1)
   const [recordId, setRecordId] = useState<string | null>(null)
@@ -138,6 +138,7 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
   const record = recordId ? data.partnerAppRecords.find((item) => item.id === recordId) : undefined
   const firebaseSignedIn = hasFirebaseAdminSession()
+  const canConfigure = userCan(frame.data.user, 'settings')
 
   async function refreshLive() {
     if (!firebaseSignedIn) {
@@ -163,9 +164,9 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
     <Panel className="records-panel">
       <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>partner app records</span><span className="dot-separator" />{data.partners.filter((partner) => partner.partnerAppUid).length} linked partners · {config.lastSyncAt ? `Synced ${formatDate(config.lastSyncAt)}` : 'Never synced'}</div><div className="row-action-group">{firebaseSignedIn
         ? <Button size="small" onClick={refreshLive} disabled={syncing || !configured}><Icon name="refresh" size={14} />{syncing ? 'Refreshing…' : 'Refresh live data'}</Button>
-        : <Button size="small" variant="primary" onClick={beginFirebaseDataConnection} disabled={!configured}><Icon name="lock" size={14} />Sign in to load live partners</Button>}<Button size="small" onClick={() => open('/admin/settings?tab=partner-app')}><Icon name="settings" size={14} />Connection settings</Button></div></div>
+        : <Button size="small" variant="primary" onClick={beginFirebaseDataConnection} disabled={!configured}><Icon name="lock" size={14} />Sign in to load live partners</Button>}{canConfigure && <Button size="small" onClick={() => open('/admin/settings?tab=partner-app')}><Icon name="settings" size={14} />Connection settings</Button>}</div></div>
       {!firebaseSignedIn && <div className="soft-notice"><Icon name="info" size={15} /><span className="partner-app-notice-copy">You are viewing the demo workspace. The new delivery_app partner will appear after signing in with the Firebase administrator account and refreshing live data.</span></div>}
-      {!configured ? <EmptyState title="Partner app not connected" detail="Enter the delivery_admin Firebase config (same project as delivery_app) in Settings → Partner app, then sync partner records." action={<Button variant="primary" onClick={() => open('/admin/settings?tab=partner-app')}>Configure partner app</Button>} /> : <>
+      {!configured ? <EmptyState title="Partner app not connected" detail={canConfigure ? 'Enter the delivery_admin Firebase config (same project as delivery_app) in Settings → Partner app, then sync partner records.' : 'A main administrator must connect the shared Firebase project before partner records can sync.'} action={canConfigure ? <Button variant="primary" onClick={() => open('/admin/settings?tab=partner-app')}>Configure partner app</Button> : undefined} /> : <>
         {config.lastError && <div className="soft-notice"><Icon name="alert" size={15} /><span className="partner-app-notice-copy">Last delivery_app update failed: {config.lastError}{requestUrl && <small className="partner-app-error-url">Request: {requestUrl}</small>}</span>{partnerAppWriteFailures > 0 && <Button size="small" variant="primary" onClick={retryPartnerAppWrites}>Retry {partnerAppWriteFailures} update{partnerAppWriteFailures === 1 ? '' : 's'}</Button>}</div>}
         {data.partnerAppRecords.length === 0 ? <EmptyState title="No partner app records synced" detail={firebaseSignedIn ? 'Refresh live data to load the partners collection from delivery_app.' : 'Sign in with the Firebase administrator account to load the live partners collection. Demo records do not call Firebase.'} action={firebaseSignedIn
           ? <Button variant="primary" onClick={refreshLive} disabled={syncing || !configured}><Icon name="refresh" size={14} />{syncing ? 'Refreshing…' : 'Refresh live data'}</Button>
@@ -204,7 +205,7 @@ function PartnerActivityPage({ data, open }: { data: OperationsState; open: (pat
   const [suspendTarget, setSuspendTarget] = useState<Partner | null>(null)
   const [restoreTarget, setRestoreTarget] = useState<Partner | null>(null)
   const pageSize = 10
-  const canManage = frame.data.user.role === 'Admin'
+  const canManage = userCan(frame.data.user, 'partner-management')
   const types = [...new Set(data.partnerHistory.map((event) => event.type))].sort()
   const filtered = useMemo(() => data.partnerHistory.filter((event) => {
     const partner = data.partners.find((item) => item.id === event.partnerId)
@@ -230,12 +231,12 @@ function PartnerActivityPage({ data, open }: { data: OperationsState; open: (pat
             <td>{relatedDelivery ? <button className="table-record-link" onClick={() => open(`/admin/deliveries/${relatedDelivery.id}`)}>{relatedDelivery.id}<small>{relatedDelivery.status}</small></button> : <span className="muted-text">—</span>}</td>
             <td>{event.actor}</td>
             <td>{formatDate(event.at, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
-            <td>{partner ? <span className="row-action-group">{partner.availability === 'Suspended' ? <Button size="small" disabled={!canManage} title={canManage ? 'Restore this suspended partner' : 'Administrator access required'} onClick={() => setRestoreTarget(partner)}>Restore</Button> : <Button size="small" variant="danger" disabled={!canManage} title={canManage ? 'Suspend this partner' : 'Administrator access required'} onClick={() => setSuspendTarget(partner)}>Suspend</Button>}</span> : <span className="muted-text">—</span>}</td>
+            <td>{partner ? <span className="row-action-group">{partner.availability === 'Suspended' ? <Button size="small" disabled={!canManage} title={canManage ? 'Restore this suspended partner' : 'Partner management access required'} onClick={() => setRestoreTarget(partner)}>Restore</Button> : <Button size="small" variant="danger" disabled={!canManage} title={canManage ? 'Suspend this partner' : 'Partner management access required'} onClick={() => setSuspendTarget(partner)}>Suspend</Button>}</span> : <span className="muted-text">—</span>}</td>
           </tr>
         })}
       </tbody></table>{visible.length === 0 && <EmptyState title="No partner activity matches" detail="Adjust the activity type or search filters. Activity is recorded as partner actions occur." />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
-      <div className="notification-history-note"><Icon name="shield" size={14} />Only an Administrator can suspend or reinstate a partner. Suspensions block new assignments and every decision is recorded in partner activity and the audit log.</div>
+      <div className="notification-history-note"><Icon name="shield" size={14} />Partner-management access is required to suspend or reinstate a partner. Suspensions block new assignments and every decision is recorded in partner activity and the audit log.</div>
     </Panel>
     {suspendTarget && <ConfirmDialog title={`Suspend ${suspendTarget.name}?`} detail="Suspension blocks new assignments and offers. Existing delivery assignments and history are retained for an operations review." reasonLabel="Suspension reason" confirmLabel="Suspend partner" danger onCancel={() => setSuspendTarget(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restrict', partnerId: suspendTarget.id, status: 'Suspended', reason }); setSuspendTarget(null) }} />}
     {restoreTarget && <ConfirmDialog title={`Restore ${restoreTarget.name}?`} detail="Restoring removes the suspension and makes the partner eligible again once document checks and any existing assignment allow it. The reinstatement is recorded in activity and the audit log." reasonLabel="Reinstatement reason" confirmLabel="Restore partner" onCancel={() => setRestoreTarget(null)} onConfirm={(reason) => { dispatch({ type: 'partner.restore', partnerId: restoreTarget.id, reason }); setRestoreTarget(null) }} />}
@@ -254,7 +255,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   const [suspendTarget, setSuspendTarget] = useState<Partner | null>(null)
   const [restoreTarget, setRestoreTarget] = useState<Partner | null>(null)
   const pageSize = 8
-  const canManage = roleCan(frame.data.user.role, 'partner-management')
+  const canManage = userCan(frame.data.user, 'partner-management')
   const view: PartnersSection = viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : viewFromUrl === 'new' ? 'new' : 'directory'
   const areas = [...new Set(data.partners.flatMap((partner) => partner.serviceAreas))].sort()
   const deliveryForEligibility = data.deliveries.find((item) => item.status === 'Unassigned' || item.status === 'Pending') ?? data.deliveries.find((item) => !['Completed', 'Cancelled'].includes(item.status))
@@ -280,7 +281,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   return <div className="page-stack">
     <PartnerSectionTabs active="directory" data={data} open={open} />
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery partners</span><span className="dot-separator" />{data.partners.filter((item) => item.availability === 'Available').length} available now</div><div className="row-action-group"><span className="demo-caption">Eligibility is contextual to the current queue</span><Button size="small" variant="primary" onClick={() => open('/admin/partners?view=new')}><Icon name="plus" size={14} />Add partner</Button></div></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery partners</span><span className="dot-separator" />{data.partners.filter((item) => item.availability === 'Available').length} available now</div><div className="row-action-group"><span className="demo-caption">Eligibility is contextual to the current queue</span><Button size="small" variant="primary" disabled={!canManage} title={canManage ? undefined : 'Partner management access required'} onClick={() => open('/admin/partners?view=new')}><Icon name="plus" size={14} />Add partner</Button></div></div>
       <div className="filter-toolbar partner-filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search name, partner ID, vehicle, area" aria-label="Search delivery partners" /></label>
         <label className="filter-control"><span>Availability</span><select value={availability} onChange={(event) => { setAvailability(event.target.value); setPage(1) }}><option>All</option><option>Available</option><option>On Delivery</option><option>Offline</option><option>Restricted</option><option>Suspended</option></select></label>
@@ -362,7 +363,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
   const activeDelivery = active ? data.deliveries.find((delivery) => delivery.id === active.deliveryId) : undefined
   const history = data.partnerHistory.filter((event) => event.partnerId === partner.id).slice(0, 10)
   const verification = partnerVerification(data, partner)
-  const canManage = ['Admin', 'Operations Manager'].includes(frame.data.user.role)
+  const canManage = userCan(frame.data.user, 'document-review')
   const document = documentId ? docs.find((item) => item.id === documentId) : undefined
   const expiringDocs = docs.filter((item) => item.expiresAt && new Date(item.expiresAt).getTime() > Date.now() && new Date(item.expiresAt).getTime() < Date.now() + 30 * 24 * 60 * 60_000)
 

@@ -139,7 +139,7 @@ export function AdminLoginPage({ onSignedIn }: { onSignedIn: (session: AdminSess
         </div>}
 
         {demoAccess ? <>
-          <div className="login-demo-note"><Icon name="info" size={16} /><div><strong>Demo mode</strong><span>Partners and deliveries are preloaded. Opening the demo restores the sample data; live partner data can be connected from Partner app.</span></div></div>
+          <div className="login-demo-note"><Icon name="info" size={16} /><div><strong>Demo mode</strong><span>Use <strong>admin@picdrop.demo</strong> for full access, or <strong>dispatch@picdrop.demo</strong> to preview a restricted administrator. Opening the demo restores the sample data; live partner data can be connected from Partner app.</span></div></div>
           {demoError && <div className="login-error" role="alert"><Icon name="alert" size={15} /><span>{demoError}</span></div>}
 
           {demoStep === 'email' ? <form className="login-form" onSubmit={sendDemoOtp}>

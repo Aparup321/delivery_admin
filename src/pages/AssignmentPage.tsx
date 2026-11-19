@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { userCan } from '../domain/admin'
 import type { Delivery, OperationsState, Partner } from '../domain/model'
 import { getPartnerEligibility } from '../domain/operations'
 import { Button, Dialog, EmptyState, Icon, PageHeading, Panel, PanelHeading, StatusBadge } from '../components/ui'
@@ -24,7 +25,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
   const entries = tab === 'Eligible' ? eligible : ineligible
   const selectedEntry = evaluations.find((entry) => entry.partner.id === selectedId && entry.eligible)
   const assigned = delivery.assignmentId ? data.assignments.find((item) => item.id === delivery.assignmentId && item.status === 'Active') : undefined
-  const canAssign = ['Admin', 'Operations Manager', 'Operations Staff'].includes(frame.data.user.role)
+  const canAssign = userCan(frame.data.user, 'assignment')
 
   function confirmAssignment() {
     if (!selectedEntry) return

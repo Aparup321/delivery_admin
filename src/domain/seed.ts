@@ -1,4 +1,4 @@
-import { createDefaultAdmin } from './admin.ts'
+import { createDefaultAdmin, createDemoAdminDirectory } from './admin.ts'
 import { applyFirebaseConnectionDefaults } from '../config/firebase.ts'
 import { DELIVERY_MILESTONES, type Assignment, type AuditLogEntry, type Delivery, type DeliveryMilestone, type DocumentType, type OperationsSettings, type OperationsState, type Partner, type PartnerAppConfig, type PartnerApplication, type PartnerDocument, type PartnerHistoryEntry } from './model.ts'
 
@@ -253,7 +253,7 @@ export function createDemoState(timestamp = Date.now()): OperationsState {
     id: `EVT-SEED-${index + 1}`,
     eventType: 'Delivery assigned',
     operator: assignment.assignedBy,
-    operatorRole: 'Admin',
+    operatorRole: 'Main Administrator',
     targetType: 'Delivery',
     targetId: assignment.deliveryId,
     previousValue: 'Unassigned',
@@ -281,6 +281,7 @@ export function createDemoState(timestamp = Date.now()): OperationsState {
     partnerHistory: makePartnerHistory(now),
     notifications,
     auditLogs: logs,
+    admins: createDemoAdminDirectory(),
     user: createDefaultAdmin(),
     settings: structuredClone(DEFAULT_SETTINGS),
   }

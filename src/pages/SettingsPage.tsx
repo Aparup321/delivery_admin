@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { OperationsSettings, OperationsState } from '../domain/model'
 import { Button, Dialog, formatDate, Icon, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { PartnerAppSettings } from '../components/PartnerAppSettings'
+import { userCan } from '../domain/admin'
 import { useOperations } from '../state/OperationsProvider'
 
 const tabs = ['General', 'Partner sync', 'Demo data'] as const
@@ -24,7 +25,7 @@ export function SettingsPage({ data, initialTab }: { data: OperationsState; init
   const [resetOpen, setResetOpen] = useState(false)
   const settingsSnapshot = JSON.stringify(data.settings)
   const isDirty = useMemo(() => JSON.stringify(draft) !== settingsSnapshot, [draft, settingsSnapshot])
-  const canManage = frame.data.user.role === 'Admin'
+  const canManage = userCan(frame.data.user, 'settings')
 
   useEffect(() => setDraft(cloneSettings(data.settings)), [settingsSnapshot])
   useEffect(() => {

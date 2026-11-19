@@ -1,4 +1,5 @@
-import { DELIVERY_MILESTONES, type AdminRole, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerApplication, type Permission } from '../domain/model.ts'
+import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCan } from '../domain/admin.ts'
+import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerApplication, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
 import { getPartnerEligibility, getActiveAssignment, nextPartnerId } from '../domain/operations.ts'
 
@@ -39,7 +40,9 @@ export type OperationAction =
   | { type: 'notification.read'; notificationId: string }
   | { type: 'notification.read-all' }
   | { type: 'settings.save'; settings: OperationsState['settings'] }
-  | { type: 'user.set-role'; role: AdminRole }
+  | { type: 'admin.create'; name: string; email: string; title: string; role: AdminRole; sections: AdminSection[]; permissions: Permission[] }
+  | { type: 'admin.update'; adminId: string; name: string; title: string; role: AdminRole; sections: AdminSection[]; permissions: Permission[] }
+  | { type: 'admin.set-active'; adminId: string; active: boolean; reason: string }
   | { type: 'user.identify'; id: string; name: string; email: string }
   | { type: 'demo.reset' }
 
@@ -63,30 +66,23 @@ const permissionByAction: Partial<Record<OperationAction['type'], Permission>> =
   'application.approve': 'application-review',
   'application.reject': 'application-review',
   'partnerApp.save': 'settings',
-  'partnerApp.connected': 'settings',
-  'partnerApp.sync-result': 'settings',
-  'partnerApp.failed': 'settings',
-  'partnerApp.link': 'settings',
-  'partnerApp.unlink': 'settings',
+  // Sync status is a background read and must update for every account that
+  // can open Partners. Linking is part of partner management.
+  'partnerApp.connected': 'read',
+  'partnerApp.sync-result': 'read',
+  'partnerApp.failed': 'read',
+  'partnerApp.link': 'partner-management',
+  'partnerApp.unlink': 'partner-management',
   'partnerApp.review': 'application-review',
-  'partnerApp.write-result': 'settings',
+  'partnerApp.write-result': 'read',
   'notification.read': 'read',
   'notification.read-all': 'read',
   'settings.save': 'settings',
-  // This switches the local demo persona; it does not create or grant a production account.
-  'user.set-role': 'read',
-  'demo.reset': 'admin',
-}
-
-const rolePermissions: Record<AdminRole, Permission[]> = {
-  Admin: ['read', 'assignment', 'delivery-management', 'partner-management', 'document-review', 'application-review', 'settings', 'admin'],
-  'Operations Manager': ['read', 'assignment', 'delivery-management', 'partner-management', 'document-review'],
-  'Operations Staff': ['read', 'assignment'],
-  Viewer: ['read'],
-}
-
-export function roleCan(role: AdminRole, permission: Permission) {
-  return rolePermissions[role].includes(permission)
+  'admin.create': 'admin',
+  'admin.update': 'admin',
+  'admin.set-active': 'admin',
+  // Local demo data does not touch production records. The Settings screen
+  // still hides the reset control from read-only accounts.
 }
 
 function uid(prefix: string) {
@@ -128,6 +124,23 @@ function findApplication(data: OperationsState, id: string) {
   const application = data.applications.find((item) => item.id === id)
   if (!application) throw new Error(`Application ${id} could not be found.`)
   return application
+}
+
+function findAdmin(data: OperationsState, id: string) {
+  const admin = data.admins.find((item) => item.id === id)
+  if (!admin) throw new Error(`Administrator ${id} could not be found.`)
+  return admin
+}
+
+function activeMainAdmins(data: OperationsState) {
+  return data.admins.filter((account) => account.active && account.role === 'Main Administrator')
+}
+
+function adminAccessSummary(account: Pick<AdminAccount, 'role' | 'sections' | 'permissions'>) {
+  if (account.role === 'Main Administrator') return 'Main Administrator · full access'
+  const sections = account.sections.length ? account.sections.join(', ') : 'no sections'
+  const permissions = account.permissions.filter((permission) => permission !== 'read').join(', ') || 'view only'
+  return `Restricted Administrator · ${sections} · ${permissions}`
 }
 
 function normalizeLinkName(value: string) {
@@ -917,26 +930,112 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       audit(data, 'Settings modified', 'Settings', 'operations', previous, JSON.stringify(data.settings), 'Updated local configuration.', at)
       return { message: 'Settings saved locally.' }
     }
-    case 'user.set-role': {
-      const previous = data.user.role
-      audit(data, 'Administrative role changed', 'Admin user', data.user.id, previous, action.role, 'Role changed using the local role selector.', at)
-      data.user.role = action.role
-      return { message: `Role changed to ${action.role}.` }
+    case 'admin.create': {
+      requireValue(action.name, 'Administrator name')
+      requireValue(action.email, 'Administrator email')
+      const email = normalizeAdminEmail(action.email)
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid administrator email address.')
+      if (data.admins.some((account) => account.email === email)) throw new Error(`${email} is already an administrator account.`)
+      const role: AdminRole = action.role === 'Main Administrator' ? 'Main Administrator' : 'Restricted Administrator'
+      if (role === 'Main Administrator' && activeMainAdmins(data).length >= 2) {
+        throw new Error('Only two main administrators can have full access. Change an existing main administrator to restricted first.')
+      }
+      const access = normalizeAdminAccess(role, action.sections, action.permissions)
+      const account: AdminAccount = {
+        id: uid('ADM'),
+        name: action.name.trim(),
+        email,
+        role,
+        title: action.title.trim() || 'Delivery Operations Administrator',
+        maskedPhone: 'Not provided',
+        sections: access.sections,
+        permissions: access.permissions,
+        active: true,
+        createdAt: at,
+        lastSignedInAt: null,
+      }
+      data.admins.push(account)
+      audit(data, 'Administrator created', 'Admin user', account.id, 'Not provisioned', adminAccessSummary(account), 'Administrator account created by a main administrator.', at)
+      return { message: `${account.name} can now sign in with ${account.email}.` }
+    }
+    case 'admin.update': {
+      const account = findAdmin(data, action.adminId)
+      requireValue(action.name, 'Administrator name')
+      const role: AdminRole = action.role === 'Main Administrator' ? 'Main Administrator' : 'Restricted Administrator'
+      if (role === 'Main Administrator' && account.role !== 'Main Administrator' && activeMainAdmins(data).length >= 2) {
+        throw new Error('Only two main administrators can have full access.')
+      }
+      if (account.active && account.role === 'Main Administrator' && role === 'Restricted Administrator' && activeMainAdmins(data).length <= 1) {
+        throw new Error('At least one active main administrator must remain.')
+      }
+      const previous = adminAccessSummary(account)
+      const access = normalizeAdminAccess(role, action.sections, action.permissions)
+      account.name = action.name.trim()
+      account.title = action.title.trim() || 'Delivery Operations Administrator'
+      account.role = role
+      account.sections = access.sections
+      account.permissions = access.permissions
+      if (account.email === normalizeAdminEmail(data.user.email)) {
+        data.user = adminUserFromAccount(account, data.user.id)
+      }
+      audit(data, 'Administrator access changed', 'Admin user', account.id, previous, adminAccessSummary(account), 'Administrator access updated by a main administrator.', at)
+      return { message: `${account.name}'s access has been updated.` }
+    }
+    case 'admin.set-active': {
+      const account = findAdmin(data, action.adminId)
+      if (account.email === normalizeAdminEmail(data.user.email)) {
+        throw new Error('You cannot change your own administrator access here.')
+      }
+      if (action.active && account.active) throw new Error(`${account.name} is already active.`)
+      if (!action.active && !account.active) throw new Error(`${account.name} is already inactive.`)
+      if (action.active && account.role === 'Main Administrator' && activeMainAdmins(data).length >= 2) {
+        throw new Error('Only two main administrators can have full access. Change one to restricted before reactivating this account.')
+      }
+      if (!action.active && account.role === 'Main Administrator' && activeMainAdmins(data).length <= 1) {
+        throw new Error('At least one active main administrator must remain.')
+      }
+      account.active = action.active
+      audit(
+        data,
+        action.active ? 'Administrator reactivated' : 'Administrator deactivated',
+        'Admin user',
+        account.id,
+        action.active ? 'Inactive' : 'Active',
+        action.active ? 'Active' : 'Inactive',
+        action.reason.trim() || 'No additional note.',
+        at,
+      )
+      return { message: `${account.name} is now ${action.active ? 'active' : 'inactive'}.` }
     }
     case 'user.identify': {
-      data.user.id = action.id.trim() || data.user.id
-      data.user.name = action.name.trim() || data.user.name
-      data.user.email = action.email.trim() || data.user.email
+      const account = data.admins.find((item) => item.email === normalizeAdminEmail(action.email))
+      if (!account || !account.active) {
+        data.user = {
+          id: action.id.trim() || 'UNPROVISIONED',
+          name: action.name.trim() || account?.name || 'Unprovisioned administrator',
+          email: action.email.trim(),
+          role: 'Restricted Administrator',
+          title: account?.title || 'Access not provisioned',
+          maskedPhone: account?.maskedPhone || 'Not provided',
+          sections: [],
+          permissions: [],
+          provisioned: false,
+        }
+        return { message: 'This account has no active administrator access.' }
+      }
+      account.lastSignedInAt = at
+      data.user = adminUserFromAccount(account, action.id)
       return { message: 'Administrator identity synchronized.' }
     }
     case 'demo.reset': {
       const reset = createDemoState()
+      reset.admins = data.admins
+      reset.user = data.user
       reset.auditLogs.push({
         id: uid('EVT'), eventType: 'Local data reset', operator: data.user.name, operatorRole: data.user.role,
         targetType: 'Local data', targetId: 'local-data', previousValue: 'Saved local changes', newValue: 'Seed data restored',
         timestamp: at, reason: 'Reset confirmed by operator.',
       })
-      reset.user = { ...reset.user, role: data.user.role }
       Object.assign(data, reset)
       return { message: 'Demo data reloaded with the sample partners and deliveries.' }
     }
@@ -966,9 +1065,9 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
   }
 
   const permission = permissionByAction[action.type]
-  if (permission && !roleCan(frame.data.user.role, permission)) {
+  if (permission && !userCan(frame.data.user, permission)) {
     const sequence = frame.sequence + 1
-    return { ...frame, sequence, feedback: { id: sequence, kind: 'error', message: `Your ${frame.data.user.role} role cannot perform this action.` } }
+    return { ...frame, sequence, feedback: { id: sequence, kind: 'error', message: `Your ${frame.data.user.role} account cannot perform this action.` } }
   }
 
   const data = structuredClone(frame.data)
