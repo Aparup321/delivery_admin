@@ -5,6 +5,8 @@ import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/servi
 import { MapPreview } from '../components/MapPreview'
 import { Button, ConfirmDialog, formatDate, Icon, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
+import { useLiveDeliveries } from '../hooks/useLiveDeliveries'
+import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 
 interface Props {
   data: OperationsState
@@ -21,6 +23,8 @@ function timeLeft(expiresAt: string, now: number) {
 
 export function DeliveryDetailPage({ data, delivery, open }: Props) {
   const { frame, dispatch } = useOperations()
+  const live = useLiveDeliveries(data.partnerApp, hasFirebaseAdminSession())
+  const liveDelivery = live.deliveries.find((item) => item.id === delivery.id || item.displayId.replace(/^#/, '') === delivery.id)
   const [dialog, setDialog] = useState<'cancel' | 'delay' | 'resolve' | string | null>(null)
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
@@ -37,16 +41,20 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
   const canOperate = userCan(frame.data.user, 'assignment')
   const canManage = userCan(frame.data.user, 'delivery-management')
   const mapRoute = useMemo(() => ({
-    approximate: !hasServiceAreaCoordinate(delivery.pickup) || !hasServiceAreaCoordinate(delivery.drop),
-    points: [
+    approximate: liveDelivery ? false : !hasServiceAreaCoordinate(delivery.pickup) || !hasServiceAreaCoordinate(delivery.drop),
+    points: liveDelivery ? [
+      { id: `${delivery.id}-pickup`, label: `Pickup · ${liveDelivery.pickup.name}`, latitude: liveDelivery.pickup.latitude, longitude: liveDelivery.pickup.longitude, kind: 'pickup' as const },
+      { id: `${delivery.id}-drop`, label: `Drop · ${liveDelivery.destination.name}`, latitude: liveDelivery.destination.latitude, longitude: liveDelivery.destination.longitude, kind: 'drop' as const },
+      ...(liveDelivery.currentLocation ? [{ id: `${delivery.id}-partner`, label: liveDelivery.partnerName, latitude: liveDelivery.currentLocation.latitude, longitude: liveDelivery.currentLocation.longitude, kind: 'partner' as const }] : []),
+    ] : [
       { id: `${delivery.id}-pickup`, label: `Pickup · ${delivery.pickup}`, ...serviceAreaCoordinate(delivery.pickup), kind: 'pickup' as const },
       { id: `${delivery.id}-drop`, label: `Drop · ${delivery.drop}`, ...serviceAreaCoordinate(delivery.drop), kind: 'drop' as const },
     ],
-  }), [delivery.id, delivery.pickup, delivery.drop])
+  }), [liveDelivery, delivery.id, delivery.pickup, delivery.drop])
 
   return <div className="page-stack detail-page">
     <div className="detail-action-bar">
-      <div className="detail-state"><span className="record-id-large">{delivery.id}</span><StatusBadge status={delivery.status} /><span className="created-label">Created {formatDate(delivery.createdAt)}</span></div>
+      <div className="detail-state"><span className="record-id-large">{delivery.id}</span><StatusBadge status={liveDelivery?.status ?? delivery.status} />{liveDelivery && <span className="source-tag source-live"><i />Live delivery_app status</span>}<span className="created-label">Created {formatDate(delivery.createdAt)}</span></div>
       <div className="detail-actions"><Button size="small" variant="secondary" onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)} disabled={!canOperate || isTerminal} title={!canOperate ? 'Read-only operational access' : undefined}><Icon name="route" size={15} />{currentAssignment ? 'Reassign' : 'Assign partner'}</Button>
         {delivery.status === 'Delayed' ? <Button size="small" onClick={() => setDialog('resolve')} disabled={!canManage}>Resolve delay</Button> : <Button size="small" onClick={() => setDialog('delay')} disabled={!canManage || isTerminal}>Mark delayed</Button>}
         <Button size="small" variant="danger" onClick={() => setDialog('cancel')} disabled={!canManage || isTerminal}>Cancel delivery</Button>
@@ -70,13 +78,13 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
         </Panel>
 
         <Panel>
-          <PanelHeading title="Route map" detail="OpenStreetMap preview · no live GPS" />
+          <PanelHeading title="Route map" detail={liveDelivery ? 'Live delivery_app location' : 'OpenStreetMap preview · no live GPS'} />
           <MapPreview points={mapRoute.points} ariaLabel={`OpenStreetMap preview from ${delivery.pickup} to ${delivery.drop}`} />
-          <p className="osm-map-footnote"><Icon name="info" size={13} />Tiles are shared with delivery_app. {mapRoute.approximate ? 'Some area coordinates are approximate. ' : ''}Routing, live partner location and ETA are not connected.</p>
+          <p className="osm-map-footnote"><Icon name="info" size={13} />Tiles are shared with delivery_app. {liveDelivery?.currentLocation?.updatedAt ? `Partner location updated ${formatDate(liveDelivery.currentLocation.updatedAt)}. ` : liveDelivery ? 'Partner location is not currently available. ' : ''}{mapRoute.approximate ? 'Some area coordinates are approximate. ' : ''}Routing and ETAs are not connected.</p>
         </Panel>
 
         <Panel className="milestone-panel">
-          <PanelHeading title="Delivery milestones" detail={`${delivery.milestones.filter((item) => item.completedAt).length} of 6 recorded`} action={!isTerminal && <Button size="small" variant="primary" disabled={!canOperate || delivery.status === 'Delayed' || !currentAssignment || nextMilestone < 0} onClick={() => dispatch({ type: 'delivery.advance', deliveryId: delivery.id })}>{nextMilestone === 5 ? 'Mark as delivered' : nextMilestone > -1 ? `Record ${DELIVERY_MILESTONES[nextMilestone]}` : 'Complete'}<Icon name="arrow" size={14} /></Button>} />
+          <PanelHeading title="Delivery milestones" detail={liveDelivery ? 'Partner-controlled lifecycle from delivery_app' : `${delivery.milestones.filter((item) => item.completedAt).length} of 6 recorded`} action={!liveDelivery && !isTerminal && <Button size="small" variant="primary" disabled={!canOperate || delivery.status === 'Delayed' || !currentAssignment || nextMilestone < 0} onClick={() => dispatch({ type: 'delivery.advance', deliveryId: delivery.id })}>{nextMilestone === 5 ? 'Mark as delivered' : nextMilestone > -1 ? `Record ${DELIVERY_MILESTONES[nextMilestone]}` : 'Complete'}<Icon name="arrow" size={14} /></Button>} />
           <div className="milestone-list">{delivery.milestones.map((milestone, index) => {
             const complete = Boolean(milestone.completedAt)
             const current = !complete && index === nextMilestone && !isTerminal
@@ -86,7 +94,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
               <span className={`milestone-state ${complete ? 'state-complete' : current ? 'state-current' : ''}`}>{complete ? 'Complete' : current ? 'In progress' : 'Upcoming'}</span>
             </div>
           })}</div>
-          <p className="milestone-note"><Icon name="info" size={14} />Milestones are manually simulated. No live GPS events or partner app updates are connected.</p>
+          <p className="milestone-note"><Icon name="info" size={14} />{liveDelivery ? 'Status and location are read from the shared delivery_app Firestore record.' : 'Milestones are local until this delivery is published to delivery_app.'}</p>
         </Panel>
 
         <Panel>

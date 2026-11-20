@@ -73,7 +73,7 @@ export function useLiveDeliveries(
     void load(true)
     const timer = window.setInterval(() => {
       void load(false)
-    }, 30_000)
+    }, 10_000)
 
     return () => {
       active = false

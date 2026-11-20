@@ -6,7 +6,6 @@ import { Button, Dialog, EmptyState, Icon, PageHeading, Panel, PanelHeading, Sta
 import { useOperations } from '../state/OperationsProvider'
 
 interface Props {
-  type Props = {
   data: OperationsState
   delivery: Delivery
   open: (path: string) => void

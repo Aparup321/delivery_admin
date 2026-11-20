@@ -542,6 +542,25 @@ test('only a main administrator can approve an onboarding application, which onb
   assert.ok(approved.data.notifications.some((item) => item.category === 'Partner Application Approved' && item.relatedRecordId === 'APP-2041'))
 })
 
+test('approved live partners become available only when the partner app reports online', () => {
+  const frame = frameWithDemo()
+  const synced = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'live-approved-uid', partnerId: 'live-approved-uid', name: 'Live Approved Partner', phone: '+91 90000 12345',
+      email: 'live@example.com', vehicle: 'Bike', status: 'active', applicationStatus: 'submitted', isOnline: true,
+      serviceAreas: ['New Town'], updatedAt: '2026-06-01T09:55:00.000Z', fields: { fullName: 'Live Approved Partner' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  const reviewed = apply(synced, { type: 'partnerApp.review', recordId: 'live-approved-uid', decision: 'Approved', note: '' })
+  expectSuccess(reviewed)
+  const application = reviewed.data.applications.find((item) => item.partnerAppUid === 'live-approved-uid')!
+  const written = apply(reviewed, { type: 'partnerApp.write-result', targetType: 'Application', targetId: application.id, recordId: 'live-approved-uid', ok: true, message: 'approved', at: '2026-06-01T10:01:00.000Z', applicationStatus: 'approved', accountStatus: 'active' })
+  const partner = written.data.partners.find((item) => item.partnerAppUid === 'live-approved-uid')!
+  assert.equal(partner.availability, 'Available')
+})
+
 test('rejecting an onboarding application requires a reason and never creates a partner', () => {
   const frame = frameWithDemo()
   const rejectedWithoutReason = apply(frame, { type: 'application.reject', applicationId: 'APP-2040', reason: ' ' })

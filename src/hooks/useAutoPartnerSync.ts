@@ -5,8 +5,10 @@ import { readPartnerAppToken, syncPartnerAppRecords, syncPartnerAppTickets } fro
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
-const POLL_INTERVAL_MS = 60_000
-const FOCUS_REFRESH_MS = 30_000
+// REST has no Firestore listener; keep the fallback sync short enough for
+// operational state changes while avoiding a request on every render.
+const POLL_INTERVAL_MS = 10_000
+const FOCUS_REFRESH_MS = 5_000
 
 /** Stable comparison for the extra string fields a record carries. */
 function fieldsKey(fields: Record<string, string>) {
@@ -48,7 +50,9 @@ function ticketsChanged(previous: PartnerAppTicket[], next: PartnerAppTicket[]) 
 
 /**
  * Loads delivery_app partner records after a Firebase data connection and
- * keeps them fresh while the console stays open. The console identity can
+ * keeps them fresh while the console stays open. The REST fallback refreshes
+ * every 10 seconds because this app does not yet use the Firestore Web SDK.
+ * The console identity can
  * remain Demo access; the Firebase session only authorizes delivery_app data.
  * Without a Firebase session the seeded sample partners are left untouched.
  */

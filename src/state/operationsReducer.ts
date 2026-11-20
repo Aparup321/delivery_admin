@@ -310,11 +310,11 @@ function approveApplication(data: OperationsState, application: PartnerApplicati
         partnerId,
         type,
         submittedAt: submitted ? application.submittedAt : null,
-        status: submitted ? 'Verified' : 'Missing',
+        status: submitted ? 'Submitted' : 'Missing',
         expiresAt: null,
-        reviewer: submitted ? data.user.name : null,
+        reviewer: null,
         rejectionReason: null,
-        history: submitted ? [{ status: 'Verified', changedAt: at, reviewer: data.user.name, reason: 'Verified as part of the approved onboarding application.' }] : [],
+        history: submitted ? [{ status: 'Submitted', changedAt: at, reviewer: data.user.name, reason: 'Created from an approved onboarding application.' }] : [],
         demoRecord: true,
       })
     })

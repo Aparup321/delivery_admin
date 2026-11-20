@@ -162,7 +162,7 @@ export interface PartnerAppRecord {
   status: string | null
   applicationStatus: string | null
   /** Partner App's explicit online/availability signal, when present. */
-  isOnline: boolean | null
+  isOnline?: boolean | null
   serviceAreas: string[]
   updatedAt: string | null
   fields: Record<string, string>
