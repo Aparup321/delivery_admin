@@ -103,9 +103,10 @@ This runs the production TypeScript/Vite build and the Node test suite.
 - `/admin/deliveries` — searchable, filterable, sortable delivery queue and delivery creation.
 - `/admin/deliveries/:id` — milestones, delay/cancellation actions, assignment and offer history.
 - `/admin/deliveries/:id/assign` — eligibility-based partner assignment and partner offers.
-- `/admin/partners` — partner directory and profile, verification, delivery history, and account controls.
-- `/admin/partners?view=new` — create a partner record with mandatory KYC documents marked missing.
+- `/admin/partners` — **All partners** directory and profile, verification, delivery history, and account controls.
 - `/admin/partners?view=activity` — partner activity history with suspension and reinstatement controls.
+- `/admin/partners?view=new` — **Create partner** record with mandatory KYC documents marked missing.
+- `/admin/partners?view=expiring` — **Expiring documents** view for expired documents and documents due within 30 days.
 - `/admin/partners?view=app` — delivery_app partner records synced from Firestore, with linking and live account actions.
 - `/admin/kyc` — unified onboarding KYC queue for local and synced delivery_app applications, including sign-in-only records as KYC pending. A read-only **Details** action shows the submitted application, applicant contact, KYC documents, and synced delivery_app fields before a main administrator decides.
 - `/admin/notifications` — event-driven notifications with read state and record navigation.

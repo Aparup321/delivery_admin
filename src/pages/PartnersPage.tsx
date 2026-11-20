@@ -11,7 +11,7 @@ import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { userCan } from '../domain/admin'
 import { PartnerCreatePage } from './PartnerCreatePage'
 
-type PartnersSection = 'directory' | 'activity' | 'new' | 'app'
+type PartnersSection = 'directory' | 'activity' | 'new' | 'expiring' | 'app'
 
 interface DirectoryProps {
   data: OperationsState
@@ -33,7 +33,47 @@ function partnerVerification(data: OperationsState, partner: Partner) {
 }
 
 function PartnerSectionTabs({ active, data, open }: { active: PartnersSection; data: OperationsState; open: (path: string) => void }) {
-  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>Partner directory<span>{data.partners.length}</span></button><button className={active === 'new' ? 'active' : ''} onClick={() => open('/admin/partners?view=new')}>Add partner</button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
+  const expiringCount = data.documents.filter((document) => document.expiresAt && new Date(document.expiresAt).getTime() <= Date.now() + 30 * 24 * 60 * 60_000).length
+  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>All partners<span>{data.partners.length}</span></button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'new' ? 'active' : ''} onClick={() => open('/admin/partners?view=new')}>Create partner</button><button className={active === 'expiring' ? 'active' : ''} onClick={() => open('/admin/partners?view=expiring')}>Expiring documents<span>{expiringCount}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
+}
+
+function ExpiringDocumentsPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
+  const { frame } = useOperations()
+  const canReview = userCan(frame.data.user, 'document-review')
+  const now = Date.now()
+  const cutoff = now + 30 * 24 * 60 * 60_000
+  const documents = data.documents
+    .filter((document) => document.expiresAt && new Date(document.expiresAt).getTime() <= cutoff)
+    .sort((left, right) => new Date(left.expiresAt!).getTime() - new Date(right.expiresAt!).getTime())
+
+  function expiryLabel(document: PartnerDocument) {
+    const expiresAt = new Date(document.expiresAt!).getTime()
+    const days = Math.ceil((expiresAt - now) / (24 * 60 * 60_000))
+    if (days < 0) return `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} overdue`
+    if (days === 0) return 'Expires today'
+    return `Expires in ${days} day${days === 1 ? '' : 's'}`
+  }
+
+  return <div className="page-stack">
+    <Panel className="records-panel">
+      <div className="records-topline"><div className="records-count"><strong>{documents.length}</strong><span>documents expired or expiring</span><span className="dot-separator" />{documents.filter((document) => new Date(document.expiresAt!).getTime() <= now).length} overdue</div><span className="demo-caption">Next 30 days</span></div>
+      <div className="notification-history-note"><Icon name="clock" size={14} />Review expired documents first. Updating a document review from the partner profile recalculates the partner's assignment eligibility.</div>
+      <div className="table-scroll"><table className="data-table expiring-documents-table"><thead><tr><th>Partner</th><th>Document</th><th>Status</th><th>Expiry</th><th>Reviewer</th><th>Action</th></tr></thead><tbody>
+        {documents.map((document) => {
+          const partner = data.partners.find((item) => item.id === document.partnerId)
+          const status = displayedDocumentStatus(document)
+          return <tr key={document.id}>
+            <td>{partner ? <button className="partner-cell partner-profile-button" onClick={() => open(`/admin/partners/${partner.id}?document=${encodeURIComponent(document.id)}`)}><span className="mini-avatar">{initials(partner.name)}</span><span><b>{partner.name}</b><small>{partner.id}</small></span></button> : <span className="muted-text">{document.partnerId}</span>}</td>
+            <td><span className="document-main"><strong>{document.type}<small>{document.id}</small></strong></span></td>
+            <td><StatusBadge status={status} /></td>
+            <td><span className={`expiry-cell ${new Date(document.expiresAt!).getTime() <= now ? 'overdue' : ''}`}><strong>{formatDate(document.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong><small>{expiryLabel(document)}</small></span></td>
+            <td>{document.reviewer ?? <span className="muted-text">Not reviewed</span>}</td>
+            <td>{partner ? <Button size="small" variant="quiet" disabled={!canReview} title={canReview ? undefined : 'Document review access required'} onClick={() => open(`/admin/partners/${partner.id}?document=${encodeURIComponent(document.id)}`)}>Review document</Button> : <span className="muted-text">—</span>}</td>
+          </tr>
+        })}
+      </tbody></table>{documents.length === 0 && <EmptyState title="No documents are expiring soon" detail="Verified documents expiring within the next 30 days and already expired documents will appear here." />}</div>
+    </Panel>
+  </div>
 }
 
 function appStatusLabel(value: string | null) {
@@ -258,7 +298,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   const [restoreTarget, setRestoreTarget] = useState<Partner | null>(null)
   const pageSize = 8
   const canManage = userCan(frame.data.user, 'partner-management')
-  const view: PartnersSection = viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : viewFromUrl === 'new' ? 'new' : 'directory'
+  const view: PartnersSection = viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : viewFromUrl === 'new' ? 'new' : viewFromUrl === 'expiring' ? 'expiring' : 'directory'
   const areas = [...new Set(data.partners.flatMap((partner) => partner.serviceAreas))].sort()
   const deliveryForEligibility = data.deliveries.find((item) => item.status === 'Unassigned' || item.status === 'Pending') ?? data.deliveries.find((item) => !['Completed', 'Cancelled'].includes(item.status))
 
@@ -279,6 +319,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   if (view === 'new') return <div className="page-stack"><PartnerSectionTabs active="new" data={data} open={open} /><PartnerCreatePage data={data} open={open} /></div>
   if (view === 'app') return <div className="page-stack"><PartnerSectionTabs active="app" data={data} open={open} /><PartnerAppDataPage data={data} open={open} /></div>
   if (view === 'activity') return <div className="page-stack"><PartnerSectionTabs active="activity" data={data} open={open} /><PartnerActivityPage data={data} open={open} /></div>
+  if (view === 'expiring') return <div className="page-stack"><PartnerSectionTabs active="expiring" data={data} open={open} /><ExpiringDocumentsPage data={data} open={open} /></div>
 
   return <div className="page-stack">
     <PartnerSectionTabs active="directory" data={data} open={open} />

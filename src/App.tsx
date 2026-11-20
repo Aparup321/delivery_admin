@@ -197,13 +197,13 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
 
   const pageTitle = activeLabel === 'Overview' ? 'Operations Overview'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? `Assign partner · ${selectedDelivery?.id ?? ''}` : isDeliveryDetail ? `Delivery ${selectedDelivery?.id ?? ''}` : 'Deliveries'
-      : activeLabel === 'Partners' ? partnerMatch ? `Partner · ${selectedPartnerId}` : partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : 'Delivery partners'
+      : activeLabel === 'Partners' ? partnerMatch ? `Partner · ${selectedPartnerId}` : partnersView === 'new' ? 'Create partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : partnersView === 'expiring' ? 'Expiring documents' : 'All partners'
         : activeLabel === 'Administrators' ? 'Administrators'
           : activeLabel === 'KYC Review' ? 'KYC Review'
             : activeLabel
   const pageSubtitle = activeLabel === 'Overview' ? 'A clear view of the delivery queue, partner availability, and operational exceptions.'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? '' : isDeliveryDetail ? 'Operational record, assignment history, and delivery milestones.' : 'Search, filter, assign, and review delivery jobs.'
-      : activeLabel === 'Partners' ? partnerMatch ? 'Verification, eligibility, availability, and delivery history.' : partnersView === 'new' ? 'Create a partner directory record. Mandatory KYC documents are queued as missing.' : partnersView === 'app' ? 'Read-only delivery_app records synced from the partner backend.' : partnersView === 'activity' ? 'Audit partner activity and suspend or restore a partner when required.' : 'Review delivery-partner availability, verification, and assignment eligibility.'
+      : activeLabel === 'Partners' ? partnerMatch ? 'Verification, eligibility, availability, and delivery history.' : partnersView === 'new' ? 'Create a partner directory record. Mandatory KYC documents are queued as missing.' : partnersView === 'app' ? 'Read-only delivery_app records synced from the partner backend.' : partnersView === 'activity' ? 'Audit partner activity and suspend or restore a partner when required.' : partnersView === 'expiring' ? 'Review partner documents that are expired or due to expire within 30 days.' : 'Review all delivery partners, availability, verification, and assignment eligibility.'
         : activeLabel === 'Administrators' ? 'Main administrators have full access. Restricted administrators only receive the sections and actions selected here.'
           : activeLabel === 'KYC Review' ? 'Review onboarding KYC applications from this console and delivery_app. Main administrator approval only.'
             : activeLabel === 'Notifications' ? 'Event-driven operational notifications.'
@@ -213,7 +213,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
   const routeKnown = ['/admin', '/admin/deliveries', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings', '/admin/administrators'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
   const accessDenied = routeKnown && !canOpenRoute(routePath)
   const showHeading = routeKnown && !isAssignmentRoute && !accessDenied
-  const partnerViewLabel = partnersView === 'new' ? 'Add partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : ''
+  const partnerViewLabel = partnersView === 'new' ? 'Create partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : partnersView === 'expiring' ? 'Expiring documents' : ''
   const breadcrumbs = isDeliveryDetail && selectedDelivery ? [{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: selectedDelivery.id }] : partnerMatch ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: selectedPartnerId }] : activeLabel === 'Overview' ? undefined : activeLabel === 'Partners' && partnerViewLabel ? [{ label: 'Overview', path: '/admin' }, { label: 'Partners', path: '/admin/partners' }, { label: partnerViewLabel }] : [{ label: 'Overview', path: '/admin' }, { label: activeLabel }]
 
   function signOut() {
