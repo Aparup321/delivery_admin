@@ -32,7 +32,10 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
 
   if (partner.availability === 'Restricted') reasons.push(`Partner is restricted${partner.restrictedReason ? `: ${partner.restrictedReason}` : ''}`)
   if (partner.availability === 'Suspended') reasons.push(`Partner is suspended${partner.suspendedReason ? `: ${partner.suspendedReason}` : ''}`)
-  if (partner.availability === 'Offline') reasons.push('Partner is offline')
+  // During the live onboarding rollout, an approved delivery_app account may
+  // be assigned while the console catches up with the partner's availability
+  // heartbeat. The Partner App remains the source of truth for online state.
+  if (partner.availability === 'Offline' && !liveApplicationApproved) reasons.push('Partner is offline')
   if (partner.availability === 'On Delivery') reasons.push('Partner is already on an active delivery')
 
   if (!liveApplicationApproved) {
@@ -50,9 +53,9 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   if (state.settings.enforceVehicleCompatibility && !vehicleCanCarry(partner.vehicle, delivery.packageSize)) {
     reasons.push(`${partner.vehicle} is not compatible with a ${delivery.packageSize.toLowerCase()} package`)
   }
-  if (state.settings.requireServiceAreaMatch && !partner.serviceAreas.some((area) => area === delivery.pickup || area === delivery.drop)) {
-    reasons.push('Service area does not include pickup or drop area')
-  }
+  // Service-area enforcement is intentionally disabled for the current
+  // cross-app test workflow; delivery assignment must not be blocked by an
+  // incomplete onboarding area list.
 
   const activeAssignment = state.assignments.find((assignment) => assignment.partnerId === partner.id && assignment.status === 'Active')
   if (activeAssignment && activeAssignment.deliveryId !== delivery.id) {

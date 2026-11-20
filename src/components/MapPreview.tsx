@@ -13,6 +13,7 @@ interface MapPreviewProps {
   points: MapPoint[]
   ariaLabel: string
   className?: string
+  onMapClick?: (location: { latitude: number; longitude: number }) => void
 }
 
 const TILE_SIZE = 256
@@ -40,6 +41,9 @@ interface MapTile {
 interface MapLayout {
   tiles: MapTile[]
   markers: Array<ProjectedPoint & { left: number; top: number }>
+  zoom: number
+  centerX: number
+  centerY: number
 }
 
 /** Web Mercator projection in world pixels at a fixed zoom. */
@@ -115,7 +119,17 @@ function layoutFor(points: MapPoint[], width: number, height: number): MapLayout
     top: height / 2 + item.y - centerY,
   }))
 
-  return { tiles, markers }
+  return { tiles, markers, zoom, centerX, centerY }
+}
+
+function unproject(x: number, y: number, layout: MapLayout, width: number, height: number) {
+  const scale = TILE_SIZE * 2 ** layout.zoom
+  const worldX = layout.centerX + x - width / 2
+  const worldY = layout.centerY + y - height / 2
+  const longitude = (worldX / scale) * 360 - 180
+  const n = Math.PI - (2 * Math.PI * worldY) / scale
+  const latitude = (180 / Math.PI) * Math.atan(Math.sinh(n))
+  return { latitude, longitude }
 }
 
 /**
@@ -123,7 +137,7 @@ function layoutFor(points: MapPoint[], width: number, height: number): MapLayout
  * service. It uses no API key or library, matching the map source used by
  * delivery_app. Live tracking is rendered by the tracking workspace.
  */
-export function MapPreview({ points, ariaLabel, className = '' }: MapPreviewProps) {
+export function MapPreview({ points, ariaLabel, className = '', onMapClick }: MapPreviewProps) {
   const canvasRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState<Viewport>({ width: 0, height: 0 })
   const [failedTiles, setFailedTiles] = useState<string[]>([])
@@ -156,7 +170,11 @@ export function MapPreview({ points, ariaLabel, className = '' }: MapPreviewProp
     : false
 
   return <div className={`osm-map ${className}`.trim()}>
-    <div ref={canvasRef} className="osm-map-canvas" role="img" aria-label={ariaLabel}>
+    <div ref={canvasRef} className={`osm-map-canvas ${onMapClick ? 'osm-map-clickable' : ''}`} role="img" aria-label={ariaLabel} onClick={(event) => {
+      if (!onMapClick || !layout) return
+      const bounds = event.currentTarget.getBoundingClientRect()
+      onMapClick(unproject(event.clientX - bounds.left, event.clientY - bounds.top, layout, bounds.width, bounds.height))
+    }}>
       {layout?.tiles.map((tile) => failedTiles.includes(tile.key) ? null : <img
         key={tile.key}
         className="osm-map-tile"

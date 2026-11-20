@@ -135,23 +135,21 @@ function recordItem(data: OperationsState, record: PartnerAppRecord, status: Kyc
  * the queue contains actual applications rather than every Firebase account.
  */
 export function buildKycQueue(data: OperationsState): KycQueueItem[] {
-  const items = data.applications.map((application) => applicationItem(data, application))
+  // Production KYC is sourced from the currently synchronized partner app.
+  // Local/demo applications and stale rows without a live Firebase record are
+  // intentionally excluded from the operational queue.
+  const liveApplicationIds = new Set(data.partnerAppRecords.map((record) => record.id))
+  const items = data.applications
+    .filter((application) => !application.demoRecord && Boolean(application.partnerAppUid && liveApplicationIds.has(application.partnerAppUid)))
+    .map((application) => applicationItem(data, application))
   for (const record of data.partnerAppRecords) {
     if (data.applications.some((application) => application.partnerAppUid === record.id)) continue
     const namedApplicant = Boolean(record.name.trim()) && record.name !== record.id
-    const hasOnboardingData = Boolean(
-      record.applicationStatus
-      || record.fields.addressLine
-      || record.fields.vehicleType
-      || record.fields.vehicle
-      || record.fields.dateOfBirth,
-    )
-    // A Firebase account is not a KYC application. Do not fill the review
-    // queue with sign-in-only partner documents before onboarding is submitted.
-    if (!hasOnboardingData) continue
-    const status = namedApplicant
-      ? liveApplicationStatus(record.applicationStatus) ?? 'KYC pending'
-      : 'KYC pending'
+    const applicationStatus = liveApplicationStatus(record.applicationStatus)
+    // A Firebase account is not a KYC application. The partner app must write
+    // an explicit application status when onboarding is submitted.
+    if (!applicationStatus) continue
+    const status = namedApplicant ? applicationStatus : 'KYC pending'
     const item = recordItem(data, record, status)
     if (item) items.push(item)
   }

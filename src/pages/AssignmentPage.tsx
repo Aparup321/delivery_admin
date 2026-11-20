@@ -47,7 +47,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
   }
 
   return <div className="page-stack assignment-page">
-    <PageHeading title={`Assign partner · ${delivery.id}`} subtitle="Eligibility is calculated from current documents, partner availability, vehicle, service area, and active assignments." breadcrumbs={[{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: delivery.id, path: `/admin/deliveries/${delivery.id}` }, { label: 'Assignment' }]} onNavigate={open} />
+    <PageHeading title={`Assign partner · ${delivery.id}`} subtitle="Eligibility uses approval, account status, vehicle compatibility, and active assignments. Live onboarding document and area gaps do not block approved Partner App accounts." breadcrumbs={[{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: delivery.id, path: `/admin/deliveries/${delivery.id}` }, { label: 'Assignment' }]} onNavigate={open} />
     <div className="assignment-summary-strip"><span><Icon name="pin" size={15} /><b>{delivery.pickup}</b><Icon name="arrow" size={13} /><b>{delivery.drop}</b></span><i /><span><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg.toFixed(1)} kg</span><i /><span><Icon name="calendar" size={15} />{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledStart))} – {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledEnd))}</span><i /><span>Vehicle: <b>{delivery.vehicleRequirement}</b></span>{assigned && <><i /><span className="reassign-label">Reassigning from {data.partners.find((item) => item.id === assigned.partnerId)?.name}</span></>}</div>
 
     {delivery.status === 'Delayed' && <div className="exception-banner"><Icon name="alert" size={17} /><div><strong>This delivery is delayed</strong><span>Assignment changes are allowed, but the delay and current milestone remain unchanged.</span></div></div>}
@@ -60,7 +60,9 @@ export function AssignmentPage({ data, delivery, open }: Props) {
         <div className="table-scroll"><table className="data-table candidate-table"><thead><tr><th></th><th>Partner</th><th>Approval / account</th><th>Vehicle</th><th>Service area</th><th>Availability</th><th>Verification</th><th>Current assignment</th><th>Eligibility / reason</th></tr></thead><tbody>
           {entries.map(({ partner, reasons, eligible: canTake, validDocuments, requiredDocuments, currentAssignment }) => {
             const active = currentAssignment ? data.deliveries.find((item) => item.id === currentAssignment) : null
-            const verified = validDocuments === requiredDocuments
+            const liveRecord = partner.partnerAppUid ? data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid) : undefined
+            const liveApproved = liveRecord?.applicationStatus?.trim().toLowerCase() === 'approved'
+            const verified = liveApproved || validDocuments === requiredDocuments
             return <tr key={partner.id} onClick={() => canTake && setSelectedId(partner.id)} className={`${canTake && selectedId === partner.id ? 'candidate-selected' : ''} ${!canTake ? 'candidate-ineligible' : ''}`}>
               <td><input type="radio" name="partner" checked={canTake && selectedId === partner.id} disabled={!canTake} onChange={() => setSelectedId(partner.id)} aria-label={`Select ${partner.name}`} /></td>
               <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small></span></span></td>
@@ -68,13 +70,13 @@ export function AssignmentPage({ data, delivery, open }: Props) {
               <td><span className="vehicle-cell"><Icon name={partner.vehicle === 'Bike' ? 'bike' : partner.vehicle === 'Van' ? 'van' : 'scooter'} size={16} />{partner.vehicle}</span></td>
               <td><span className="area-list">{partner.serviceAreas.slice(0, 2).join(', ')}{partner.serviceAreas.length > 2 && <small>+{partner.serviceAreas.length - 2} areas</small>}</span></td>
               <td><StatusBadge status={partner.availability} /></td>
-              <td><span className={`verification-compact ${verified ? 'verified' : 'not-verified'}`}><Icon name={verified ? 'check-circle' : 'alert'} size={14} />{verified ? 'Verified' : `${validDocuments}/${requiredDocuments} valid`}</span></td>
+              <td><span className={`verification-compact ${verified ? 'verified' : 'not-verified'}`}><Icon name={verified ? 'check-circle' : 'alert'} size={14} />{liveApproved ? 'Approved · documents pending' : verified ? 'Verified' : `${validDocuments}/${requiredDocuments} valid`}</span></td>
               <td>{active ? <button className="table-record-link" onClick={(event) => { event.stopPropagation(); open(`/admin/deliveries/${active.id}`) }}>{active.id}</button> : <span className="muted-text">None</span>}</td>
               <td>{canTake ? <StatusBadge status="Eligible" /> : <span className="eligibility-reasons" title={reasons.join('\n')}>{reasons.slice(0, 2).join(' · ')}{reasons.length > 2 && <small>+{reasons.length - 2} reasons</small>}</span>}</td>
             </tr>
           })}
         </tbody></table>{entries.length === 0 && <EmptyState title={tab === 'Eligible' ? 'No eligible partners found' : 'No ineligible partners match'} detail={tab === 'Eligible' ? 'Change the search or review vehicle and area requirements. Ineligibility reasons are available on the other tab.' : 'Try a broader search.'} />}</div>
-        <div className="candidate-footnote"><Icon name="info" size={14} />Mandatory documents, active assignments, status, vehicle fit, and service area are always checked by the shared assignment engine.</div>
+        <div className="candidate-footnote"><Icon name="info" size={14} />Approved live Partner App accounts can be assigned while document and service-area details are completed. Suspended accounts, incompatible vehicles, and duplicate active assignments remain blocked.</div>
       </Panel>
 
       <aside className="assignment-side">

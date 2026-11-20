@@ -175,7 +175,17 @@ function syncLinkedPartnerAvailability(data: OperationsState) {
       partner.availability = 'Offline'
       continue
     }
-    if (partner.availability !== 'On Delivery') partner.availability = record.isOnline === true ? 'Available' : 'Offline'
+    if (partner.availability !== 'On Delivery') {
+      const availabilityValue = [
+        record.isOnline === true ? 'online' : record.isOnline === false ? 'offline' : '',
+        record.fields.isOnline,
+        record.fields.isAvailable,
+        record.fields.availability,
+        record.fields.onlineStatus,
+      ].find((value) => typeof value === 'string' && value.trim())?.trim().toLowerCase()
+      const online = availabilityValue === 'true' || availabilityValue === 'online' || availabilityValue === 'available'
+      partner.availability = online ? 'Available' : 'Offline'
+    }
   }
 }
 
@@ -862,7 +872,13 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const previousTicketIds = new Set(data.partnerAppTickets.map((ticket) => ticket.id))
       data.partnerAppRecords = action.records.slice(0, 1000).map((record) => ({
         ...record,
-        isOnline: typeof record.isOnline === 'boolean' ? record.isOnline : null,
+        isOnline: typeof record.isOnline === 'boolean'
+          ? record.isOnline
+          : typeof record.status === 'string' && ['online', 'available', 'true'].includes(record.status.trim().toLowerCase())
+            ? true
+            : typeof record.status === 'string' && ['offline', 'unavailable', 'false'].includes(record.status.trim().toLowerCase())
+              ? false
+              : null,
       }))
       data.partnerAppTickets = Array.isArray(action.tickets) ? action.tickets.slice(0, 1000) : data.partnerAppTickets
       data.partnerApp.lastError = null

@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import type { Delivery, OperationsState, PackageSize, VehicleType } from '../domain/model'
+import type { Delivery, DeliveryLocation, OperationsState, PackageSize, VehicleType } from '../domain/model'
 import { areaDistanceKm, estimatePartnerEarnings } from '../domain/estimates'
 import { Button, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
 import { userCan } from '../domain/admin'
 import { useOperations } from '../state/OperationsProvider'
+import { MapPreview } from '../components/MapPreview'
+import { serviceAreaCoordinate } from '../domain/serviceAreas'
 
 const statusFilters = ['All', 'Pending', 'Unassigned', 'Assigned', 'In Transit', 'Delayed', 'Completed', 'Cancelled']
 type SortKey = 'priority' | 'scheduledStart' | 'id' | 'status' | 'pickup'
@@ -24,6 +26,9 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   const { dispatch } = useOperations()
   const [pickup, setPickup] = useState('')
   const [drop, setDrop] = useState('')
+  const [locationMode, setLocationMode] = useState<'pickup' | 'drop'>('pickup')
+  const [pickupLocation, setPickupLocation] = useState<DeliveryLocation | null>(null)
+  const [dropLocation, setDropLocation] = useState<DeliveryLocation | null>(null)
   const [category, setCategory] = useState<Delivery['category']>('Grocery')
   const [packageSize, setPackageSize] = useState<PackageSize>('Small')
   const [weight, setWeight] = useState('2')
@@ -41,7 +46,7 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     dispatch({
-      type: 'delivery.create', pickup, drop, packageSize, weight: Number(weight), vehicle,
+      type: 'delivery.create', pickup, drop, pickupLocation: pickupLocation ?? undefined, dropLocation: dropLocation ?? undefined, packageSize, weight: Number(weight), vehicle,
       scheduledStart: new Date(start).toISOString(), scheduledEnd: new Date(end).toISOString(),
       instructions, category, itemCount: Number(itemCount), paymentMode,
       earnings: earnings.trim() ? Number(earnings) : null,
@@ -55,6 +60,17 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
       <div className="form-grid two-columns">
         <label className="field-label">Pickup area<input autoFocus value={pickup} onChange={(event) => setPickup(event.target.value)} required maxLength={64} placeholder="e.g. Barasat" /></label>
         <label className="field-label">Drop area<input value={drop} onChange={(event) => setDrop(event.target.value)} required maxLength={64} placeholder="e.g. New Town" /></label>
+        <div className="delivery-location-picker span-two">
+          <div className="location-picker-header"><strong>Select stop locations on the map</strong><span>Choose a stop, then click its exact position.</span></div>
+          <div className="location-picker-tabs"><button type="button" className={locationMode === 'pickup' ? 'active' : ''} onClick={() => setLocationMode('pickup')}>Pickup {pickupLocation ? '✓' : ''}</button><button type="button" className={locationMode === 'drop' ? 'active' : ''} onClick={() => setLocationMode('drop')}>Drop {dropLocation ? '✓' : ''}</button></div>
+          <MapPreview
+            ariaLabel="Select pickup or drop location"
+            className="delivery-location-map"
+            points={[{ id: 'location-center', label: locationMode === 'pickup' ? (pickupLocation ? 'Pickup' : 'Click to set pickup') : (dropLocation ? 'Drop' : 'Click to set drop'), ...(locationMode === 'pickup' ? pickupLocation ?? serviceAreaCoordinate('Kolkata') : dropLocation ?? serviceAreaCoordinate('Kolkata')), kind: locationMode === 'pickup' ? 'pickup' : 'drop' }]}
+            onMapClick={(location) => locationMode === 'pickup' ? setPickupLocation(location) : setDropLocation(location)}
+          />
+          <small className="field-help">{pickupLocation ? `Pickup: ${pickupLocation.latitude.toFixed(5)}, ${pickupLocation.longitude.toFixed(5)}` : 'Pickup location not selected.'} · {dropLocation ? `Drop: ${dropLocation.latitude.toFixed(5)}, ${dropLocation.longitude.toFixed(5)}` : 'Drop location not selected.'}</small>
+        </div>
         <label className="field-label">Category<select value={category} onChange={(event) => setCategory(event.target.value as Delivery['category'])}><option>Grocery</option><option>Restaurant</option></select></label>
         <label className="field-label">Package size<select value={packageSize} onChange={(event) => setPackageSize(event.target.value as PackageSize)}><option>Small</option><option>Medium</option><option>Large</option><option>Extra large</option></select></label>
         <label className="field-label">Estimated weight (kg)<input type="number" min="0.1" max="100" step="0.1" value={weight} onChange={(event) => setWeight(event.target.value)} required /></label>

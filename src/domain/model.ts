@@ -69,12 +69,19 @@ export interface DeliveryMilestone {
   completedBy: string | null
 }
 
+export interface DeliveryLocation {
+  latitude: number
+  longitude: number
+}
+
 export interface Delivery {
   id: string
   pickup: string
   drop: string
   pickupAddress: string
   dropAddress: string
+  pickupLocation?: DeliveryLocation
+  dropLocation?: DeliveryLocation
   packageSize: PackageSize
   estimatedWeightKg: number
   vehicleRequirement: VehicleType | 'Any'

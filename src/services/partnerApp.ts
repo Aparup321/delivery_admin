@@ -255,14 +255,25 @@ function flattenFields(source: Record<string, unknown>): Record<string, string> 
 }
 
 function toPartnerAppRecord(fields: Record<string, unknown>, id: string, updatedAt: string | null, syncedAt: string): PartnerAppRecord {
-  const statusValue = pick(fields, ['status', 'availability', 'accountStatus', 'onlineStatus'])
-  const onlineValue = pick(fields, ['isOnline', 'online'])
+  const readableFields = { ...flattenFields(fields), ...fields }
+  const statusValue = pick(readableFields, ['status', 'availability', 'accountStatus', 'onlineStatus'])
+  const onlineValue = pick(readableFields, ['isOnline', 'isAvailable', 'is_available', 'online', 'availability', 'availabilityStatus', 'onlineStatus'])
   const status = typeof statusValue === 'boolean' ? (statusValue ? 'Online' : 'Offline') : asString(statusValue)
+  const normalizedOnline = typeof onlineValue === 'string' ? onlineValue.trim().toLowerCase() : null
+  const normalizedStatus = typeof statusValue === 'string' ? statusValue.trim().toLowerCase() : null
   const isOnline = typeof onlineValue === 'boolean'
     ? onlineValue
-    : typeof statusValue === 'boolean'
-      ? statusValue
-      : null
+    : normalizedOnline === 'true' || normalizedOnline === 'online' || normalizedOnline === 'available'
+      ? true
+      : normalizedOnline === 'false' || normalizedOnline === 'offline' || normalizedOnline === 'unavailable'
+        ? false
+        : typeof statusValue === 'boolean'
+          ? statusValue
+          : normalizedStatus === 'online' || normalizedStatus === 'available'
+            ? true
+            : normalizedStatus === 'offline' || normalizedStatus === 'unavailable'
+              ? false
+              : null
   return {
     id,
     partnerId: asString(pick(fields, ['partnerId', 'partner_id', 'deliveryPartnerId'])),
