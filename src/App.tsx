@@ -63,7 +63,7 @@ function isActive(pathname: string, path: string) {
 export default function App() {
   const { dispatch } = useOperations()
   const [session, setSession] = useState<AdminSession | null>(() => readAdminSession())
-  // A connect/data flow keeps the demo session alive underneath the login form.
+  // Firebase authentication is required for production data access.
   const forceLogin = new URLSearchParams(window.location.search).get('signin') === 'firebase'
 
   // Resolve directory-backed access before paint so a restricted account never
@@ -75,8 +75,7 @@ export default function App() {
 
   function handleSignedIn(nextSession: AdminSession) {
     window.history.replaceState({}, '', '/admin')
-    // Resolve the new identity before resetting demo data so the rest of the
-    // walkthrough keeps the directory access of the account that just signed in.
+    // Resolve the authenticated identity before rendering the operations workspace.
     dispatch({ type: 'user.identify', id: nextSession.userId, name: nextSession.name, email: nextSession.email })
     if (nextSession.mode === 'Demo access') dispatch({ type: 'demo.reset' })
     setSession(nextSession)
@@ -214,7 +213,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
           : activeLabel === 'KYC Review' ? 'Review onboarding KYC applications from this console and delivery_app. Main administrator approval only.'
             : activeLabel === 'Notifications' ? 'Event-driven operational notifications.'
               : activeLabel === 'Audit Logs' ? 'Append-only history of administrative operations.'
-                : 'Simple configuration and demo data controls.'
+                : 'Operational configuration and live partner synchronization.'
 
   const routeKnown = ['/admin', '/admin/deliveries', '/admin/tracking', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings', '/admin/administrators'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
   const accessDenied = routeKnown && !canOpenRoute(routePath)

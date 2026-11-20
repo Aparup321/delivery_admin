@@ -131,14 +131,24 @@ function recordItem(data: OperationsState, record: PartnerAppRecord, status: Kyc
 /**
  * Builds the single KYC Review queue from admin applications plus any synced
  * delivery_app onboarding records that do not yet have a local application.
- * A sign-in-only record is included as KYC pending so the Administrator can
- * see the partner before the onboarding wizard is submitted.
+ * Sign-in-only records are excluded until onboarding data is submitted, so
+ * the queue contains actual applications rather than every Firebase account.
  */
 export function buildKycQueue(data: OperationsState): KycQueueItem[] {
   const items = data.applications.map((application) => applicationItem(data, application))
   for (const record of data.partnerAppRecords) {
     if (data.applications.some((application) => application.partnerAppUid === record.id)) continue
     const namedApplicant = Boolean(record.name.trim()) && record.name !== record.id
+    const hasOnboardingData = Boolean(
+      record.applicationStatus
+      || record.fields.addressLine
+      || record.fields.vehicleType
+      || record.fields.vehicle
+      || record.fields.dateOfBirth,
+    )
+    // A Firebase account is not a KYC application. Do not fill the review
+    // queue with sign-in-only partner documents before onboarding is submitted.
+    if (!hasOnboardingData) continue
     const status = namedApplicant
       ? liveApplicationStatus(record.applicationStatus) ?? 'KYC pending'
       : 'KYC pending'

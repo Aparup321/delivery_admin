@@ -47,7 +47,8 @@ function readList(value: string | undefined) {
 }
 
 /** Emails allowed into the console. Production builds fail closed when empty. */
-export const demoModeEnabled = env.VITE_DEMO_MODE !== 'false'
+// Demo access is opt-in for local development; production builds never seed demo records.
+export const demoModeEnabled = env.VITE_DEMO_MODE === 'true'
 
 export const adminEmailAllowList = readList(env.VITE_ADMIN_EMAILS)
 export const hasAdminEmailAllowList = adminEmailAllowList.length > 0

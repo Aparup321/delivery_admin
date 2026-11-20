@@ -207,6 +207,27 @@ export const DEFAULT_SETTINGS: OperationsSettings = {
   },
 }
 
+export function createEmptyState(): OperationsState {
+  return {
+    schemaVersion: 3,
+    deliveries: [],
+    partners: [],
+    applications: [],
+    partnerApp: structuredClone(DEFAULT_PARTNER_APP_CONFIG),
+    partnerAppRecords: [],
+    partnerAppTickets: [],
+    documents: [],
+    assignments: [],
+    offers: [],
+    partnerHistory: [],
+    notifications: [],
+    auditLogs: [],
+    admins: createDemoAdminDirectory(),
+    user: createDefaultAdmin(),
+    settings: structuredClone(DEFAULT_SETTINGS),
+  }
+}
+
 export function createDemoState(timestamp = Date.now()): OperationsState {
   const now = timestamp
   const partners = makePartners(now)

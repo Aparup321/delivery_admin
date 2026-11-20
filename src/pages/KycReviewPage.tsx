@@ -48,7 +48,7 @@ export function ApplicationReviewDialog({ application, initialDecision, onClose 
       })}</div>
       <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
       <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
-      {!isRejected && <p className="dialog-description">Approving adds the applicant to the partner directory and queues their submitted documents for KYC review.</p>}
+      {!isRejected && <p className="dialog-description">Approving adds the applicant to the partner directory. Document completeness remains visible for follow-up but does not block delivery assignment for approved live partners.</p>}
       <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Main administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
     </form>
   </Dialog>
@@ -291,9 +291,9 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
                 : <Button size="small" variant="quiet" onClick={() => item.partnerId ? open(`/admin/partners/${item.partnerId}`) : undefined} disabled={!item.partnerId}>{item.partnerId ? 'Open partner' : 'Decision recorded'}</Button>}</span></td>
           </tr>
         })}
-      </tbody></table>{visible.length === 0 && <EmptyState title="No KYC applications match" detail="Adjust the status or vehicle filters. New sign-ins and submitted applications are shown by default." />}</div>
+      </tbody></table>{visible.length === 0 && <EmptyState title="No KYC applications match" detail="Adjust the status or vehicle filters. Submitted onboarding applications from Firebase are shown here." />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
-      <div className="notification-history-note"><Icon name="shield" size={14} />Only a main administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. Sign-in-only partner accounts appear as KYC pending until onboarding is submitted; delivery_app records sync automatically after Firebase sign-in and periodically refresh.</div>
+      <div className="notification-history-note"><Icon name="shield" size={14} />Only a main administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. Sign-in-only partner accounts stay out of this queue until onboarding is submitted; delivery_app records sync automatically after Firebase sign-in and periodically refresh.</div>
     </Panel>
     {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} initialDecision={review.decision} onClose={() => setReview(null)} />}
     {review && !reviewLive && reviewApplication && <ApplicationReviewDialog key={`${reviewApplication.id}-${review.decision}`} application={reviewApplication} initialDecision={review.decision} onClose={() => setReview(null)} />}

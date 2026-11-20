@@ -23,7 +23,7 @@ export const ADMIN_SECTION_OPTIONS: Array<{ section: AdminSection; label: string
   { section: 'deliveries', label: 'Deliveries', detail: 'Open the delivery queue, delivery records, and assignment screens.' },
   { section: 'partners', label: 'Partners', detail: 'Open the partner directory, profiles, and KYC document status.' },
   { section: 'audit-logs', label: 'Audit Logs', detail: 'Review the append-only administrative audit history.' },
-  { section: 'settings', label: 'Settings', detail: 'Open general operations, partner sync, and demo data settings.' },
+  { section: 'settings', label: 'Settings', detail: 'Open operational settings and live partner synchronization.' }
 ]
 
 export const ADMIN_ACTION_OPTIONS: Array<{ permission: Permission; label: string; detail: string; section: AdminSection }> = [

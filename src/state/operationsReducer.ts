@@ -258,7 +258,9 @@ function applicationFromPartnerRecord(data: OperationsState, record: PartnerAppR
     vehicle: adminVehicleFor(record.vehicle),
     serviceAreas: record.serviceAreas.length ? [...record.serviceAreas] : ['Kolkata'],
     submittedAt: record.updatedAt ?? record.syncedAt,
-    documents: [...data.settings.requiredDocuments],
+    // Document files remain in delivery_app; do not claim every required file
+    // is attached when the admin sync has not imported document metadata.
+    documents: [],
     status: 'Submitted',
     reviewedBy: null,
     reviewedAt: null,
@@ -301,23 +303,28 @@ function approveApplication(data: OperationsState, application: PartnerApplicati
     }
     data.partners.unshift(partner)
   }
-  const submittedTypes = new Set(application.documents)
-  if (!data.documents.some((document) => document.partnerId === partnerId)) {
-    data.settings.requiredDocuments.forEach((type, index) => {
-      const submitted = submittedTypes.has(type)
-      data.documents.push({
-        id: `DOC-${partnerId.slice(-4)}-${index + 1}`,
-        partnerId,
-        type,
-        submittedAt: submitted ? application.submittedAt : null,
-        status: submitted ? 'Submitted' : 'Missing',
-        expiresAt: null,
-        reviewer: null,
-        rejectionReason: null,
-        history: submitted ? [{ status: 'Submitted', changedAt: at, reviewer: data.user.name, reason: 'Created from an approved onboarding application.' }] : [],
-        demoRecord: true,
+  // Live delivery_app applications keep their document source of truth in
+  // Firebase. Do not manufacture local document rows for them; incomplete
+  // documents must not block assignment after admin approval.
+  if (!application.partnerAppUid) {
+    const submittedTypes = new Set(application.documents)
+    if (!data.documents.some((document) => document.partnerId === partnerId)) {
+      data.settings.requiredDocuments.forEach((type, index) => {
+        const submitted = submittedTypes.has(type)
+        data.documents.push({
+          id: `DOC-${partnerId.slice(-4)}-${index + 1}`,
+          partnerId,
+          type,
+          submittedAt: submitted ? application.submittedAt : null,
+          status: submitted ? 'Submitted' : 'Missing',
+          expiresAt: null,
+          reviewer: null,
+          rejectionReason: null,
+          history: submitted ? [{ status: 'Submitted', changedAt: at, reviewer: data.user.name, reason: 'Created from an approved onboarding application.' }] : [],
+          demoRecord: true,
+        })
       })
-    })
+    }
   }
   const previous = application.status
   application.status = 'Approved'
@@ -325,11 +332,11 @@ function approveApplication(data: OperationsState, application: PartnerApplicati
   application.reviewedAt = at
   application.decisionReason = note.trim() || null
   application.partnerId = partnerId
-  partnerHistory(data, partnerId, 'Application approved', `Onboarding application ${application.id} approved. ${partner.name} added to the partner directory with documents queued for KYC review.`, null, at)
+  partnerHistory(data, partnerId, 'Application approved', `Onboarding application ${application.id} approved. ${partner.name} is available for delivery operations.`, null, at)
   audit(data, 'Application approved', 'Application', application.id, previous, `Approved · ${partnerId}`, note || 'Approved by Administrator.', at)
   notify(data, 'Partner Application Approved', 'Onboarding application approved', `${application.applicantName} · ${application.businessName} was approved and added as ${partnerId}.`, `/admin/partners/${partnerId}`, application.id, at)
-  notify(data, 'Verification Required', 'New partner documents need review', `${partnerId} has onboarding documents awaiting KYC verification.`, `/admin/partners/${partnerId}`, partnerId, at)
-  return { partnerId, message: `${application.id} approved. ${partner.name} added as ${partnerId}; documents are queued for KYC review.` }
+
+  return { partnerId, message: `${application.id} approved. ${partner.name} added as ${partnerId} and can receive delivery assignments.` }
 }
 
 function rejectApplication(data: OperationsState, application: PartnerApplication, reason: string, at: string) {

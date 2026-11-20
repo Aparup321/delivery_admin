@@ -1,9 +1,9 @@
 import { applyFirebaseConnectionDefaults } from '../config/firebase.ts'
 import { createDefaultAdmin, createDemoAdminDirectory, normalizeAdminAccess, normalizeAdminEmail } from '../domain/admin.ts'
 import type { AdminAccount, AdminSection, OperationsState, Permission } from '../domain/model'
-import { createDemoState, DEMO_PARTNER_PHONES } from '../domain/seed.ts'
+import { createEmptyState, DEMO_PARTNER_PHONES } from '../domain/seed.ts'
 
-const STORAGE_KEY = 'picdrop-hopngo-operations-demo-v3'
+const STORAGE_KEY = 'picdrop-hopngo-operations-v4'
 
 function isOperationsState(value: unknown): value is OperationsState {
   if (!value || typeof value !== 'object') return false
@@ -119,17 +119,17 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
 }
 
 export function loadOperationsState(): OperationsState {
-  if (typeof window === 'undefined') return createDemoState()
+  if (typeof window === 'undefined') return createEmptyState()
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY)
-    if (!saved) return createDemoState()
+    if (!saved) return createEmptyState()
     const parsed: unknown = JSON.parse(saved)
     // Normalize older local records and seed an empty Firestore connector from
     // the environment values. The authenticated Firebase identity is applied by
     // the app shell after sign-in; local records never grant a different role.
-    return isOperationsState(parsed) ? normalizeSavedState(parsed) : createDemoState()
+    return isOperationsState(parsed) ? normalizeSavedState(parsed) : createEmptyState()
   } catch {
-    return createDemoState()
+    return createEmptyState()
   }
 }
 

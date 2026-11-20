@@ -24,6 +24,10 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   const reasons: string[] = []
   const documents = state.documents.filter((document) => document.partnerId === partner.id)
   const required = state.settings.requiredDocuments
+  const liveRecord = partner.partnerAppUid
+    ? state.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)
+    : undefined
+  const liveApplicationApproved = liveRecord?.applicationStatus?.trim().toLowerCase() === 'approved'
   const validDocuments = required.filter((type) => documents.some((document) => document.type === type && isDocumentCurrent(document, now))).length
 
   if (partner.availability === 'Restricted') reasons.push(`Partner is restricted${partner.restrictedReason ? `: ${partner.restrictedReason}` : ''}`)
@@ -31,11 +35,13 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   if (partner.availability === 'Offline') reasons.push('Partner is offline')
   if (partner.availability === 'On Delivery') reasons.push('Partner is already on an active delivery')
 
-  for (const type of required) {
-    const document = documents.find((record) => record.type === type)
-    if (!document || document.status === 'Missing') reasons.push(`${type} is missing`)
-    else if (document.status !== 'Verified') reasons.push(`${type} is ${document.status.toLowerCase()}`)
-    else if (document.expiresAt && new Date(document.expiresAt).getTime() <= now) reasons.push(`${type} has expired`)
+  if (!liveApplicationApproved) {
+    for (const type of required) {
+      const document = documents.find((record) => record.type === type)
+      if (!document || document.status === 'Missing') reasons.push(`${type} is missing`)
+      else if (document.status !== 'Verified') reasons.push(`${type} is ${document.status.toLowerCase()}`)
+      else if (document.expiresAt && new Date(document.expiresAt).getTime() <= now) reasons.push(`${type} has expired`)
+    }
   }
 
   if (delivery.vehicleRequirement !== 'Any' && partner.vehicle !== delivery.vehicleRequirement) {

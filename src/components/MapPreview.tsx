@@ -121,7 +121,7 @@ function layoutFor(points: MapPoint[], width: number, height: number): MapLayout
 /**
  * Non-interactive OpenStreetMap preview rendered from the public raster tile
  * service. It uses no API key or library, matching the map source used by
- * delivery_app. Routing, live GPS and ETAs remain demo data.
+ * delivery_app. Live tracking is rendered by the tracking workspace.
  */
 export function MapPreview({ points, ariaLabel, className = '' }: MapPreviewProps) {
   const canvasRef = useRef<HTMLDivElement>(null)
