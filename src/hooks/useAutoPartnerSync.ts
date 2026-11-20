@@ -29,6 +29,7 @@ function recordsChanged(previous: PartnerAppRecord[], next: PartnerAppRecord[]) 
       || before.vehicle !== record.vehicle
       || before.status !== record.status
       || before.applicationStatus !== record.applicationStatus
+      || before.isOnline !== record.isOnline
       || before.partnerId !== record.partnerId
       || before.updatedAt !== record.updatedAt
       || before.serviceAreas.join('|') !== record.serviceAreas.join('|')

@@ -1,4 +1,5 @@
 import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCan } from '../domain/admin.ts'
+import { createDropOtp } from '../domain/estimates.ts'
 import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
 import { getPartnerEligibility, getActiveAssignment, nextPartnerId } from '../domain/operations.ts'
@@ -11,7 +12,7 @@ export interface AppFrame {
 }
 
 export type OperationAction =
-  | { type: 'delivery.create'; pickup: string; drop: string; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string }
+  | { type: 'delivery.create'; pickup: string; drop: string; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string; category?: Delivery['category']; itemCount?: number; paymentMode?: Delivery['paymentMode']; earnings?: number | null }
   | { type: 'delivery.assign'; deliveryId: string; partnerId: string }
   | { type: 'delivery.advance'; deliveryId: string }
   | { type: 'delivery.delay'; deliveryId: string; reason: string }
@@ -38,7 +39,7 @@ export type OperationAction =
   | { type: 'partnerApp.link'; recordId: string; partnerId: string }
   | { type: 'partnerApp.unlink'; partnerId: string }
   | { type: 'partnerApp.review'; recordId: string; decision: 'Approved' | 'Rejected'; note: string }
-  | { type: 'partnerApp.write-result'; targetType: 'Application' | 'Partner'; targetId: string; recordId: string; ok: boolean; message: string; at: string; applicationStatus: string | null; accountStatus: string | null }
+  | { type: 'partnerApp.write-result'; targetType: 'Application' | 'Partner' | 'Delivery'; targetId: string; recordId: string; ok: boolean; message: string; at: string; applicationStatus: string | null; accountStatus: string | null }
   | { type: 'notification.read'; notificationId: string }
   | { type: 'notification.read-all' }
   | { type: 'settings.save'; settings: OperationsState['settings'] }
@@ -161,6 +162,21 @@ function phoneDigits(value: string | null | undefined) {
 function fullPhoneKey(value: string | null | undefined) {
   const digits = phoneDigits(value)
   return digits.length >= 10 ? digits.slice(-10) : ''
+}
+
+function syncLinkedPartnerAvailability(data: OperationsState) {
+  for (const partner of data.partners) {
+    if (!partner.partnerAppUid || partner.availability === 'Restricted' || partner.availability === 'Suspended') continue
+    const record = data.partnerAppRecords.find((item) => item.id === partner.partnerAppUid)
+    if (!record) continue
+    const approved = record.applicationStatus?.toLowerCase() === 'approved'
+      || data.applications.some((application) => application.partnerAppUid === record.id && application.status === 'Approved')
+    if (!approved || record.status?.toLowerCase() === 'paused') {
+      partner.availability = 'Offline'
+      continue
+    }
+    if (partner.availability !== 'On Delivery') partner.availability = record.isOnline === true ? 'Available' : 'Offline'
+  }
 }
 
 function autoLinkPartnerAppRecords(data: OperationsState) {
@@ -294,11 +310,11 @@ function approveApplication(data: OperationsState, application: PartnerApplicati
         partnerId,
         type,
         submittedAt: submitted ? application.submittedAt : null,
-        status: submitted ? 'Submitted' : 'Missing',
+        status: submitted ? 'Verified' : 'Missing',
         expiresAt: null,
-        reviewer: null,
+        reviewer: submitted ? data.user.name : null,
         rejectionReason: null,
-        history: submitted ? [{ status: 'Submitted', changedAt: at, reviewer: data.user.name, reason: 'Created from an approved onboarding application.' }] : [],
+        history: submitted ? [{ status: 'Verified', changedAt: at, reviewer: data.user.name, reason: 'Verified as part of the approved onboarding application.' }] : [],
         demoRecord: true,
       })
     })
@@ -410,6 +426,7 @@ function assignPartner(data: OperationsState, deliveryId: string, partnerId: str
     id: uid('ASN'), deliveryId, partnerId, assignedAt: at, assignedBy: data.user.name,
     status: 'Active' as const, releasedAt: null, releaseReason: null,
     attempt: data.assignments.filter((item) => item.deliveryId === deliveryId).length + 1,
+    dropOtp: createDropOtp(),
   }
   data.assignments.unshift(assignment)
   delivery.assignmentId = assignment.id
@@ -481,6 +498,8 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       requireValue(action.drop, 'Drop area')
       if (action.pickup.trim().toLowerCase() === action.drop.trim().toLowerCase()) throw new Error('Pickup and drop areas must be different.')
       if (!Number.isFinite(action.weight) || action.weight <= 0 || action.weight > 100) throw new Error('Estimated weight must be between 0.1 and 100 kg.')
+      if (action.earnings != null && (!Number.isFinite(action.earnings) || action.earnings < 0)) throw new Error('Partner payout must be a positive amount.')
+      if (action.itemCount != null && (!Number.isInteger(action.itemCount) || action.itemCount < 1 || action.itemCount > 99)) throw new Error('Item count must be between 1 and 99.')
       const numbers = data.deliveries.map((item) => Number(item.id.replace(/\D/g, ''))).filter(Number.isFinite)
       const id = `DLV-${Math.max(1048, ...numbers) + 1}`
       const starts = new Date(action.scheduledStart)
@@ -495,10 +514,14 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
         specialInstructions: action.instructions.trim() || 'No special instructions',
         createdAt: at, status: 'Unassigned', statusBeforeDelay: null, delayReason: null, assignmentId: null,
         milestones: DELIVERY_MILESTONES.map((name) => ({ name, completedAt: null, completedBy: null })),
+        category: action.category ?? 'Grocery',
+        itemCount: action.itemCount ?? 1,
+        paymentMode: action.paymentMode ?? 'Prepaid',
+        partnerEarnings: action.earnings ?? null,
       }
       data.deliveries.unshift(delivery)
       audit(data, 'Delivery created', 'Delivery', id, '—', 'Unassigned', 'Created as a local delivery record.', at)
-      notify(data, 'Unassigned Delivery', 'New unassigned delivery', `${id} is waiting for an eligible partner.`, `/admin/deliveries/${id}/assign`, id, at)
+      notify(data, 'Unassigned Delivery', 'New unassigned delivery', `${id} is waiting for an eligible delivery partner.`, `/admin/deliveries/${id}/assign`, id, at)
       return { message: `${id} created in local data.` }
     }
     case 'delivery.assign': {
@@ -830,13 +853,17 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       if (!Array.isArray(action.records)) throw new Error('Partner app records were not valid.')
       const previousCount = data.partnerAppRecords.length
       const previousTicketIds = new Set(data.partnerAppTickets.map((ticket) => ticket.id))
-      data.partnerAppRecords = action.records.slice(0, 1000)
+      data.partnerAppRecords = action.records.slice(0, 1000).map((record) => ({
+        ...record,
+        isOnline: typeof record.isOnline === 'boolean' ? record.isOnline : null,
+      }))
       data.partnerAppTickets = Array.isArray(action.tickets) ? action.tickets.slice(0, 1000) : data.partnerAppTickets
       data.partnerApp.lastError = null
       data.partnerApp.lastSyncAt = action.at
       data.partnerApp.lastConnectedAt = action.at
       data.partnerApp.lastError = null
       autoLinkPartnerAppRecords(data)
+      syncLinkedPartnerAvailability(data)
       for (const ticket of data.partnerAppTickets) {
         if (previousTicketIds.has(ticket.id)) continue
         const partner = data.partners.find((item) => item.partnerAppUid === ticket.partnerUid)
@@ -931,6 +958,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
             ...(action.accountStatus ? { status: action.accountStatus } : {}),
             updatedAt: action.at,
           }
+          syncLinkedPartnerAvailability(data)
         }
       }
       audit(data, 'Partner app account updated', action.targetType, action.targetId,

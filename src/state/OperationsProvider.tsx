@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { loadOperationsState, saveOperationsState } from '../data/persistence'
 import { readPartnerAppToken } from '../services/partnerApp'
+import { writeDeliveryAssignment, writeDeliveryCancellation } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
 import { appReducer, type AppFrame, type OperationAction } from './operationsReducer'
@@ -54,7 +55,9 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       : null
     const accountStatus = intent.kind === 'application'
       ? (intent.decision === 'Approved' ? 'active' : 'pending')
-      : (intent.active ? 'active' : 'paused')
+      : intent.kind === 'account'
+        ? (intent.active ? 'active' : 'paused')
+        : null
 
     try {
       const config = latestData.current.partnerApp
@@ -68,6 +71,43 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           decision: intent.decision,
           reason: intent.reason,
           reviewedBy: intent.reviewedBy,
+          at: intent.at,
+        })
+      } else if (intent.kind === 'delivery-assignment') {
+        await writeDeliveryAssignment({
+          config,
+          token: readPartnerAppToken(),
+          deliveryId: intent.deliveryId,
+          partnerAppUid: intent.partnerAppUid,
+          partnerName: intent.partnerName,
+          partnerVehicle: intent.partnerVehicle,
+          category: intent.category,
+          pickupName: intent.pickupName,
+          pickupAddress: intent.pickupAddress,
+          pickupLatitude: intent.pickupLatitude,
+          pickupLongitude: intent.pickupLongitude,
+          dropName: intent.dropName,
+          dropAddress: intent.dropAddress,
+          dropLatitude: intent.dropLatitude,
+          dropLongitude: intent.dropLongitude,
+          distanceKm: intent.distanceKm,
+          etaMinutes: intent.etaMinutes,
+          earnings: intent.earnings,
+          itemCount: intent.itemCount,
+          paymentMode: intent.paymentMode,
+          note: intent.note,
+          dropOtp: intent.dropOtp,
+          expiresAt: intent.expiresAt,
+          requestedAt: intent.requestedAt,
+          at: intent.at,
+        })
+      } else if (intent.kind === 'delivery-cancel') {
+        await writeDeliveryCancellation({
+          config,
+          token: readPartnerAppToken(),
+          deliveryId: intent.deliveryId,
+          partnerAppUid: intent.partnerAppUid,
+          reason: intent.reason,
           at: intent.at,
         })
       } else {
@@ -92,7 +132,11 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         targetId: intent.targetId,
         recordId: intent.partnerAppUid,
         ok: true,
-        message: `${intent.targetType === 'Application' ? intent.decision.toLowerCase() : intent.active ? 'reinstated' : 'suspended'} in delivery_app.`,
+        message: intent.kind === 'delivery-assignment'
+          ? 'Offer published to the partner app.'
+          : intent.kind === 'delivery-cancel'
+            ? 'Cancellation published to the partner app.'
+            : `${intent.targetType === 'Application' ? intent.decision.toLowerCase() : intent.active ? 'reinstated' : 'suspended'} in delivery_app.`,
         at: new Date().toISOString(),
         applicationStatus,
         accountStatus,

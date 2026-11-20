@@ -845,6 +845,62 @@ test('a live delivery_app application can be reviewed, approved, and linked with
   }
 })
 
+test('assigning a linked partner builds a delivery offer write for delivery_app', () => {
+  let frame = frameWithDemo()
+  // Link the demo partner to a delivery_app Firebase UID first.
+  const synced = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-01T10:00:00.000Z',
+    records: [{
+      id: 'live-assignee-uid', partnerId: null, name: 'Sayan M.', phone: '+91 90000 04748',
+      email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved',
+      serviceAreas: ['New Town', 'Bidhannagar', 'Rajarhat'], updatedAt: '2026-06-01T09:55:00.000Z',
+      fields: { phone: '+91 90000 04748' }, syncedAt: '2026-06-01T10:00:00.000Z',
+    }],
+  })
+  expectSuccess(synced)
+  frame = identifyMainAdmin(synced)
+  const approved = apply(frame, { type: 'partnerApp.review', recordId: 'live-assignee-uid', decision: 'Approved', note: 'Approved for the assignment test' })
+  expectSuccess(approved)
+
+  const assigned = apply(approved, { type: 'delivery.create', pickup: 'New Town', drop: 'Salt Lake', packageSize: 'Small', weight: 1.5, vehicle: 'Any', scheduledStart: '2026-06-01T11:00:00.000Z', scheduledEnd: '2026-06-01T12:00:00.000Z', instructions: 'Ring the bell twice', category: 'Grocery', itemCount: 3, paymentMode: 'Prepaid', earnings: 90 })
+  expectSuccess(assigned)
+  const createdId = assigned.data.deliveries[0].id
+  assert.equal(assigned.data.deliveries[0].category, 'Grocery')
+  assert.equal(assigned.data.deliveries[0].itemCount, 3)
+  assert.equal(assigned.data.deliveries[0].partnerEarnings, 90)
+
+  frame = apply(assigned, { type: 'delivery.assign', deliveryId: createdId, partnerId: approved.data.applications.find((item) => item.partnerAppUid === 'live-assignee-uid')!.partnerId! })
+  expectSuccess(frame)
+  const assignment = frame.data.assignments.find((item) => item.deliveryId === createdId)!
+  assert.ok(assignment.dropOtp)
+  assert.match(assignment.dropOtp, /^\d{4}$/)
+  const assignLog = frame.data.auditLogs.find((item) => item.eventType === 'Delivery assigned' && item.targetId === createdId)!
+  const intent = buildPartnerAppWriteIntent(frame.data, assignLog)
+  assert.equal(intent?.kind, 'delivery-assignment')
+  if (intent?.kind === 'delivery-assignment') {
+    assert.equal(intent.partnerAppUid, 'live-assignee-uid')
+    assert.equal(intent.deliveryId, createdId)
+    assert.equal(intent.category, 'Grocery')
+    assert.equal(intent.itemCount, 3)
+    assert.equal(intent.paymentMode, 'Prepaid')
+    assert.equal(intent.earnings, 90)
+    assert.equal(intent.note, 'Ring the bell twice')
+    assert.ok(intent.expiresAt > intent.requestedAt)
+    assert.ok(intent.distanceKm > 0)
+  }
+
+  const cancelled = apply(frame, { type: 'delivery.cancel', deliveryId: createdId, reason: 'Customer changed the window' })
+  expectSuccess(cancelled)
+  const cancelLog = cancelled.data.auditLogs.find((item) => item.eventType === 'Delivery cancelled' && item.targetId === createdId)!
+  const cancelIntent = buildPartnerAppWriteIntent(cancelled.data, cancelLog)
+  assert.equal(cancelIntent?.kind, 'delivery-cancel')
+  if (cancelIntent?.kind === 'delivery-cancel') {
+    assert.equal(cancelIntent.partnerAppUid, 'live-assignee-uid')
+    assert.equal(cancelIntent.reason, 'Customer changed the window')
+  }
+})
+
 test('demo partner phone numbers auto-link synced partner app records', () => {
   const synced = apply(frameWithDemo(), {
     type: 'partnerApp.sync-result',

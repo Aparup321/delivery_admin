@@ -647,6 +647,43 @@ a { color: inherit; }
 .eligibility-summary + .text-link { margin: 0 13px 12px; }
 .soft-notice { display: flex; align-items: center; gap: 7px; padding: 9px 12px; color: #855d1d; background: #fff8e9; border: 1px solid #f2e8ce; border-radius: 5px; font-size: 9px; }
 .soft-notice .button { flex: none; margin-left: auto; }
+.error-notice { color: #a43d49; background: #fff0f1; border-color: #f3dfe1; }
+.tracking-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 15px; background: #fff; border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--shadow); }
+.tracking-toolbar > div { display: flex; align-items: baseline; gap: 7px; }
+.tracking-toolbar strong { color: var(--purple-deep); font-size: 20px; font-weight: 730; }
+.tracking-toolbar span { color: var(--muted); font-size: 10px; }
+.tracking-layout { display: grid; grid-template-columns: minmax(270px, .72fr) minmax(0, 1.5fr); align-items: start; gap: 16px; }
+.tracking-list-panel { overflow: hidden; }
+.tracking-list-row { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 72px; padding: 10px 13px; text-align: left; background: #fff; border: 0; border-bottom: 1px solid #efedf3; cursor: pointer; }
+.tracking-list-row:hover, .tracking-list-row.selected { background: #faf8fe; }
+.tracking-list-row.selected { box-shadow: inset 3px 0 var(--purple); }
+.tracking-list-row > span:nth-child(2) { display: grid; flex: 1; min-width: 0; gap: 3px; }
+.tracking-list-row strong { color: #40394b; font-size: 10px; }
+.tracking-list-row small { overflow: hidden; color: #898492; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.tracking-list-icon { display: grid; flex: none; place-items: center; width: 29px; height: 29px; color: var(--purple); background: var(--purple-soft); border-radius: 6px; }
+.tracking-fresh { color: var(--green) !important; }
+.tracking-stale { color: var(--red) !important; }
+.tracking-detail-column { display: grid; gap: 16px; min-width: 0; }
+.tracking-map-panel { overflow: hidden; }
+.tracking-map-panel .panel-heading { border-bottom: 0; }
+.tracking-location-banner { display: flex; align-items: flex-start; gap: 8px; margin: 0 13px 12px; padding: 9px 10px; border: 1px solid; border-radius: 6px; font-size: 9px; }
+.tracking-location-banner.fresh { color: #207652; background: #edf7f1; border-color: #dcefe3; }
+.tracking-location-banner.stale { color: #a43d49; background: #fff0f1; border-color: #f3dfe1; }
+.tracking-location-banner > span { display: grid; gap: 3px; }
+.tracking-location-banner strong { font-size: 9px; }
+.tracking-location-banner small { color: inherit; opacity: .82; font-size: 8px; }
+.tracking-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px 15px; padding: 13px; }
+.tracking-facts > div { display: grid; gap: 3px; min-width: 0; }
+.tracking-facts span { color: #8a8592; font-size: 8px; }
+.tracking-facts strong { overflow-wrap: anywhere; color: #433d4b; font-size: 9px; font-weight: 620; }
+.tracking-detail-column .dialog-actions { padding: 0 13px 13px; }
+.tracking-events { display: grid; gap: 0; padding: 2px 13px 10px; }
+.tracking-events > div { display: flex; align-items: flex-start; gap: 8px; padding: 9px 0; border-bottom: 1px solid #f0eef3; }
+.tracking-events svg { flex: none; color: var(--green); margin-top: 1px; }
+.tracking-events span { display: grid; gap: 3px; }
+.tracking-events strong { color: #4b4553; font-size: 9px; text-transform: capitalize; }
+.tracking-events small { color: #898492; font-size: 8px; }
+@media (max-width: 900px) { .tracking-layout { grid-template-columns: 1fr; } }
 .partner-section-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 0 20px; min-height: 38px; padding: 0 4px; border-bottom: 1px solid #e5e1ea; }
 .partner-section-tabs button { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 3px; color: #777180; background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; font-size: 10px; font-weight: 600; }
 .partner-section-tabs button:hover { color: var(--purple); }

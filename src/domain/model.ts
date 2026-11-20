@@ -87,6 +87,14 @@ export interface Delivery {
   delayReason: string | null
   assignmentId: string | null
   milestones: DeliveryMilestone[]
+  /** Job type shown in the partner app; defaults to Grocery when absent. */
+  category?: 'Grocery' | 'Restaurant'
+  /** Number of items the partner carries; defaults to 1 when absent. */
+  itemCount?: number
+  /** Who pays for the job; defaults to Prepaid when absent. */
+  paymentMode?: 'Prepaid' | 'Cash on delivery'
+  /** Partner payout in ₹ chosen by the Administrator, null when not set. */
+  partnerEarnings?: number | null
 }
 
 export interface VerificationHistoryEntry {
@@ -153,6 +161,8 @@ export interface PartnerAppRecord {
   vehicle: string | null
   status: string | null
   applicationStatus: string | null
+  /** Partner App's explicit online/availability signal, when present. */
+  isOnline: boolean | null
   serviceAreas: string[]
   updatedAt: string | null
   fields: Record<string, string>
@@ -203,6 +213,8 @@ export interface Assignment {
   releasedAt: string | null
   releaseReason: string | null
   attempt: number
+  /** 4-digit code the customer reads out to close the delivery. */
+  dropOtp: string | null
 }
 
 export interface AssignmentOffer {

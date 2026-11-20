@@ -256,7 +256,13 @@ function flattenFields(source: Record<string, unknown>): Record<string, string> 
 
 function toPartnerAppRecord(fields: Record<string, unknown>, id: string, updatedAt: string | null, syncedAt: string): PartnerAppRecord {
   const statusValue = pick(fields, ['status', 'availability', 'accountStatus', 'onlineStatus'])
+  const onlineValue = pick(fields, ['isOnline', 'online'])
   const status = typeof statusValue === 'boolean' ? (statusValue ? 'Online' : 'Offline') : asString(statusValue)
+  const isOnline = typeof onlineValue === 'boolean'
+    ? onlineValue
+    : typeof statusValue === 'boolean'
+      ? statusValue
+      : null
   return {
     id,
     partnerId: asString(pick(fields, ['partnerId', 'partner_id', 'deliveryPartnerId'])),
@@ -266,6 +272,7 @@ function toPartnerAppRecord(fields: Record<string, unknown>, id: string, updated
     vehicle: asString(pick(fields, ['vehicle', 'vehicleType', 'vehicle_type'])),
     status,
     applicationStatus: asString(pick(fields, ['applicationStatus', 'application_status'])),
+    isOnline,
     serviceAreas: asStringArray(pick(fields, ['serviceAreas', 'serviceArea', 'areas', 'zones'])),
     updatedAt: updatedAt ?? asString(pick(fields, ['updatedAt', 'updated_at', 'lastActive', 'lastSeen', 'modifiedAt'])),
     fields: flattenFields(fields),

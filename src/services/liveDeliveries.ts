@@ -32,6 +32,7 @@ export interface LiveDelivery {
   displayId: string
   partnerUid: string
   partnerName: string
+  vehicleType: string
   status: string
   nativeStatus: string
   source: string
@@ -121,6 +122,7 @@ function normalizeLiveDelivery(document: unknown): LiveDelivery | null {
     displayId: asText(fields.displayId) || `#${id}`,
     partnerUid: asText(fields.partnerUid),
     partnerName: asText(fields.partnerName) || 'Delivery partner',
+    vehicleType: asText(fields.vehicleType) || 'Vehicle unavailable',
     status: asText(fields.adminStatus) || nativeStatus,
     nativeStatus,
     source: asText(fields.source) || 'live',

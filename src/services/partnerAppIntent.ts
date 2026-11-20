@@ -6,7 +6,9 @@
  * live verification script without rendering React.
  */
 
+import { areaDistanceKm, estimateEtaMinutes, estimatePartnerEarnings } from '../domain/estimates.ts'
 import type { AuditLogEntry, OperationsState } from '../domain/model.ts'
+import { serviceAreaCoordinate } from '../domain/serviceAreas.ts'
 
 export type PartnerAppWriteIntent =
   | {
@@ -33,6 +35,43 @@ export type PartnerAppWriteIntent =
     /** Timed suspension window mirrored to delivery_app; null when reinstating. */
     suspendedUntil: string | null
     suspensionDays: number | null
+    at: string
+  }
+  | {
+    kind: 'delivery-assignment'
+    targetType: 'Delivery'
+    targetId: string
+    deliveryId: string
+    partnerAppUid: string
+    partnerName: string
+    partnerVehicle: string
+    category: 'Grocery' | 'Restaurant'
+    pickupName: string
+    pickupAddress: string
+    pickupLatitude: number
+    pickupLongitude: number
+    dropName: string
+    dropAddress: string
+    dropLatitude: number
+    dropLongitude: number
+    distanceKm: number
+    etaMinutes: number
+    earnings: number
+    itemCount: number
+    paymentMode: 'Prepaid' | 'Cash on delivery'
+    note: string | null
+    dropOtp: string | null
+    expiresAt: string
+    requestedAt: string
+    at: string
+  }
+  | {
+    kind: 'delivery-cancel'
+    targetType: 'Delivery'
+    targetId: string
+    deliveryId: string
+    partnerAppUid: string
+    reason: string
     at: string
   }
 
@@ -115,6 +154,78 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
       updatedBy: log.operator,
       suspendedUntil: null,
       suspensionDays: null,
+      at: log.timestamp,
+    }
+  }
+
+  // Assigning a partner publishes the offer to delivery_app's deliveries
+  // collection so the assigned partner's app receives it live. Reassignments
+  // replace partnerUid, which removes the offer from the previous partner.
+  if (log.eventType === 'Delivery assigned' || log.eventType === 'Delivery reassigned') {
+    const delivery = data.deliveries.find((item) => item.id === log.targetId)
+    const assignment = data.assignments.find(
+      (item) => item.deliveryId === log.targetId && item.status === 'Active',
+    )
+    if (!delivery || !assignment) return null
+    const partner = data.partners.find((item) => item.id === assignment.partnerId)
+    if (!partner?.partnerAppUid) return null
+
+    const pickupCoordinate = serviceAreaCoordinate(delivery.pickup)
+    const dropCoordinate = serviceAreaCoordinate(delivery.drop)
+    const distanceKm = areaDistanceKm(delivery.pickup, delivery.drop)
+    const instructions = delivery.specialInstructions.trim()
+    const expiresAt = new Date(
+      new Date(log.timestamp).getTime() + data.settings.offerTimeoutMinutes * 60_000,
+    ).toISOString()
+
+    return {
+      kind: 'delivery-assignment',
+      targetType: 'Delivery',
+      targetId: delivery.id,
+      deliveryId: delivery.id,
+      partnerAppUid: partner.partnerAppUid,
+      partnerName: partner.name,
+      partnerVehicle: partner.vehicle,
+      category: delivery.category ?? 'Grocery',
+      pickupName: delivery.pickup,
+      pickupAddress: delivery.pickupAddress,
+      pickupLatitude: pickupCoordinate.latitude,
+      pickupLongitude: pickupCoordinate.longitude,
+      dropName: delivery.drop,
+      dropAddress: delivery.dropAddress,
+      dropLatitude: dropCoordinate.latitude,
+      dropLongitude: dropCoordinate.longitude,
+      distanceKm,
+      etaMinutes: estimateEtaMinutes(distanceKm),
+      earnings: delivery.partnerEarnings ?? estimatePartnerEarnings(distanceKm),
+      itemCount: delivery.itemCount ?? 1,
+      paymentMode: delivery.paymentMode ?? 'Prepaid',
+      note: instructions && instructions !== 'No special instructions' ? instructions : null,
+      dropOtp: assignment.dropOtp,
+      expiresAt,
+      requestedAt: log.timestamp,
+      at: log.timestamp,
+    }
+  }
+
+  // Cancelling an assigned delivery closes the shared document so the
+  // partner's active job ends in their app as well.
+  if (log.eventType === 'Delivery cancelled') {
+    const assignment = data.assignments
+      .filter((item) => item.deliveryId === log.targetId)
+      .sort((a, b) => b.assignedAt.localeCompare(a.assignedAt))[0]
+    const partner = assignment
+      ? data.partners.find((item) => item.id === assignment.partnerId)
+      : undefined
+    if (!partner?.partnerAppUid) return null
+
+    return {
+      kind: 'delivery-cancel',
+      targetType: 'Delivery',
+      targetId: log.targetId,
+      deliveryId: log.targetId,
+      partnerAppUid: partner.partnerAppUid,
+      reason: log.reason,
       at: log.timestamp,
     }
   }

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { Delivery, OperationsState, PackageSize, VehicleType } from '../domain/model'
+import { areaDistanceKm, estimatePartnerEarnings } from '../domain/estimates'
 import { Button, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
 import { userCan } from '../domain/admin'
 import { useOperations } from '../state/OperationsProvider'
@@ -23,27 +24,43 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   const { dispatch } = useOperations()
   const [pickup, setPickup] = useState('')
   const [drop, setDrop] = useState('')
+  const [category, setCategory] = useState<Delivery['category']>('Grocery')
   const [packageSize, setPackageSize] = useState<PackageSize>('Small')
   const [weight, setWeight] = useState('2')
+  const [itemCount, setItemCount] = useState('1')
+  const [paymentMode, setPaymentMode] = useState<Delivery['paymentMode']>('Prepaid')
+  const [earnings, setEarnings] = useState('')
   const [vehicle, setVehicle] = useState<VehicleType | 'Any'>('Any')
   const [start, setStart] = useState(() => localInputValue(new Date(Date.now() + 60 * 60_000)))
   const [end, setEnd] = useState(() => localInputValue(new Date(Date.now() + 3 * 60 * 60_000)))
   const [instructions, setInstructions] = useState('')
+  const suggestedEarnings = pickup.trim() && drop.trim()
+    ? estimatePartnerEarnings(areaDistanceKm(pickup, drop))
+    : null
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    dispatch({ type: 'delivery.create', pickup, drop, packageSize, weight: Number(weight), vehicle, scheduledStart: new Date(start).toISOString(), scheduledEnd: new Date(end).toISOString(), instructions })
+    dispatch({
+      type: 'delivery.create', pickup, drop, packageSize, weight: Number(weight), vehicle,
+      scheduledStart: new Date(start).toISOString(), scheduledEnd: new Date(end).toISOString(),
+      instructions, category, itemCount: Number(itemCount), paymentMode,
+      earnings: earnings.trim() ? Number(earnings) : null,
+    })
     onClose()
   }
 
   return <Dialog title="Create a delivery" onClose={onClose}>
     <form className="dialog-form" onSubmit={submit}>
-      <p className="dialog-description">Creates a local illustrative job only. No customer, delivery service, or partner app is contacted.</p>
+      <p className="dialog-description">Creates the job in the console. Assigning it publishes an offer to the linked partner app in Firestore; no customer is contacted.</p>
       <div className="form-grid two-columns">
         <label className="field-label">Pickup area<input autoFocus value={pickup} onChange={(event) => setPickup(event.target.value)} required maxLength={64} placeholder="e.g. Barasat" /></label>
         <label className="field-label">Drop area<input value={drop} onChange={(event) => setDrop(event.target.value)} required maxLength={64} placeholder="e.g. New Town" /></label>
+        <label className="field-label">Category<select value={category} onChange={(event) => setCategory(event.target.value as Delivery['category'])}><option>Grocery</option><option>Restaurant</option></select></label>
         <label className="field-label">Package size<select value={packageSize} onChange={(event) => setPackageSize(event.target.value as PackageSize)}><option>Small</option><option>Medium</option><option>Large</option><option>Extra large</option></select></label>
         <label className="field-label">Estimated weight (kg)<input type="number" min="0.1" max="100" step="0.1" value={weight} onChange={(event) => setWeight(event.target.value)} required /></label>
+        <label className="field-label">Item count<input type="number" min="1" max="99" step="1" value={itemCount} onChange={(event) => setItemCount(event.target.value)} required /></label>
+        <label className="field-label">Payment mode<select value={paymentMode} onChange={(event) => setPaymentMode(event.target.value as Delivery['paymentMode'])}><option>Prepaid</option><option>Cash on delivery</option></select></label>
+        <label className="field-label">Partner payout (₹)<input type="number" min="0" step="1" value={earnings} onChange={(event) => setEarnings(event.target.value)} placeholder={suggestedEarnings ? `Suggested ₹${suggestedEarnings}` : 'e.g. 95'} /></label>
         <label className="field-label">Vehicle requirement<select value={vehicle} onChange={(event) => setVehicle(event.target.value as VehicleType | 'Any')}><option>Any</option><option>Bike</option><option>Scooter</option><option>Van</option></select></label>
         <label className="field-label">Pickup / delivery window start<input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} required /></label>
         <label className="field-label">Delivery window end<input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} required /></label>

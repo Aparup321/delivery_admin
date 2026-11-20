@@ -112,6 +112,7 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
     partnerAppRecords: parsed.partnerAppRecords.map((record) => ({
       ...record,
       applicationStatus: typeof record.applicationStatus === 'string' ? record.applicationStatus : null,
+      isOnline: typeof record.isOnline === 'boolean' ? record.isOnline : null,
     })),
     partnerAppTickets: Array.isArray(parsed.partnerAppTickets) ? parsed.partnerAppTickets : [],
   }

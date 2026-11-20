@@ -251,6 +251,7 @@ export function createDemoState(timestamp = Date.now()): OperationsState {
     releasedAt: null,
     releaseReason: null,
     attempt: 1,
+    dropOtp: null,
   }))
   const logs: AuditLogEntry[] = assignments.map((assignment, index) => ({
     id: `EVT-SEED-${index + 1}`,

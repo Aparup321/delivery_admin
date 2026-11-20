@@ -6,20 +6,28 @@ import { Button, Dialog, EmptyState, Icon, PageHeading, Panel, PanelHeading, Sta
 import { useOperations } from '../state/OperationsProvider'
 
 interface Props {
+  type Props = {
   data: OperationsState
   delivery: Delivery
   open: (path: string) => void
 }
+
+type AvailabilityFilter = 'All' | 'Available' | 'On Delivery' | 'Offline' | 'Restricted' | 'Suspended'
 
 export function AssignmentPage({ data, delivery, open }: Props) {
   const { frame, dispatch } = useOperations()
   const [tab, setTab] = useState<'Eligible' | 'Ineligible'>('Eligible')
   const [query, setQuery] = useState('')
   const [selectedId, setSelectedId] = useState('')
+  const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>('All')
   const [confirm, setConfirm] = useState(false)
   const now = Date.now()
   const evaluations = useMemo(() => data.partners.map((partner) => ({ partner, ...getPartnerEligibility(data, partner, delivery, now) })), [data, delivery, now])
-  const matches = (partner: Partner) => !query.trim() || `${partner.id} ${partner.name} ${partner.vehicle} ${partner.serviceAreas.join(' ')}`.toLowerCase().includes(query.trim().toLowerCase())
+  const matches = (partner: Partner) => {
+    const record = partner.partnerAppUid ? data.partnerAppRecords.find((item) => item.id === partner.partnerAppUid) : undefined
+    const text = `${partner.id} ${partner.name} ${partner.vehicle} ${partner.serviceAreas.join(' ')} ${record?.applicationStatus ?? ''} ${record?.status ?? ''}`.toLowerCase()
+    return (!query.trim() || text.includes(query.trim().toLowerCase())) && (availabilityFilter === 'All' || partner.availability === availabilityFilter)
+  }
   const eligible = evaluations.filter((entry) => entry.eligible && matches(entry.partner))
   const ineligible = evaluations.filter((entry) => !entry.eligible && matches(entry.partner))
   const entries = tab === 'Eligible' ? eligible : ineligible
@@ -49,14 +57,15 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     {!['Completed', 'Cancelled'].includes(delivery.status) && <div className="assignment-workspace">
       <Panel className="candidate-panel">
         <div className="partner-tabs"><button className={tab === 'Eligible' ? 'active' : ''} onClick={() => setTab('Eligible')}>Eligible <span>{eligible.length}</span></button><button className={tab === 'Ineligible' ? 'active' : ''} onClick={() => setTab('Ineligible')}>Ineligible <span>{ineligible.length}</span></button></div>
-        <div className="candidate-tools"><label className="search-control"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search partner, vehicle, or service area" aria-label="Search partners" /></label><span>Eligibility checked at {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(now)}</span></div>
-        <div className="table-scroll"><table className="data-table candidate-table"><thead><tr><th></th><th>Partner</th><th>Vehicle</th><th>Service area</th><th>Availability</th><th>Verification</th><th>Current assignment</th><th>Eligibility / reason</th></tr></thead><tbody>
+        <div className="candidate-tools"><label className="search-control"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search partner, vehicle, service area, or status" aria-label="Search partners" /></label><label className="filter-control"><span>Availability</span><select value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value as AvailabilityFilter)}><option>All</option><option>Available</option><option>On Delivery</option><option>Offline</option><option>Restricted</option><option>Suspended</option></select></label><span>Eligibility checked at {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(now)}</span></div>
+        <div className="table-scroll"><table className="data-table candidate-table"><thead><tr><th></th><th>Partner</th><th>Approval / account</th><th>Vehicle</th><th>Service area</th><th>Availability</th><th>Verification</th><th>Current assignment</th><th>Eligibility / reason</th></tr></thead><tbody>
           {entries.map(({ partner, reasons, eligible: canTake, validDocuments, requiredDocuments, currentAssignment }) => {
             const active = currentAssignment ? data.deliveries.find((item) => item.id === currentAssignment) : null
             const verified = validDocuments === requiredDocuments
             return <tr key={partner.id} onClick={() => canTake && setSelectedId(partner.id)} className={`${canTake && selectedId === partner.id ? 'candidate-selected' : ''} ${!canTake ? 'candidate-ineligible' : ''}`}>
               <td><input type="radio" name="partner" checked={canTake && selectedId === partner.id} disabled={!canTake} onChange={() => setSelectedId(partner.id)} aria-label={`Select ${partner.name}`} /></td>
-              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}</small></span></span></td>
+              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small></span></span></td>
+              <td><span className="application-documents"><strong>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.applicationStatus ?? (data.applications.find((application) => application.partnerId === partner.id)?.status ?? 'Admin record')}</strong><small>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.status ?? 'Local account'}</small></span></td>
               <td><span className="vehicle-cell"><Icon name={partner.vehicle === 'Bike' ? 'bike' : partner.vehicle === 'Van' ? 'van' : 'scooter'} size={16} />{partner.vehicle}</span></td>
               <td><span className="area-list">{partner.serviceAreas.slice(0, 2).join(', ')}{partner.serviceAreas.length > 2 && <small>+{partner.serviceAreas.length - 2} areas</small>}</span></td>
               <td><StatusBadge status={partner.availability} /></td>

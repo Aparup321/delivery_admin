@@ -101,6 +101,7 @@ This runs the production TypeScript/Vite build and the Node test suite.
 
 - `/admin` — operations overview, attention queue, live delivery map, and recent audit activity.
 - `/admin/deliveries` — searchable, filterable, sortable delivery queue and delivery creation.
+- `/admin/tracking` — live delivery_app delivery monitor with selected-delivery map, partner location freshness warnings, protected customer details, and partner-published lifecycle events.
 - `/admin/deliveries/:id` — milestones, delay/cancellation actions, assignment and offer history.
 - `/admin/deliveries/:id/assign` — eligibility-based partner assignment and partner offers.
 - `/admin/partners` — **All partners** directory and profile, verification, delivery history, and account controls.
@@ -131,6 +132,7 @@ VITE_FIREBASE_PARTNERS_COLLECTION=partners
 - Partner data is read from the configured Firestore collection (default `partners`) automatically after Firebase sign-in; no token or project fields are entered in the console.
 - The Firebase refresh token is persisted in the browser so the connection survives app restarts. It is cleared by **Sign out**.
 - Partner account actions (KYC approval/rejection and suspension/reinstatement) are PATCHed to the matching `partners/{uid}` document so delivery_app can react immediately.
+- Assigning a partner to a delivery writes an offer into delivery_app's `deliveries/{deliveryId}` collection (pickup/drop coordinates, distance, ETA, payout, item count, payment mode, delivery code, expiry window) so the partner app receives it live; cancelling an assigned delivery PATCHes the cancellation onto the same document. The partner app's acceptance and lifecycle updates flow back into the same record for `/admin/tracking`.
 - A 403 usually means Firestore rules do not allow the signed-in UID, or the API key’s HTTP-referrer restriction does not include the console origin.
 - `VITE_*` values are embedded in the browser bundle. Never put service-account or Admin SDK credentials in `.env.local`.
 
@@ -156,7 +158,7 @@ For a manager walkthrough build, demo mode can stay enabled and Firebase values 
 
 ## Current limitations
 
-- Partner records and live deliveries are read from/written to Firebase. KYC decisions, delivery assignment, offers, notifications, documents, audit history, and the administrator directory are stored in the current browser’s `localStorage`; they are not yet a server-backed source of truth. KYC-pending rows are informational until the partner submits onboarding. Clearing browser data or using another device loses those local records. Signing out clears the sessions but leaves those local workflow records in the browser profile.
+- Partner records and delivery_app live deliveries are read from Firebase, but the Admin App still polls the Firestore REST API rather than using a Firestore realtime listener. KYC decisions, delivery assignment, offers, notifications, documents, audit history, and the administrator directory are stored in the current browser’s `localStorage`; they are not yet a server-backed source of truth. KYC-pending rows are informational until the partner submits onboarding. Clearing browser data or using another device loses those local records. Signing out clears the sessions but leaves those local workflow records in the browser profile.
 - Administrator access is resolved from the local directory after Firebase sign-in. A restricted administrator created on another device or browser will not exist there yet and is shown **Access not provisioned** until the account is added in that profile or the directory is moved to a shared backend.
 - The KYC **Details** view reads the synced delivery_app partner document. The separate `partner_documents`, `vehicles`, and `training_progress` documents are not copied into the admin cache, so uploaded KYC files stay in delivery_app and the dialog says so instead of inventing document data.
 - The delivery_app demo creates one stable Email/Password Firebase account per mobile number, so re-entering a number resolves to the same UID and its submitted application after sign-out, a number switch, a browser restart or on another device. Existing anonymous accounts are linked to that credential on the next sign-in. A sign-in-only row remains **KYC pending** until onboarding is submitted; rows left by earlier anonymous test accounts remain in the queue until their partner documents are removed from Firestore.

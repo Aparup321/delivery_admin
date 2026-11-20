@@ -7,6 +7,7 @@ import type { AdminSection } from './domain/model'
 import { useOperations } from './state/OperationsProvider'
 import { OverviewPage } from './pages/OverviewPage'
 import { DeliveriesPage } from './pages/DeliveriesPage'
+import { TrackingPage } from './pages/TrackingPage'
 import { DeliveryDetailPage } from './pages/DeliveryDetailPage'
 import { AssignmentPage } from './pages/AssignmentPage'
 import { AdminLoginPage } from './pages/LoginPage'
@@ -32,6 +33,7 @@ function routeLabel(pathname: string) {
   if (pathname.startsWith('/admin/deliveries/')) return 'Deliveries'
   if (pathname.startsWith('/admin/partners/')) return 'Partners'
   if (pathname === '/admin/deliveries') return 'Deliveries'
+  if (pathname === '/admin/tracking') return 'Live Tracking'
   if (pathname === '/admin/partners') return 'Partners'
   if (pathname === '/admin/kyc') return 'KYC Review'
   if (pathname === '/admin/notifications') return 'Notifications'
@@ -44,6 +46,7 @@ function routeLabel(pathname: string) {
 const navItems: Array<{ label: string; path: string; icon: IconName; section?: AdminSection; mainOnly?: boolean }> = [
   { label: 'Overview', path: '/admin', icon: 'overview' },
   { label: 'Deliveries', path: '/admin/deliveries', icon: 'deliveries', section: 'deliveries' },
+  { label: 'Live Tracking', path: '/admin/tracking', icon: 'pin', section: 'deliveries' },
   { label: 'Partners', path: '/admin/partners', icon: 'partners', section: 'partners' },
   { label: 'KYC Review', path: '/admin/kyc', icon: 'kyc', mainOnly: true },
   { label: 'Notifications', path: '/admin/notifications', icon: 'notifications' },
@@ -190,6 +193,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
     if (pathname === '/admin/kyc' || pathname === '/admin/administrators') return false
     if (pathname === '/admin/settings') return userHasSection(user, 'settings')
     if (pathname === '/admin/audit-logs') return userHasSection(user, 'audit-logs')
+    if (pathname === '/admin/tracking') return userHasSection(user, 'deliveries')
     if (pathname === '/admin/deliveries' || pathname.startsWith('/admin/deliveries/')) return userHasSection(user, 'deliveries')
     if (pathname === '/admin/partners' || pathname.startsWith('/admin/partners/')) return userHasSection(user, 'partners')
     return false
@@ -198,19 +202,21 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
   const pageTitle = activeLabel === 'Overview' ? 'Operations Overview'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? `Assign partner · ${selectedDelivery?.id ?? ''}` : isDeliveryDetail ? `Delivery ${selectedDelivery?.id ?? ''}` : 'Deliveries'
       : activeLabel === 'Partners' ? partnerMatch ? `Partner · ${selectedPartnerId}` : partnersView === 'new' ? 'Create partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : partnersView === 'expiring' ? 'Expiring documents' : 'All partners'
+        : activeLabel === 'Live Tracking' ? 'Live Tracking'
         : activeLabel === 'Administrators' ? 'Administrators'
           : activeLabel === 'KYC Review' ? 'KYC Review'
             : activeLabel
   const pageSubtitle = activeLabel === 'Overview' ? 'A clear view of the delivery queue, partner availability, and operational exceptions.'
     : activeLabel === 'Deliveries' ? isAssignmentRoute ? '' : isDeliveryDetail ? 'Operational record, assignment history, and delivery milestones.' : 'Search, filter, assign, and review delivery jobs.'
       : activeLabel === 'Partners' ? partnerMatch ? 'Verification, eligibility, availability, and delivery history.' : partnersView === 'new' ? 'Create a partner directory record. Mandatory KYC documents are queued as missing.' : partnersView === 'app' ? 'Read-only delivery_app records synced from the partner backend.' : partnersView === 'activity' ? 'Audit partner activity and suspend or restore a partner when required.' : partnersView === 'expiring' ? 'Review partner documents that are expired or due to expire within 30 days.' : 'Review all delivery partners, availability, verification, and assignment eligibility.'
+        : activeLabel === 'Live Tracking' ? 'Monitor accepted and in-progress deliveries published by delivery_app.'
         : activeLabel === 'Administrators' ? 'Main administrators have full access. Restricted administrators only receive the sections and actions selected here.'
           : activeLabel === 'KYC Review' ? 'Review onboarding KYC applications from this console and delivery_app. Main administrator approval only.'
             : activeLabel === 'Notifications' ? 'Event-driven operational notifications.'
               : activeLabel === 'Audit Logs' ? 'Append-only history of administrative operations.'
                 : 'Simple configuration and demo data controls.'
 
-  const routeKnown = ['/admin', '/admin/deliveries', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings', '/admin/administrators'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
+  const routeKnown = ['/admin', '/admin/deliveries', '/admin/tracking', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings', '/admin/administrators'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
   const accessDenied = routeKnown && !canOpenRoute(routePath)
   const showHeading = routeKnown && !isAssignmentRoute && !accessDenied
   const partnerViewLabel = partnersView === 'new' ? 'Create partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : partnersView === 'expiring' ? 'Expiring documents' : ''
@@ -271,6 +277,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
         {!accessDenied && <>
           {routePath === '/admin' && <OverviewPage data={frame.data} open={open} />}
           {routePath === '/admin/deliveries' && <DeliveriesPage data={frame.data} open={open} statusFromUrl={query.get('status') ?? undefined} initialSearch={query.get('q') ?? ''} />}
+          {routePath === '/admin/tracking' && <TrackingPage data={frame.data} open={open} />}
           {isDeliveryDetail && selectedDelivery && <DeliveryDetailPage data={frame.data} delivery={selectedDelivery} open={open} />}
           {isAssignmentRoute && selectedDelivery && <AssignmentPage data={frame.data} delivery={selectedDelivery} open={open} />}
           {deliveryMatch && !selectedDelivery && <div className="route-not-found"><Icon name="alert" size={22} /><h2>Delivery not found</h2><p>The requested record is not available.</p><Button onClick={() => open('/admin/deliveries')}>Back to deliveries</Button></div>}

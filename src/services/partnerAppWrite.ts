@@ -13,7 +13,7 @@ import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
 export type PartnerAppAccountStatus = 'pending' | 'active' | 'paused'
 
-function encodeValue(value: unknown): Record<string, unknown> {
+export function encodeValue(value: unknown): Record<string, unknown> {
   if (value === null || value === undefined) return { nullValue: null }
   if (typeof value === 'string') return { stringValue: value }
   if (typeof value === 'boolean') return { booleanValue: value }
