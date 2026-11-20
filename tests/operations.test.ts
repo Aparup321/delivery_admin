@@ -490,6 +490,32 @@ test('partner suspension is recorded in activity and audit history, and an Admin
   assert.ok(restored.data.partnerHistory.some((item) => item.partnerId === 'DP-0192' && item.type === 'Eligibility restored' && item.description.includes('Operations review completed')))
 })
 
+test('partner suspension stores an administrator-selected timeline and expires automatically', () => {
+  const frame = frameWithDemo()
+  const suspended = apply(frame, {
+    type: 'partner.restrict',
+    partnerId: 'DP-0192',
+    status: 'Suspended',
+    durationDays: 3,
+    reason: 'Temporary compliance review',
+  })
+  expectSuccess(suspended)
+  const partner = suspended.data.partners.find((item) => item.id === 'DP-0192')!
+  assert.equal(partner.suspensionDays, 3)
+  assert.ok(partner.suspendedUntil)
+  assert.match(suspended.data.partnerHistory.find((item) => item.partnerId === partner.id && item.type === 'Suspended')?.description ?? '', /3 days/)
+
+  const beforeExpiry = apply(suspended, { type: 'partner.expire-suspensions', now: new Date(partner.suspendedUntil!).getTime() - 1 })
+  assert.equal(beforeExpiry.data.partners.find((item) => item.id === partner.id)?.availability, 'Suspended')
+  const expired = apply(beforeExpiry, { type: 'partner.expire-suspensions', now: new Date(partner.suspendedUntil!).getTime() })
+  expectSuccess(expired)
+  const restored = expired.data.partners.find((item) => item.id === partner.id)!
+  assert.equal(restored.availability, 'On Delivery')
+  assert.equal(restored.suspendedUntil, null)
+  assert.equal(restored.suspensionDays, null)
+  assert.ok(expired.data.auditLogs.some((item) => item.eventType === 'Partner suspension expired' && item.targetId === partner.id))
+})
+
 test('only a main administrator can approve an onboarding application, which onboards the partner and queues KYC documents', () => {
   const frame = restrictUser(frameWithDemo(), ['read', 'document-review'], ['partners'])
   const blocked = apply(frame, { type: 'application.approve', applicationId: 'APP-2041', note: '' })

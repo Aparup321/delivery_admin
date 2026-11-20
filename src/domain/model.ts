@@ -43,6 +43,7 @@ export type AuditEventType =
   | 'Partner created'
   | 'Partner restricted'
   | 'Partner suspended'
+  | 'Partner suspension expired'
   | 'Partner availability changed'
   | 'Partner eligibility changed'
   | 'Document verification updated'
@@ -171,6 +172,10 @@ export interface Partner {
   availability: PartnerAvailability
   restrictedReason: string | null
   suspendedReason: string | null
+  /** ISO timestamp when a timed suspension ends and eligibility is restored automatically. */
+  suspendedUntil: string | null
+  /** Whole-day suspension length chosen by the administrator. */
+  suspensionDays: number | null
   needsOperationalReview: boolean
   /** Firestore document ID in delivery_app's partners collection, when linked. */
   partnerAppUid: string | null

@@ -30,6 +30,9 @@ export type PartnerAppWriteIntent =
     active: boolean
     reason: string
     updatedBy: string
+    /** Timed suspension window mirrored to delivery_app; null when reinstating. */
+    suspendedUntil: string | null
+    suspensionDays: number | null
     at: string
   }
 
@@ -68,6 +71,26 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
       active: false,
       reason: partner.suspendedReason ?? partner.restrictedReason ?? log.reason,
       updatedBy: log.operator,
+      suspendedUntil: partner.suspendedUntil,
+      suspensionDays: partner.suspensionDays,
+      at: log.timestamp,
+    }
+  }
+
+  if (log.eventType === 'Partner suspension expired') {
+    const partner = data.partners.find((item) => item.id === log.targetId)
+    if (!partner?.partnerAppUid) return null
+    return {
+      kind: 'account',
+      targetType: 'Partner',
+      targetId: partner.id,
+      partnerAppUid: partner.partnerAppUid,
+      adminPartnerId: partner.id,
+      active: true,
+      reason: log.reason,
+      updatedBy: log.operator,
+      suspendedUntil: null,
+      suspensionDays: null,
       at: log.timestamp,
     }
   }
@@ -90,6 +113,8 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
       active: true,
       reason: log.reason,
       updatedBy: log.operator,
+      suspendedUntil: null,
+      suspensionDays: null,
       at: log.timestamp,
     }
   }

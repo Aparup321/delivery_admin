@@ -128,6 +128,9 @@ export interface AccountStatusWrite {
   active: boolean
   reason: string
   updatedBy: string
+  /** Timed suspension deadline; cleared when the account is reinstated. */
+  suspendedUntil?: string | null
+  suspensionDays?: number | null
   at: string
 }
 
@@ -144,6 +147,8 @@ export async function writePartnerAccountStatus(write: AccountStatusWrite): Prom
       updatedBy: write.updatedBy,
       updatedAt: write.at,
       adminPartnerId: write.adminPartnerId,
+      until: write.active ? null : write.suspendedUntil ?? null,
+      days: write.active ? null : write.suspensionDays ?? null,
     },
   })
 }

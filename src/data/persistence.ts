@@ -101,6 +101,8 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
     partners: parsed.partners.map((partner) => ({
       ...partner,
       demoPhone: typeof partner.demoPhone === 'string' ? partner.demoPhone : DEMO_PARTNER_PHONES[partner.id] ?? null,
+      suspendedUntil: typeof partner.suspendedUntil === 'string' ? partner.suspendedUntil : null,
+      suspensionDays: typeof partner.suspensionDays === 'number' ? partner.suspensionDays : null,
       partnerAppUid: linkedRecordId(partner.partnerAppUid),
     })),
     applications: parsed.applications.map((application) => ({

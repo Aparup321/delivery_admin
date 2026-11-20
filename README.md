@@ -46,6 +46,8 @@ That hides demo access and removes the demo session on the next load. Never leav
 
 The **Demo data** settings tab lists synthetic partner phone numbers for the delivery_app demo OTP. They are not real numbers and cannot receive SMS. If the partner app stores one of those numbers in `partners/{uid}`, the next sync links that live record to the matching admin demo partner by full phone number. Approve the submitted onboarding, then suspend/reinstate the linked account to demonstrate the admin decision writing back to the partner app. A sign-in-only partner remains **KYC pending** until the onboarding form is submitted.
 
+Partner suspension requires the administrator to choose a whole-number duration from **1 to 365 days** and provide a reason. The suspension end date is shown in the partner directory, activity view, and partner profile. When the period ends, the console automatically restores the partner's eligibility; the same deadline and day count are written to the linked `delivery_app` partner document under `adminSuspension.until` and `adminSuspension.days`. A manual restore clears the scheduled deadline immediately.
+
 ## Real Firebase sign-in
 
 The **Firebase sign-in** tab is the real access gate. Real sign-in has no demo password or OTP.

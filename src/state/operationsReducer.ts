@@ -2,6 +2,7 @@ import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCa
 import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerApplication, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
 import { getPartnerEligibility, getActiveAssignment, nextPartnerId } from '../domain/operations.ts'
+import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
 
 export interface AppFrame {
   data: OperationsState
@@ -23,8 +24,9 @@ export type OperationAction =
   | { type: 'offer.expire'; offerId: string }
   | { type: 'offer.expire-due'; now: number }
   | { type: 'partner.create'; partnerId: string; name: string; phone: string; email: string; vehicle: Partner['vehicle']; serviceAreas: string[]; registrationLast4: string; note: string }
-  | { type: 'partner.restrict'; partnerId: string; status: 'Restricted' | 'Suspended'; reason: string }
+  | { type: 'partner.restrict'; partnerId: string; status: 'Restricted' | 'Suspended'; reason: string; durationDays?: number }
   | { type: 'partner.restore'; partnerId: string; reason: string }
+  | { type: 'partner.expire-suspensions'; now: number }
   | { type: 'partner.availability'; partnerId: string; availability: 'Available' | 'Offline'; reason: string }
   | { type: 'document.update'; documentId: string; status: DocumentStatus; reason: string; expiresAt: string | null }
   | { type: 'application.approve'; applicationId: string; note: string }
@@ -276,6 +278,8 @@ function approveApplication(data: OperationsState, application: PartnerApplicati
       availability: 'Offline',
       restrictedReason: null,
       suspendedReason: null,
+      suspendedUntil: null,
+      suspensionDays: null,
       needsOperationalReview: false,
       partnerAppUid: application.partnerAppUid,
     }
@@ -666,6 +670,8 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
         availability: 'Offline',
         restrictedReason: null,
         suspendedReason: null,
+        suspendedUntil: null,
+        suspensionDays: null,
         needsOperationalReview: false,
         partnerAppUid: null,
       }
@@ -694,19 +700,34 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       requireValue(action.reason, 'Restriction reason')
       if (partner.availability === action.status) throw new Error(`${partner.name} is already ${action.status.toLowerCase()}.`)
       if (partner.availability === 'Suspended' && action.status === 'Restricted') throw new Error('Restore the partner before changing a suspension to a restriction.')
+      let suspendedUntil: string | null = null
+      let suspensionDays: number | null = null
+      if (action.status === 'Suspended') {
+        // Keep reducer callers backwards-compatible; the UI always supplies
+        // an explicit duration, while older integrations receive the default.
+        const days = action.durationDays === undefined ? DEFAULT_SUSPENSION_DAYS : Number(action.durationDays)
+        if (!isValidSuspensionDays(days)) throw new Error('Suspension length must be a whole number from 1 to 365 days.')
+        suspensionDays = days
+        suspendedUntil = suspensionEnd(at, days)
+      }
       const previous = partner.availability
       partner.availability = action.status
       partner.restrictedReason = action.status === 'Restricted' ? action.reason.trim() : null
       partner.suspendedReason = action.status === 'Suspended' ? action.reason.trim() : null
+      partner.suspendedUntil = suspendedUntil
+      partner.suspensionDays = suspensionDays
       const active = getActiveAssignment(data, partner.id)
       partner.needsOperationalReview = Boolean(active)
-      partnerHistory(data, partner.id, action.status, `${action.status}: ${action.reason.trim()}${active ? `. Existing ${active.deliveryId} assignment flagged for review.` : ''}`, active?.deliveryId ?? null, at)
+      const timeline = suspendedUntil ? ` for ${suspensionDaysLabel(suspensionDays ?? 0)} (until ${formatSuspensionEnd(suspendedUntil) ?? 'the scheduled end'})` : ''
+      partnerHistory(data, partner.id, action.status, `${action.status}${timeline}: ${action.reason.trim()}${active ? `. Existing ${active.deliveryId} assignment flagged for review.` : ''}`, active?.deliveryId ?? null, at)
       const event = action.status === 'Restricted' ? 'Partner restricted' : 'Partner suspended'
-      audit(data, event, 'Partner', partner.id, previous, action.status, action.reason, at)
+      const newValue = suspendedUntil ? `Suspended until ${formatSuspensionEnd(suspendedUntil) ?? suspendedUntil}` : action.status
+      audit(data, event, 'Partner', partner.id, previous, newValue, action.reason, at)
       audit(data, 'Partner eligibility changed', 'Partner', partner.id, 'Eligible state recalculated', 'Ineligible for new offers', action.reason, at)
       const category = action.status === 'Restricted' ? 'Partner Restricted' : 'Partner Suspended'
-      notify(data, category, `Partner ${action.status.toLowerCase()}`, `${partner.name} is ${action.status.toLowerCase()}: ${action.reason.trim()}`, `/admin/partners/${partner.id}`, partner.id, at)
-      return { message: `${partner.name} ${action.status.toLowerCase()}. Existing assignment${active ? ` ${active.deliveryId} was flagged for review` : 's were not changed'}.` }
+      notify(data, category, `Partner ${action.status.toLowerCase()}`, `${partner.name} is ${action.status.toLowerCase()}${timeline}: ${action.reason.trim()}`, `/admin/partners/${partner.id}`, partner.id, at)
+      const actionLabel = action.status === 'Suspended' ? `suspended${timeline}` : 'restricted'
+      return { message: `${partner.name} ${actionLabel}. Existing assignment${active ? ` ${active.deliveryId} was flagged for review` : 's were not changed'}.` }
     }
     case 'partner.restore': {
       const partner = findPartner(data, action.partnerId)
@@ -715,6 +736,8 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const previous = partner.availability
       partner.restrictedReason = null
       partner.suspendedReason = null
+      partner.suspendedUntil = null
+      partner.suspensionDays = null
       partner.availability = getActiveAssignment(data, partner.id) ? 'On Delivery' : 'Available'
       partner.needsOperationalReview = Boolean(getActiveAssignment(data, partner.id))
       partnerHistory(data, partner.id, 'Eligibility restored', `Restored from ${previous.toLowerCase()}: ${action.reason.trim()}`, getActiveAssignment(data, partner.id)?.deliveryId ?? null, at)
@@ -1041,6 +1064,8 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
     }
     case 'offer.expire-due':
       throw new Error('Internal offer sweep must be handled by the scheduler.')
+    case 'partner.expire-suspensions':
+      throw new Error('Internal suspension sweep must be handled by the scheduler.')
   }
 }
 
@@ -1049,6 +1074,33 @@ function expireDue(data: OperationsState, now: number) {
   if (!expired.length) return 0
   const at = new Date(now).toISOString()
   for (const offer of expired) timeoutOffer(data, offer.id, at)
+  return expired.length
+}
+
+function expireSuspensions(data: OperationsState, now: number) {
+  const expired = data.partners.filter((partner) => partner.availability === 'Suspended'
+    && partner.suspendedUntil
+    && new Date(partner.suspendedUntil).getTime() <= now)
+  if (!expired.length) return 0
+  const at = new Date(now).toISOString()
+  for (const partner of expired) {
+    const active = getActiveAssignment(data, partner.id)
+    const length = partner.suspensionDays ? `${suspensionDaysLabel(partner.suspensionDays)} ` : ''
+    partner.availability = active ? 'On Delivery' : 'Available'
+    partner.suspendedReason = null
+    partner.suspendedUntil = null
+    partner.suspensionDays = null
+    partner.needsOperationalReview = Boolean(active)
+    partnerHistory(
+      data,
+      partner.id,
+      'Suspension expired',
+      `Automatic reinstatement after the ${length}suspension period ended.${active ? ` Existing ${active.deliveryId} assignment still needs operational review.` : ''}`,
+      active?.deliveryId ?? null,
+      at,
+    )
+    audit(data, 'Partner suspension expired', 'Partner', partner.id, 'Suspended', partner.availability, 'Suspension period ended automatically.', at)
+  }
   return expired.length
 }
 
@@ -1061,6 +1113,17 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
       return { ...frame, data, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'info', message: `${count} offer${count === 1 ? '' : 's'} timed out.` } }
     } catch (error) {
       return { ...frame, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'error', message: error instanceof Error ? error.message : 'Offer timeout could not be recorded.' } }
+    }
+  }
+
+  if (action.type === 'partner.expire-suspensions') {
+    const data = structuredClone(frame.data)
+    try {
+      const count = expireSuspensions(data, action.now)
+      if (!count) return frame
+      return { ...frame, data, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'info', message: `${count} partner suspension${count === 1 ? '' : 's'} ended automatically.` } }
+    } catch (error) {
+      return { ...frame, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'error', message: error instanceof Error ? error.message : 'Suspension expiry could not be recorded.' } }
     }
   }
 

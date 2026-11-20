@@ -37,6 +37,16 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
     return () => window.clearInterval(timer)
   }, [frame.data.offers])
 
+  useEffect(() => {
+    const hasTimedSuspension = frame.data.partners.some((partner) => partner.availability === 'Suspended' && partner.suspendedUntil)
+    if (!hasTimedSuspension) return
+    // Reconcile immediately after a reload, then keep checking while a timed
+    // suspension remains. The reducer returns the same frame when nothing is due.
+    dispatch({ type: 'partner.expire-suspensions', now: Date.now() })
+    const timer = window.setInterval(() => dispatch({ type: 'partner.expire-suspensions', now: Date.now() }), 30_000)
+    return () => window.clearInterval(timer)
+  }, [frame.data.partners])
+
   const performWrite = useCallback(async (intent: PartnerAppWriteIntent) => {
     const key = `${intent.kind}:${intent.targetId}`
     const applicationStatus = intent.kind === 'application'
@@ -69,6 +79,8 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           active: intent.active,
           reason: intent.reason,
           updatedBy: intent.updatedBy,
+          suspendedUntil: intent.suspendedUntil,
+          suspensionDays: intent.suspensionDays,
           at: intent.at,
         })
       }
