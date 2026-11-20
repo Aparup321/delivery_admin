@@ -5,10 +5,13 @@ import { readPartnerAppToken, syncPartnerAppRecords, syncPartnerAppTickets } fro
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
-// REST has no Firestore listener; keep the fallback sync short enough for
-// operational state changes while avoiding a request on every render.
-const POLL_INTERVAL_MS = 10_000
-const FOCUS_REFRESH_MS = 5_000
+// REST has no Firestore listener, but every poll reads documents against the
+// project's daily quota. Poll no faster than 30 seconds and back off for ten
+// minutes when Firestore answers 429 Quota exceeded, so an exhausted quota
+// stops generating failing requests until it resets.
+const POLL_INTERVAL_MS = 30_000
+const FOCUS_REFRESH_MS = 30_000
+const QUOTA_BACKOFF_MS = 10 * 60_000
 
 /** Stable comparison for the extra string fields a record carries. */
 function fieldsKey(fields: Record<string, string>) {
@@ -88,10 +91,20 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
     // run while the first request is still pending; a shared ref would make the
     // second run skip the request while the first run discards its result.
     let inFlight = false
+    let quotaBlockedUntil = 0
+
+    const isQuotaError = (error: unknown) => {
+      const message = error instanceof Error ? error.message : ''
+      return message.includes('HTTP 429') || message.toLowerCase().includes('quota')
+    }
 
     const refresh = async (force: boolean) => {
       if (!active || inFlight) return
+      // Hidden tabs gain nothing from a refresh; save the quota until the
+      // operator looks at the console again.
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
       const now = Date.now()
+      if (now < quotaBlockedUntil) return
       if (!force && now - lastAttempt.current < FOCUS_REFRESH_MS) return
       lastAttempt.current = now
       inFlight = true
@@ -108,6 +121,11 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
         dispatch({ type: 'partnerApp.sync-result', records, tickets, at: new Date().toISOString() })
       } catch (error) {
         if (!active) return
+        // A quota-exhausted project keeps answering 429 until the daily reset;
+        // stop hammering it for ten minutes so the failure appears once.
+        if (isQuotaError(error)) {
+          quotaBlockedUntil = Date.now() + QUOTA_BACKOFF_MS
+        }
         dispatch({
           type: 'partnerApp.failed',
           message: error instanceof Error ? error.message : 'Automatic partner sync failed.',

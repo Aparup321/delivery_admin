@@ -68,8 +68,12 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
     if (!hasFirebaseAdminSession()) return
 
     let active = true
+    let quotaBlockedUntil = 0
 
     const sync = async () => {
+      // Hidden tabs gain nothing from a reconciliation pass; save the quota.
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      if (Date.now() < quotaBlockedUntil) return
       try {
         const live = await fetchLiveDeliveries(config, readPartnerAppToken())
         if (!active) return
@@ -92,13 +96,19 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         if (pending.length) {
           dispatch({ type: 'delivery.sync-live', at: new Date().toISOString(), deliveries: pending })
         }
-      } catch {
-        // Polling is best-effort; the tracking page surfaces sync errors.
+      } catch (error) {
+        // Polling is best-effort; the tracking page surfaces sync errors. A
+        // quota-exhausted project keeps answering 429 until the daily reset,
+        // so stop hammering it for ten minutes.
+        const message = error instanceof Error ? error.message : ''
+        if (message.includes('HTTP 429') || message.toLowerCase().includes('quota')) {
+          quotaBlockedUntil = Date.now() + 10 * 60_000
+        }
       }
     }
 
     void sync()
-    const timer = window.setInterval(() => { void sync() }, 30_000)
+    const timer = window.setInterval(() => { void sync() }, 60_000)
 
     return () => {
       active = false

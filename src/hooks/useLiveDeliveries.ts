@@ -42,8 +42,14 @@ export function useLiveDeliveries(
     }
 
     let active = true
+    // Every poll reads documents against the project's daily Firestore quota.
+    // Poll at most once a minute, pause while the tab is hidden, and back off
+    // for ten minutes when Firestore answers 429 Quota exceeded.
+    let quotaBlockedUntil = 0
 
     const load = async (showLoading: boolean) => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      if (Date.now() < quotaBlockedUntil) return
       if (showLoading) {
         setState((current) => ({ ...current, loading: true }))
       }
@@ -58,12 +64,16 @@ export function useLiveDeliveries(
         }
       } catch (error) {
         if (active) {
+          const message =
+            error instanceof Error
+              ? error.message
+              : 'Could not load live deliveries.'
+          if (message.includes('HTTP 429') || message.toLowerCase().includes('quota')) {
+            quotaBlockedUntil = Date.now() + 10 * 60_000
+          }
           setState((current) => ({
             ...current,
-            error:
-              error instanceof Error
-                ? error.message
-                : 'Could not load live deliveries.',
+            error: message,
             loading: false,
           }))
         }
@@ -73,7 +83,7 @@ export function useLiveDeliveries(
     void load(true)
     const timer = window.setInterval(() => {
       void load(false)
-    }, 10_000)
+    }, 60_000)
 
     return () => {
       active = false
