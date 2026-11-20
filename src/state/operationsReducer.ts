@@ -1,5 +1,5 @@
 import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCan } from '../domain/admin.ts'
-import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerApplication, type Permission } from '../domain/model.ts'
+import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
 import { getPartnerEligibility, getActiveAssignment, nextPartnerId } from '../domain/operations.ts'
 import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
@@ -33,7 +33,7 @@ export type OperationAction =
   | { type: 'application.reject'; applicationId: string; reason: string }
   | { type: 'partnerApp.save'; config: Pick<PartnerAppConfig, 'mode' | 'projectId' | 'apiKey' | 'databaseId' | 'partnersCollection' | 'endpointUrl'> }
   | { type: 'partnerApp.connected'; at: string }
-  | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; at: string }
+  | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; tickets?: PartnerAppTicket[]; at: string }
   | { type: 'partnerApp.failed'; message: string }
   | { type: 'partnerApp.link'; recordId: string; partnerId: string }
   | { type: 'partnerApp.unlink'; partnerId: string }
@@ -337,7 +337,7 @@ function audit(data: OperationsState, eventType: AuditEventType, targetType: Aud
 }
 
 function notify(data: OperationsState, category: NotificationCategory, title: string, message: string, path: string, recordId: string, at: string) {
-  if (!data.settings.notifications[category]) return
+  if (data.settings.notifications[category] === false) return
   data.notifications.unshift({ id: uid('NTF'), category, title, message, createdAt: at, readAt: null, relatedPath: path, relatedRecordId: recordId })
 }
 
@@ -829,12 +829,20 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
     case 'partnerApp.sync-result': {
       if (!Array.isArray(action.records)) throw new Error('Partner app records were not valid.')
       const previousCount = data.partnerAppRecords.length
+      const previousTicketIds = new Set(data.partnerAppTickets.map((ticket) => ticket.id))
       data.partnerAppRecords = action.records.slice(0, 1000)
+      data.partnerAppTickets = Array.isArray(action.tickets) ? action.tickets.slice(0, 1000) : data.partnerAppTickets
       data.partnerApp.lastError = null
       data.partnerApp.lastSyncAt = action.at
       data.partnerApp.lastConnectedAt = action.at
       data.partnerApp.lastError = null
       autoLinkPartnerAppRecords(data)
+      for (const ticket of data.partnerAppTickets) {
+        if (previousTicketIds.has(ticket.id)) continue
+        const partner = data.partners.find((item) => item.partnerAppUid === ticket.partnerUid)
+        const path = partner ? `/admin/partners/${partner.id}` : '/admin/partners?view=app'
+        notify(data, 'Partner Support Ticket', `New support ticket: ${ticket.subject}`, `${partner?.name ?? ticket.partnerUid}: ${ticket.message}`, path, ticket.id, at)
+      }
       const linkedCount = data.partners.filter((partner) => partner.partnerAppUid).length
       audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records · ${linkedCount} linked partners`, 'Partner records synced from delivery_app.', at)
       return { message: `${data.partnerAppRecords.length} partner app record${data.partnerAppRecords.length === 1 ? '' : 's'} synced.${linkedCount ? ` ${linkedCount} partner${linkedCount === 1 ? '' : 's'} linked by name.` : ' Link records to admin partners before using live account actions.'}` }

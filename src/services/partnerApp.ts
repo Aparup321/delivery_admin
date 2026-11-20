@@ -1,4 +1,4 @@
-import type { PartnerAppConfig, PartnerAppRecord } from '../domain/model.ts'
+import type { PartnerAppConfig, PartnerAppRecord, PartnerAppTicket } from '../domain/model.ts'
 import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
 const TOKEN_KEY = 'picdrop-partner-app-token'
@@ -90,17 +90,17 @@ export class PartnerAppRequestError extends Error {
   }
 }
 
-function firestoreCollection(config: PartnerAppConfig) {
+function firestoreCollection(config: PartnerAppConfig, collectionOverride?: string) {
   const projectId = config.projectId.trim()
   if (!projectId) throw new Error('Enter the Firebase project ID for the partner app.')
   const databaseId = config.databaseId.trim() || '(default)'
-  const collection = config.partnersCollection.trim().replace(/^\/+|\/+$/g, '')
+  const collection = (collectionOverride ?? config.partnersCollection).trim().replace(/^\/+|\/+$/g, '')
   if (!collection) throw new Error('Enter the Firestore collection that stores partners.')
   return { projectId, databaseId, collection }
 }
 
-function firestoreCollectionUrl(config: PartnerAppConfig) {
-  const { projectId, databaseId, collection } = firestoreCollection(config)
+function firestoreCollectionUrl(config: PartnerAppConfig, collectionOverride?: string) {
+  const { projectId, databaseId, collection } = firestoreCollection(config, collectionOverride)
   const path = collection.split('/').map((segment) => encodeURIComponent(segment)).join('/')
   return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents/${path}`
 }
@@ -162,6 +162,20 @@ async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSi
   } catch {
     throw new PartnerAppRequestError('The partner app returned a response that was not valid JSON.', url)
   }
+}
+
+async function requestFirestoreCollection(config: PartnerAppConfig, token: string, collection: string, pageSize = 300): Promise<unknown> {
+  if (config.mode !== 'firestore') return []
+  const base = firestoreCollectionUrl(config, collection)
+  const params = new URLSearchParams({ pageSize: String(pageSize) })
+  if (config.apiKey.trim()) params.set('key', config.apiKey.trim())
+  const url = `${base}?${params.toString()}`
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  const accessToken = await resolvePartnerAppToken(token, config.apiKey)
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`
+  const response = await fetch(url, { method: 'GET', headers, cache: 'no-store' })
+  if (!response.ok) throw new PartnerAppRequestError(`Support ticket request failed (HTTP ${response.status}).`, url)
+  return response.json()
 }
 
 export function decodeFirestoreFields(fields: unknown): Record<string, unknown> {
@@ -313,4 +327,29 @@ export async function testPartnerAppConnection(config: PartnerAppConfig, token: 
 export async function syncPartnerAppRecords(config: PartnerAppConfig, token: string) {
   const payload = await requestPartnerApp(config, token, 300)
   return normalizePartnerAppRecords(payload, new Date().toISOString())
+}
+
+function decodeTicketDocument(document: unknown, syncedAt: string): PartnerAppTicket | null {
+  if (!isRecord(document) || typeof document.name !== 'string' || !isRecord(document.fields)) return null
+  const id = document.name.split('/').pop() ?? ''
+  const fields = decodeFirestoreFields(document.fields)
+  if (!id || typeof fields.partnerUid !== 'string' || typeof fields.subject !== 'string' || typeof fields.message !== 'string') return null
+  return {
+    id,
+    partnerUid: fields.partnerUid,
+    subject: fields.subject,
+    message: fields.message,
+    status: typeof fields.status === 'string' ? fields.status : 'Open',
+    createdAt: typeof fields.createdAt === 'string' ? fields.createdAt : syncedAt,
+    updatedAt: typeof fields.updatedAt === 'string' ? fields.updatedAt : null,
+    syncedAt,
+  }
+}
+
+export async function syncPartnerAppTickets(config: PartnerAppConfig, token: string): Promise<PartnerAppTicket[]> {
+  if (config.mode !== 'firestore') return []
+  const syncedAt = new Date().toISOString()
+  const payload = await requestFirestoreCollection(config, token, 'support_tickets')
+  const documents = isRecord(payload) && Array.isArray(payload.documents) ? payload.documents : []
+  return documents.map((document) => decodeTicketDocument(document, syncedAt)).filter((ticket): ticket is PartnerAppTicket => Boolean(ticket))
 }

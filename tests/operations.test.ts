@@ -748,6 +748,39 @@ test('a restricted partner administrator can sync and link records without chang
   assert.equal(blockedSave.feedback?.kind, 'error')
 })
 
+test('a newly synced delivery_app support ticket creates one unread admin notification', () => {
+  const frame = frameWithDemo()
+  const synced = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-02T10:00:00.000Z',
+    records: [],
+    tickets: [{
+      id: 'ticket-1001',
+      partnerUid: 'delivery-app-user-1001',
+      subject: 'Unable to go online',
+      message: 'The app says my account is paused.',
+      status: 'Open',
+      createdAt: '2026-06-02T09:59:00.000Z',
+      updatedAt: null,
+      syncedAt: '2026-06-02T10:00:00.000Z',
+    }],
+  })
+  expectSuccess(synced)
+  const ticketNotification = synced.data.notifications.find((item) => item.category === 'Partner Support Ticket')
+  assert.ok(ticketNotification)
+  assert.equal(ticketNotification?.readAt, null)
+  assert.equal(ticketNotification?.relatedRecordId, 'ticket-1001')
+  assert.match(ticketNotification?.title ?? '', /Unable to go online/)
+
+  const repeated = apply(synced, {
+    type: 'partnerApp.sync-result',
+    at: '2026-06-02T10:01:00.000Z',
+    records: [],
+    tickets: synced.data.partnerAppTickets,
+  })
+  assert.equal(repeated.data.notifications.filter((item) => item.relatedRecordId === 'ticket-1001').length, 1)
+})
+
 test('a live delivery_app application can be reviewed, approved, and linked without a local application record', () => {
   const frame = frameWithDemo()
   const records = apply(frame, {

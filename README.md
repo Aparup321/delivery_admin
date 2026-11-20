@@ -48,6 +48,8 @@ The **Demo data** settings tab lists synthetic partner phone numbers for the del
 
 Partner suspension requires the administrator to choose a whole-number duration from **1 to 365 days** and provide a reason. The suspension end date is shown in the partner directory, activity view, and partner profile. When the period ends, the console automatically restores the partner's eligibility; the same deadline and day count are written to the linked `delivery_app` partner document under `adminSuspension.until` and `adminSuspension.days`. A manual restore clears the scheduled deadline immediately.
 
+When a partner raises a support ticket from **delivery_app**, the app publishes it to the shared `support_tickets` collection. The next live partner sync creates one unread **Partner Support Ticket** notification in this console. Opening the notification goes to the linked partner profile, or to Partner app data when the ticket's account has not been linked yet.
+
 ## Real Firebase sign-in
 
 The **Firebase sign-in** tab is the real access gate. Real sign-in has no demo password or OTP.

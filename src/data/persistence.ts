@@ -113,6 +113,7 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
       ...record,
       applicationStatus: typeof record.applicationStatus === 'string' ? record.applicationStatus : null,
     })),
+    partnerAppTickets: Array.isArray(parsed.partnerAppTickets) ? parsed.partnerAppTickets : [],
   }
 }
 

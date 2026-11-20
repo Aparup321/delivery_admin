@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { AdminSession } from '../auth/adminSession'
-import type { PartnerAppRecord } from '../domain/model'
-import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
+import type { PartnerAppRecord, PartnerAppTicket } from '../domain/model'
+import { readPartnerAppToken, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
@@ -36,6 +36,15 @@ function recordsChanged(previous: PartnerAppRecord[], next: PartnerAppRecord[]) 
   })
 }
 
+function ticketsChanged(previous: PartnerAppTicket[], next: PartnerAppTicket[]) {
+  if (previous.length !== next.length) return true
+  const previousById = new Map(previous.map((ticket) => [ticket.id, ticket]))
+  return next.some((ticket) => {
+    const before = previousById.get(ticket.id)
+    return !before || before.subject !== ticket.subject || before.message !== ticket.message || before.status !== ticket.status || before.updatedAt !== ticket.updatedAt
+  })
+}
+
 /**
  * Loads delivery_app partner records after a Firebase data connection and
  * keeps them fresh while the console stays open. The console identity can
@@ -46,6 +55,7 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
   const { frame, dispatch } = useOperations()
   const lastAttempt = useRef(0)
   const recordsRef = useRef(frame.data.partnerAppRecords)
+  const ticketsRef = useRef(frame.data.partnerAppTickets)
   const config = frame.data.partnerApp
   const connectionKey = [
     config.mode,
@@ -58,7 +68,8 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
 
   useEffect(() => {
     recordsRef.current = frame.data.partnerAppRecords
-  }, [frame.data.partnerAppRecords])
+    ticketsRef.current = frame.data.partnerAppTickets
+  }, [frame.data.partnerAppRecords, frame.data.partnerAppTickets])
 
   useEffect(() => {
     if (!enabled || !readFirebaseAdminSession()) return
@@ -80,10 +91,16 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
       lastAttempt.current = now
       inFlight = true
       try {
-        const records = await syncPartnerAppRecords(config, readPartnerAppToken())
+        const token = readPartnerAppToken()
+          const [records, tickets] = await Promise.all([
+            syncPartnerAppRecords(config, token),
+            // Ticket collection rules may be deployed after the partner
+            // collection rules; keep partner sync working during that rollout.
+            syncPartnerAppTickets(config, token).catch(() => []),
+          ])
         if (!active) return
-        if (!recordsChanged(recordsRef.current, records)) return
-        dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString() })
+        if (!recordsChanged(recordsRef.current, records) && !ticketsChanged(ticketsRef.current, tickets)) return
+        dispatch({ type: 'partnerApp.sync-result', records, tickets, at: new Date().toISOString() })
       } catch (error) {
         if (!active) return
         dispatch({

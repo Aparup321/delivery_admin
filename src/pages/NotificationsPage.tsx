@@ -3,7 +3,7 @@ import type { NotificationCategory, OperationsState } from '../domain/model'
 import { Button, EmptyState, Icon, Panel, relativeTime } from '../components/ui'
 import { useOperations } from '../state/OperationsProvider'
 
-const categories: Array<NotificationCategory | 'All'> = ['All', 'Delivery Assigned', 'Delivery Delayed', 'Unassigned Delivery', 'Assignment Offer Expired', 'Partner Rejected Offer', 'Delivery Completed', 'Partner Restricted', 'Partner Suspended', 'Document Expired', 'Verification Required']
+const categories: Array<NotificationCategory | 'All'> = ['All', 'Delivery Assigned', 'Delivery Delayed', 'Unassigned Delivery', 'Assignment Offer Expired', 'Partner Rejected Offer', 'Delivery Completed', 'Partner Restricted', 'Partner Suspended', 'Partner Support Ticket', 'Document Expired', 'Verification Required']
 
 function categoryIcon(category: NotificationCategory) {
   if (category.includes('Delivery')) return category === 'Delivery Completed' ? 'check-circle' : category === 'Delivery Delayed' ? 'alert' : 'deliveries'

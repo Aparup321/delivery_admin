@@ -25,6 +25,7 @@ export type NotificationCategory =
   | 'Delivery Completed'
   | 'Partner Restricted'
   | 'Partner Suspended'
+  | 'Partner Support Ticket'
   | 'Document Expired'
   | 'Verification Required'
   | 'Partner Application Approved'
@@ -155,6 +156,17 @@ export interface PartnerAppRecord {
   serviceAreas: string[]
   updatedAt: string | null
   fields: Record<string, string>
+  syncedAt: string
+}
+
+export interface PartnerAppTicket {
+  id: string
+  partnerUid: string
+  subject: string
+  message: string
+  status: string
+  createdAt: string
+  updatedAt: string | null
   syncedAt: string
 }
 
@@ -290,6 +302,7 @@ export interface OperationsState {
   applications: PartnerApplication[]
   partnerApp: PartnerAppConfig
   partnerAppRecords: PartnerAppRecord[]
+  partnerAppTickets: PartnerAppTicket[]
   documents: PartnerDocument[]
   assignments: Assignment[]
   offers: AssignmentOffer[]

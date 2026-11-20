@@ -3,7 +3,7 @@ import { beginFirebaseDataConnection } from '../auth/adminSession'
 import { hasFirebaseEnvConfig } from '../config/firebase'
 import { userCan } from '../domain/admin'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
-import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
+import { readPartnerAppToken, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
 import { Button, formatDate, Icon } from './ui'
 import { useOperations } from '../state/OperationsProvider'
 
@@ -31,8 +31,12 @@ export function PartnerAppSettings() {
     setBusy(true)
     setNotice(null)
     try {
-      const records = await syncPartnerAppRecords(saved, readPartnerAppToken())
-      dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString() })
+      const token = readPartnerAppToken()
+      const [records, tickets] = await Promise.all([
+        syncPartnerAppRecords(saved, token),
+        syncPartnerAppTickets(saved, token).catch(() => []),
+      ])
+      dispatch({ type: 'partnerApp.sync-result', records, tickets, at: new Date().toISOString() })
       setNotice(records.length > 0
         ? { kind: 'success', message: `${records.length} partner record${records.length === 1 ? '' : 's'} loaded from delivery_app.` }
         : { kind: 'info', message: 'The connection worked, but the collection returned 0 records. Check the collection name and Firestore rules.' })
