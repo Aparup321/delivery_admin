@@ -920,6 +920,57 @@ test('assigning a linked partner builds a delivery offer write for delivery_app'
   }
 })
 
+test('partner-app completions reconcile local assignments so the partner becomes eligible again', () => {
+  let frame = frameWithDemo()
+  frame = apply(frame, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId: 'DP-0187' })
+  expectSuccess(frame)
+  const deliveryId = 'DLV-1046'
+  const assignment = frame.data.assignments.find((item) => item.deliveryId === deliveryId && item.status === 'Active')!
+  assert.equal(frame.data.partners.find((item) => item.id === 'DP-0187')?.availability, 'On Delivery')
+
+  // A second assignment is refused while the first is active — the exact
+  // symptom of the console never learning about partner-app completions.
+  const blocked = apply(frame, { type: 'delivery.assign', deliveryId: 'DLV-1039', partnerId: 'DP-0187' })
+  assert.equal(blocked.feedback?.kind, 'error')
+  assert.match(blocked.feedback?.message ?? '', /Already assigned/)
+
+  frame = apply(frame, {
+    type: 'delivery.sync-live',
+    at: '2026-06-01T12:00:00.000Z',
+    deliveries: [{ id: deliveryId, status: 'delivered', cancellationReason: null, completedAt: '2026-06-01T11:55:00.000Z' }],
+  })
+  expectSuccess(frame)
+  const synced = frame.data.deliveries.find((item) => item.id === deliveryId)!
+  assert.equal(synced.status, 'Completed')
+  assert.ok(synced.milestones.every((milestone) => milestone.completedAt))
+  const released = frame.data.assignments.find((item) => item.id === assignment.id)!
+  assert.equal(released.status, 'Completed')
+  assert.equal(frame.data.partners.find((item) => item.id === 'DP-0187')?.availability, 'Available')
+
+  // The partner can now take another delivery.
+  const reassigned = apply(frame, { type: 'delivery.assign', deliveryId: 'DLV-1039', partnerId: 'DP-0187' })
+  expectSuccess(reassigned)
+
+  // Partner-side cancellations reconcile the same way.
+  frame = apply(reassigned, {
+    type: 'delivery.sync-live',
+    at: '2026-06-01T13:00:00.000Z',
+    deliveries: [{ id: 'DLV-1039', status: 'cancelled', cancellationReason: 'Customer unreachable', completedAt: '2026-06-01T12:45:00.000Z' }],
+  })
+  expectSuccess(frame)
+  assert.equal(frame.data.deliveries.find((item) => item.id === 'DLV-1039')?.status, 'Cancelled')
+  assert.equal(frame.data.partners.find((item) => item.id === 'DP-0187')?.availability, 'Available')
+})
+
+test('assigning an unlinked partner says clearly that no offer was sent', () => {
+  let frame = frameWithDemo()
+  frame = identifyMainAdmin(frame)
+  const result = apply(frame, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId: 'DP-0187' })
+  expectSuccess(result)
+  // Seeded demo partners have no partnerAppUid, so nothing reaches the app.
+  assert.match(result.feedback?.message ?? '', /no offer was sent/)
+})
+
 test('demo partner phone numbers auto-link synced partner app records', () => {
   const synced = apply(frameWithDemo(), {
     type: 'partnerApp.sync-result',

@@ -12,12 +12,14 @@ export interface AppFrame {
 }
 
 export type OperationAction =
-  | { type: 'delivery.create'; pickup: string; drop: string; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string; category?: Delivery['category']; itemCount?: number; paymentMode?: Delivery['paymentMode']; earnings?: number | null }
+  | { type: 'delivery.create'; pickup: string; drop: string; pickupLocation?: Delivery['pickupLocation']; dropLocation?: Delivery['dropLocation']; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string; category?: Delivery['category']; itemCount?: number; paymentMode?: Delivery['paymentMode']; earnings?: number | null }
   | { type: 'delivery.assign'; deliveryId: string; partnerId: string }
+  | { type: 'delivery.unassign'; deliveryId: string; reason: string }
   | { type: 'delivery.advance'; deliveryId: string }
   | { type: 'delivery.delay'; deliveryId: string; reason: string }
   | { type: 'delivery.clear-delay'; deliveryId: string; reason: string }
   | { type: 'delivery.cancel'; deliveryId: string; reason: string }
+  | { type: 'delivery.sync-live'; at: string; deliveries: Array<{ id: string; status: 'delivered' | 'cancelled'; cancellationReason: string | null; completedAt: string | null }> }
   | { type: 'offer.create'; deliveryId: string; partnerId: string }
   | { type: 'offer.send'; offerId: string }
   | { type: 'offer.accept'; offerId: string }
@@ -52,6 +54,7 @@ export type OperationAction =
 const permissionByAction: Partial<Record<OperationAction['type'], Permission>> = {
   'delivery.create': 'delivery-management',
   'delivery.assign': 'assignment',
+  'delivery.unassign': 'assignment',
   'delivery.advance': 'assignment',
   'delivery.delay': 'delivery-management',
   'delivery.clear-delay': 'delivery-management',
@@ -393,6 +396,70 @@ function releaseAssignment(data: OperationsState, assignmentId: string, reason: 
   updatePartnerAvailability(data, assignment.partnerId)
 }
 
+/**
+ * Mirrors terminal partner-app lifecycle events onto the local records. The
+ * console's assignment records are otherwise frozen: a partner who completes a
+ * delivery in their app stayed "On Delivery" here forever and was refused by
+ * every future assignment. Returns the number of records changed.
+ */
+function syncLiveDeliveries(
+  data: OperationsState,
+  deliveries: Array<{ id: string; status: 'delivered' | 'cancelled'; cancellationReason: string | null; completedAt: string | null }>,
+  at: string,
+): number {
+  let changed = 0
+
+  for (const live of deliveries) {
+    const delivery = data.deliveries.find((item) => item.id === live.id)
+    if (!delivery) continue
+    if (delivery.status === 'Completed' || delivery.status === 'Cancelled') continue
+
+    const assignment = delivery.assignmentId
+      ? data.assignments.find((item) => item.id === delivery.assignmentId)
+      : undefined
+
+    const previous = delivery.status
+    const completedAt = live.completedAt ?? at
+
+    if (live.status === 'delivered') {
+      delivery.status = 'Completed'
+      delivery.statusBeforeDelay = null
+      delivery.delayReason = null
+      for (const milestone of delivery.milestones) {
+        if (!milestone.completedAt) {
+          milestone.completedAt = completedAt
+          milestone.completedBy = 'Partner app'
+        }
+      }
+      if (assignment?.status === 'Active') {
+        releaseAssignment(data, assignment.id, 'Delivery completed by the partner app', at, 'Completed')
+      }
+      notify(data, 'Delivery Completed', 'Delivery completed by the partner', `${delivery.id} was completed in the partner app.`, `/admin/deliveries/${delivery.id}`, delivery.id, at)
+    } else {
+      delivery.status = 'Cancelled'
+      delivery.statusBeforeDelay = null
+      delivery.delayReason = null
+      if (assignment?.status === 'Active') {
+        releaseAssignment(data, assignment.id, `Cancelled in the partner app${live.cancellationReason ? `: ${live.cancellationReason}` : ''}`, at)
+      }
+    }
+
+    audit(
+      data,
+      'Delivery status changed',
+      'Delivery',
+      delivery.id,
+      previous,
+      delivery.status,
+      `Synced from the partner app live record.${live.cancellationReason ? ` Reason: ${live.cancellationReason}` : ''}`,
+      at,
+    )
+    changed += 1
+  }
+
+  return changed
+}
+
 function activeOffers(data: OperationsState, deliveryId: string) {
   return data.offers.filter((offer) => offer.deliveryId === deliveryId && ['Created', 'Sent', 'Awaiting Response'].includes(offer.status))
 }
@@ -526,6 +593,8 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
         id, pickup: action.pickup.trim(), drop: action.drop.trim(),
         pickupAddress: `Pickup point · ${action.pickup.trim()}`,
         dropAddress: `Drop point · ${action.drop.trim()}`,
+        pickupLocation: action.pickupLocation,
+        dropLocation: action.dropLocation,
         packageSize: action.packageSize, estimatedWeightKg: action.weight,
         vehicleRequirement: action.vehicle, scheduledStart: starts.toISOString(), scheduledEnd: ends.toISOString(),
         specialInstructions: action.instructions.trim() || 'No special instructions',
@@ -545,7 +614,29 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const delivery = findDelivery(data, action.deliveryId)
       const partner = findPartner(data, action.partnerId)
       assignPartner(data, delivery.id, partner.id, at)
-      return { message: `${partner.name} assigned to ${delivery.id}.` }
+      // An unlinked partner has no delivery_app Firestore record, so the
+      // write-through cannot publish an offer and the partner will never see
+      // this assignment. Say so instead of reporting a silent success.
+      return {
+        message: partner.partnerAppUid
+          ? `${partner.name} assigned to ${delivery.id}.`
+          : `${partner.name} assigned to ${delivery.id}, but this partner is not linked to a partner app account — no offer was sent. Link them under Partners → Partner app first.`,
+        kind: partner.partnerAppUid ? 'success' : 'info',
+      }
+    }
+    case 'delivery.unassign': {
+      const delivery = findDelivery(data, action.deliveryId)
+      const assignment = delivery.assignmentId ? data.assignments.find((item) => item.id === delivery.assignmentId && item.status === 'Active') : undefined
+      if (!assignment) throw new Error('This delivery has no active partner assignment.')
+      if (delivery.status !== 'Assigned') throw new Error('This partner has accepted or started the delivery and cannot be removed.')
+      const partner = findPartner(data, assignment.partnerId)
+      releaseAssignment(data, assignment.id, action.reason.trim() || 'Removed by administrator', at)
+      delivery.assignmentId = null
+      delivery.status = 'Unassigned'
+      delivery.milestones = delivery.milestones.map((milestone) => ({ ...milestone, completedAt: null, completedBy: null }))
+      audit(data, 'Delivery status changed', 'Delivery', delivery.id, partner.id, 'Unassigned', action.reason, at)
+      notify(data, 'Unassigned Delivery', 'Partner removed from delivery', `${partner.name} was removed from ${delivery.id} before acceptance.`, `/admin/deliveries/${delivery.id}/assign`, delivery.id, at)
+      return { message: `${partner.name} was removed from ${delivery.id}.` }
     }
     case 'delivery.advance': {
       const delivery = findDelivery(data, action.deliveryId)
@@ -594,6 +685,11 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       delivery.delayReason = null
       audit(data, 'Delivery status changed', 'Delivery', delivery.id, previous, delivery.status, action.reason, at)
       return { message: `Delay cleared for ${delivery.id}.` }
+    }
+    case 'delivery.sync-live': {
+      // Terminal partner-app events are reconciled by the dedicated
+      // appReducer branch, which stays silent when nothing changed.
+      return { message: 'No delivery changes to sync.', kind: 'info' }
     }
     case 'delivery.cancel': {
       const delivery = findDelivery(data, action.deliveryId)
@@ -1126,6 +1222,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
     case 'partner.expire-suspensions':
       throw new Error('Internal suspension sweep must be handled by the scheduler.')
   }
+  return { message: 'No operation performed.' }
 }
 
 function expireDue(data: OperationsState, now: number) {
@@ -1164,6 +1261,21 @@ function expireSuspensions(data: OperationsState, now: number) {
 }
 
 export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
+  if (action.type === 'delivery.sync-live') {
+    // Reconciles console records with the partner app's live lifecycle: when
+    // the partner completes or cancels in their app, the matching local
+    // assignment is released so the partner becomes eligible again. Silent
+    // while there is nothing to sync, because it runs on a poll.
+    const data = structuredClone(frame.data)
+    try {
+      const count = syncLiveDeliveries(data, action.deliveries, action.at)
+      if (!count) return frame
+      return { ...frame, data, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'info', message: `${count} delivery record${count === 1 ? '' : 's'} synced from the partner app.` } }
+    } catch (error) {
+      return { ...frame, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'error', message: error instanceof Error ? error.message : 'Partner app sync could not be recorded.' } }
+    }
+  }
+
   if (action.type === 'offer.expire-due') {
     const data = structuredClone(frame.data)
     try {

@@ -1,6 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { loadOperationsState, saveOperationsState } from '../data/persistence'
 import { readPartnerAppToken } from '../services/partnerApp'
+import { fetchLiveDeliveries } from '../services/liveDeliveries'
+import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { writeDeliveryAssignment, writeDeliveryCancellation } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
@@ -47,6 +49,63 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
     const timer = window.setInterval(() => dispatch({ type: 'partner.expire-suspensions', now: Date.now() }), 30_000)
     return () => window.clearInterval(timer)
   }, [frame.data.partners])
+
+  // Polls the partner app's live deliveries and reconciles terminal lifecycle
+  // events (completed or cancelled in the partner app) onto the local records.
+  // Without this, a partner who finished a delivery stayed "On Delivery" here
+  // and every later assignment was refused. Best-effort: the tracking page
+  // surfaces connection errors for operations.
+  const liveSyncConfigKey = [
+    frame.data.partnerApp.mode,
+    frame.data.partnerApp.projectId,
+    frame.data.partnerApp.databaseId,
+    frame.data.partnerApp.apiKey,
+  ].join('|')
+
+  useEffect(() => {
+    const config = latestData.current.partnerApp
+    if (config.mode !== 'firestore' || !config.projectId.trim()) return
+    if (!hasFirebaseAdminSession()) return
+
+    let active = true
+
+    const sync = async () => {
+      try {
+        const live = await fetchLiveDeliveries(config, readPartnerAppToken())
+        if (!active) return
+
+        const pending = live
+          .filter((item) => {
+            const terminal = item.nativeStatus === 'delivered' || item.nativeStatus === 'cancelled'
+              || item.status === 'Completed' || item.status === 'Cancelled'
+            if (!terminal) return false
+            const local = latestData.current.deliveries.find((delivery) => delivery.id === item.id)
+            return Boolean(local) && local!.status !== 'Completed' && local!.status !== 'Cancelled'
+          })
+          .map((item) => ({
+            id: item.id,
+            status: (item.nativeStatus === 'cancelled' || item.status === 'Cancelled' ? 'cancelled' : 'delivered') as 'delivered' | 'cancelled',
+            cancellationReason: item.cancellationReason,
+            completedAt: item.completedAt,
+          }))
+
+        if (pending.length) {
+          dispatch({ type: 'delivery.sync-live', at: new Date().toISOString(), deliveries: pending })
+        }
+      } catch {
+        // Polling is best-effort; the tracking page surfaces sync errors.
+      }
+    }
+
+    void sync()
+    const timer = window.setInterval(() => { void sync() }, 30_000)
+
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+    // The config key covers every connection value that changes the request.
+  }, [liveSyncConfigKey, dispatch])
 
   const performWrite = useCallback(async (intent: PartnerAppWriteIntent) => {
     const key = `${intent.kind}:${intent.targetId}`

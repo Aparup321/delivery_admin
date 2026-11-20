@@ -47,8 +47,8 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
       { id: `${delivery.id}-drop`, label: `Drop · ${liveDelivery.destination.name}`, latitude: liveDelivery.destination.latitude, longitude: liveDelivery.destination.longitude, kind: 'drop' as const },
       ...(liveDelivery.currentLocation ? [{ id: `${delivery.id}-partner`, label: liveDelivery.partnerName, latitude: liveDelivery.currentLocation.latitude, longitude: liveDelivery.currentLocation.longitude, kind: 'partner' as const }] : []),
     ] : [
-      { id: `${delivery.id}-pickup`, label: `Pickup · ${delivery.pickup}`, ...serviceAreaCoordinate(delivery.pickup), kind: 'pickup' as const },
-      { id: `${delivery.id}-drop`, label: `Drop · ${delivery.drop}`, ...serviceAreaCoordinate(delivery.drop), kind: 'drop' as const },
+      { id: `${delivery.id}-pickup`, label: `Pickup · ${delivery.pickup}`, ...(delivery.pickupLocation ?? serviceAreaCoordinate(delivery.pickup)), kind: 'pickup' as const },
+      { id: `${delivery.id}-drop`, label: `Drop · ${delivery.drop}`, ...(delivery.dropLocation ?? serviceAreaCoordinate(delivery.drop)), kind: 'drop' as const },
     ],
   }), [liveDelivery, delivery.id, delivery.pickup, delivery.drop])
 
