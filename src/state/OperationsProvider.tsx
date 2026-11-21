@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
+import { readDemoAdminSession } from '../auth/adminSession'
 import { loadOperationsState, saveOperationsState } from '../data/persistence'
 import { readPartnerAppToken } from '../services/partnerApp'
 import { fetchLiveDeliveriesCached } from '../services/liveDeliveries'
@@ -52,7 +53,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
 
   const refreshSharedState = useCallback(async () => {
     const config = latestData.current.partnerApp
-    if (!hasFirebaseAdminSession() || config.mode !== 'firestore' || !config.projectId.trim()) {
+    if (readDemoAdminSession() || !hasFirebaseAdminSession() || config.mode !== 'firestore' || !config.projectId.trim()) {
       setSharedState({ status: 'local', lastSyncedAt: null, updatedBy: null, error: null })
       return
     }
@@ -97,7 +98,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (!sharedReady || !hasFirebaseAdminSession()) return
+    if (!sharedReady || readDemoAdminSession() || !hasFirebaseAdminSession()) return
     const config = frame.data.partnerApp
     if (config.mode !== 'firestore' || !config.projectId.trim()) return
     const payload = JSON.stringify(toSharedPayload(frame.data))
@@ -117,7 +118,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   }, [frame.data, sharedReady])
 
   useEffect(() => {
-    if (!sharedReady || !hasFirebaseAdminSession()) return
+    if (!sharedReady || readDemoAdminSession() || !hasFirebaseAdminSession()) return
     const timer = window.setInterval(() => { void refreshSharedState() }, 60_000)
     return () => window.clearInterval(timer)
   }, [sharedReady, refreshSharedState])
