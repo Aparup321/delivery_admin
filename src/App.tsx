@@ -14,6 +14,7 @@ import { AdminLoginPage } from './pages/LoginPage'
 import { PartnerProfilePage, PartnersPage } from './pages/PartnersPage'
 import { KycReviewPage } from './pages/KycReviewPage'
 import { NotificationsPage } from './pages/NotificationsPage'
+import { SupportTicketsPage } from './pages/SupportTicketsPage'
 import { AuditLogsPage } from './pages/AuditLogsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { AdministratorsPage } from './pages/AdministratorsPage'
@@ -37,6 +38,7 @@ function routeLabel(pathname: string) {
   if (pathname === '/admin/partners') return 'Partners'
   if (pathname === '/admin/kyc') return 'KYC Review'
   if (pathname === '/admin/notifications') return 'Notifications'
+  if (pathname === '/admin/support') return 'Support'
   if (pathname === '/admin/audit-logs') return 'Audit Logs'
   if (pathname === '/admin/settings') return 'Settings'
   if (pathname === '/admin/administrators') return 'Administrators'
@@ -50,6 +52,7 @@ const navItems: Array<{ label: string; path: string; icon: IconName; section?: A
   { label: 'Partners', path: '/admin/partners', icon: 'partners', section: 'partners' },
   { label: 'KYC Review', path: '/admin/kyc', icon: 'kyc', mainOnly: true },
   { label: 'Notifications', path: '/admin/notifications', icon: 'notifications' },
+  { label: 'Support', path: '/admin/support', icon: 'file' },
   { label: 'Audit Logs', path: '/admin/audit-logs', icon: 'audit', section: 'audit-logs' },
   { label: 'Settings', path: '/admin/settings', icon: 'settings', section: 'settings' },
   { label: 'Administrators', path: '/admin/administrators', icon: 'shield', mainOnly: true },
@@ -188,7 +191,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
 
   function canOpenRoute(pathname: string) {
     if (mainAdmin) return true
-    if (pathname === '/admin' || pathname === '/admin/notifications') return true
+    if (pathname === '/admin' || pathname === '/admin/notifications' || pathname === '/admin/support') return true
     if (pathname === '/admin/kyc' || pathname === '/admin/administrators') return false
     if (pathname === '/admin/settings') return userHasSection(user, 'settings')
     if (pathname === '/admin/audit-logs') return userHasSection(user, 'audit-logs')
@@ -212,10 +215,11 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
         : activeLabel === 'Administrators' ? 'Main administrators have full access. Restricted administrators only receive the sections and actions selected here.'
           : activeLabel === 'KYC Review' ? 'Review onboarding KYC applications from this console and delivery_app. Main administrator approval only.'
             : activeLabel === 'Notifications' ? 'Event-driven operational notifications.'
+              : activeLabel === 'Support' ? 'Partner support tickets raised from delivery_app.'
               : activeLabel === 'Audit Logs' ? 'Append-only history of administrative operations.'
                 : 'Operational configuration and live partner synchronization.'
 
-  const routeKnown = ['/admin', '/admin/deliveries', '/admin/tracking', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/audit-logs', '/admin/settings', '/admin/administrators'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
+  const routeKnown = ['/admin', '/admin/deliveries', '/admin/tracking', '/admin/partners', '/admin/kyc', '/admin/notifications', '/admin/support', '/admin/audit-logs', '/admin/settings', '/admin/administrators'].includes(routePath) || Boolean(deliveryMatch || partnerMatch)
   const accessDenied = routeKnown && !canOpenRoute(routePath)
   const showHeading = routeKnown && !isAssignmentRoute && !accessDenied
   const partnerViewLabel = partnersView === 'new' ? 'Create partner' : partnersView === 'app' ? 'Partner app data' : partnersView === 'activity' ? 'Partner activity' : partnersView === 'expiring' ? 'Expiring documents' : ''
@@ -251,7 +255,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
         <span className="side-nav-label">OPERATIONS</span>
         {visibleNavItems.map((item) => <button key={item.path} className={`nav-item ${isActive(routePath, item.path) ? 'active' : ''}`} onClick={() => open(item.path)} title={collapsed ? item.label : undefined} aria-current={isActive(routePath, item.path) ? 'page' : undefined}><Icon name={item.icon} size={18} /><span>{item.label}</span>{item.label === 'Notifications' && unreadCount > 0 && <b className="nav-count">{unreadCount}</b>}</button>)}
       </nav>
-      <div className="sidebar-bottom"><div className="side-support-note"><Icon name="shield" size={15} /><span>Firebase secured<br />Authorized operators</span></div><button className="profile-card" onClick={() => setAccountOpen(true)} aria-haspopup="dialog" aria-label="Open Administrator account details"><span className="avatar">{initials(frame.data.user.name)}</span><span className="profile-copy"><strong>{frame.data.user.name}</strong><small>{frame.data.user.role}</small></span><Icon name="more" size={16} /></button></div>
+      <div className="sidebar-bottom"><div className="side-support-note"><Icon name="shield" size={15} /><span>Firebase secured<br />Authorized operators</span></div><button className="profile-card" onClick={() => setAccountOpen(true)} aria-haspopup="dialog" title="Open account details"><span className="avatar">{initials(frame.data.user.name)}</span><span className="profile-copy"><strong>{frame.data.user.name}</strong><small>{frame.data.user.role}</small></span><Icon name="more" size={16} /></button></div>
     </aside>
 
     <div className="main-area">
@@ -264,7 +268,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
           {search.trim() && <div className="global-search-results">{matches.length ? matches.map((item) => <button key={item.path} onClick={() => open(item.path)}><span className="search-result-icon"><Icon name={item.type === 'Delivery' ? 'deliveries' : 'partners'} size={15} /></span><span><strong>{item.label}</strong><small>{item.detail}</small></span><small>{item.type}</small></button>) : <button onClick={submitSearch}><span className="search-result-icon"><Icon name="search" size={15} /></span><span><strong>Search deliveries for “{search}”</strong><small>Open filtered delivery list</small></span><Icon name="arrow" size={14} /></button>}</div>}
         </div>
         <button className={`topbar-notification ${activeLabel === 'Notifications' ? 'topbar-selected' : ''}`} onClick={() => open('/admin/notifications')} aria-label={`Notifications${unreadCount ? `, ${unreadCount} unread` : ''}`}><Icon name="notifications" size={18} />{unreadCount > 0 && <span>{unreadCount > 9 ? '9+' : unreadCount}</span>}</button>
-        <button className="topbar-user" onClick={() => setAccountOpen(true)} aria-label="Open Administrator account details" aria-haspopup="dialog" title="Administrator account"><span className="avatar avatar-small">{initials(frame.data.user.name)}</span><Icon name="chevron" size={14} /></button>
+        <button className="topbar-user" onClick={() => setAccountOpen(true)} aria-label={`${initials(frame.data.user.name)} ${frame.data.user.name} ${frame.data.user.role} — open account details`} aria-haspopup="dialog" title="Administrator account"><span className="avatar avatar-small">{initials(frame.data.user.name)}</span><Icon name="chevron" size={14} /></button>
       </header>
 
       {mobileNavOpen && <button className="mobile-nav-backdrop" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
@@ -284,6 +288,7 @@ function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSig
           {routePath === '/admin/kyc' && <KycReviewPage data={frame.data} open={open} />}
           {partnerMatch && <PartnerProfilePage data={frame.data} open={open} partnerId={selectedPartnerId} initialDocumentId={query.get('document')} />}
           {routePath === '/admin/notifications' && <NotificationsPage data={frame.data} open={open} />}
+          {routePath === '/admin/support' && <SupportTicketsPage data={frame.data} open={open} />}
           {routePath === '/admin/audit-logs' && <AuditLogsPage data={frame.data} />}
           {routePath === '/admin/settings' && <SettingsPage data={frame.data} initialTab={query.get('tab') ?? undefined} />}
           {routePath === '/admin/administrators' && <AdministratorsPage data={frame.data} />}

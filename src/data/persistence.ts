@@ -121,6 +121,7 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
             : null,
     })),
     partnerAppTickets: Array.isArray(parsed.partnerAppTickets) ? parsed.partnerAppTickets : [],
+    partnerAppDocuments: Array.isArray(parsed.partnerAppDocuments) ? parsed.partnerAppDocuments : [],
   }
 }
 

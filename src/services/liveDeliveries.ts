@@ -19,6 +19,17 @@ export interface LiveDeliveryEvent {
   at: string
 }
 
+/** Text-only handover proof written when the partner closes the delivery. */
+export interface LiveDeliveryProof {
+  method: 'otp'
+  verifiedAt: string
+  recipientName: string | null
+  note: string | null
+  latitude: number | null
+  longitude: number | null
+  accuracy: number | null
+}
+
 export interface LivePartnerLocation {
   latitude: number
   longitude: number
@@ -36,6 +47,7 @@ export interface LiveDelivery {
   status: string
   nativeStatus: string
   source: string
+  category: 'Grocery' | 'Restaurant'
   pickup: LiveDeliveryStop
   destination: LiveDeliveryStop
   distanceKm: number
@@ -46,11 +58,14 @@ export interface LiveDelivery {
   customerName: string
   customerPhoneMasked: string
   note: string | null
+  dropOtp: string | null
   requestedAt: string | null
   acceptedAt: string | null
   completedAt: string | null
   cancellationReason: string | null
   events: LiveDeliveryEvent[]
+  partnerResponse: { decision: 'rejected'; at: string; reason: string | null } | null
+  proof: LiveDeliveryProof | null
   currentLocation: LivePartnerLocation | null
   updatedAt: string | null
 }
@@ -116,6 +131,28 @@ function normalizeLiveDelivery(document: unknown): LiveDelivery | null {
   if (!id || !pickup || !destination) return null
 
   const nativeStatus = asText(fields.status) || 'accepted'
+  const proofRecord = isRecord(fields.proof) ? fields.proof : null
+  const proof: LiveDeliveryProof | null =
+    proofRecord && asText(proofRecord.verifiedAt)
+      ? {
+        method: 'otp',
+        verifiedAt: asText(proofRecord.verifiedAt),
+        recipientName: asText(proofRecord.recipientName) || null,
+        note: asText(proofRecord.note) || null,
+        latitude:
+          typeof proofRecord.latitude === 'number'
+            ? proofRecord.latitude
+            : null,
+        longitude:
+          typeof proofRecord.longitude === 'number'
+            ? proofRecord.longitude
+            : null,
+        accuracy:
+          typeof proofRecord.accuracy === 'number'
+            ? proofRecord.accuracy
+            : null,
+      }
+      : null
 
   return {
     id,
@@ -126,6 +163,7 @@ function normalizeLiveDelivery(document: unknown): LiveDelivery | null {
     status: asText(fields.adminStatus) || nativeStatus,
     nativeStatus,
     source: asText(fields.source) || 'live',
+    category: asText(fields.category) === 'Restaurant' ? 'Restaurant' : 'Grocery',
     pickup,
     destination,
     distanceKm: asNumber(fields.distanceKm),
@@ -136,11 +174,20 @@ function normalizeLiveDelivery(document: unknown): LiveDelivery | null {
     customerName: asText(fields.customerName),
     customerPhoneMasked: asText(fields.customerPhoneMasked),
     note: asText(fields.note) || null,
+    dropOtp: asText(fields.dropOtp) || null,
     requestedAt: asText(fields.requestedAt) || null,
     acceptedAt: asText(fields.acceptedAt) || null,
     completedAt: asText(fields.completedAt) || null,
     cancellationReason: asText(fields.cancellationReason) || null,
     events: asEvents(fields.events),
+    partnerResponse: isRecord(fields.partnerResponse) && asText(fields.partnerResponse.decision) === 'rejected'
+      ? {
+        decision: 'rejected' as const,
+        at: asText(fields.partnerResponse.at) || new Date().toISOString(),
+        reason: asText(fields.partnerResponse.reason) || null,
+      }
+      : null,
+    proof,
     currentLocation: asLocation(fields.currentLocation),
     updatedAt: asText(fields.updatedAt) || null,
   }
@@ -167,9 +214,12 @@ function liveConnectionKey(config: PartnerAppConfig) {
 }
 
 /** The last successful read for this connection, when it is still fresh. */
-export function readCachedLiveDeliveries(config: PartnerAppConfig) {
+export function readCachedLiveDeliveries(
+  config: PartnerAppConfig,
+  maxAgeMs = LIVE_CACHE_MS,
+) {
   if (!liveCache || liveCache.key !== liveConnectionKey(config)) return null
-  return Date.now() - liveCache.at < LIVE_CACHE_MS ? liveCache.deliveries : null
+  return Date.now() - liveCache.at < maxAgeMs ? liveCache.deliveries : null
 }
 
 /** Forces the next read to hit Firestore (used by explicit refresh actions). */
@@ -243,9 +293,10 @@ export async function fetchLiveDeliveries(
 export async function fetchLiveDeliveriesCached(
   config: PartnerAppConfig,
   token: string,
+  maxAgeMs = LIVE_CACHE_MS,
 ): Promise<LiveDelivery[]> {
   const key = liveConnectionKey(config)
-  const cached = readCachedLiveDeliveries(config)
+  const cached = readCachedLiveDeliveries(config, maxAgeMs)
   if (cached) return cached
   if (liveInFlight?.key === key) return liveInFlight.promise
 

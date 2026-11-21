@@ -1,6 +1,6 @@
 import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCan } from '../domain/admin.ts'
 import { createDropOtp } from '../domain/estimates.ts'
-import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type AuditEventType, type AuditLogEntry, type Delivery, type DocumentStatus, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type Permission } from '../domain/model.ts'
+import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type Assignment, type AuditEventType, type AuditLogEntry, type Delivery, type DeliveryMilestoneName, type DeliveryStatus, type DocumentStatus, type LiveOrderSnapshot, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppDocument, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type PartnerDocumentReview, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
 import { getPartnerEligibility, getActiveAssignment, nextPartnerId } from '../domain/operations.ts'
 import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
@@ -20,6 +20,7 @@ export type OperationAction =
   | { type: 'delivery.clear-delay'; deliveryId: string; reason: string }
   | { type: 'delivery.cancel'; deliveryId: string; reason: string }
   | { type: 'delivery.sync-live'; at: string; deliveries: Array<{ id: string; status: 'delivered' | 'cancelled'; cancellationReason: string | null; completedAt: string | null }> }
+  | { type: 'delivery.sync-live-orders'; at: string; orders: LiveOrderSnapshot[] }
   | { type: 'offer.create'; deliveryId: string; partnerId: string }
   | { type: 'offer.send'; offerId: string }
   | { type: 'offer.accept'; offerId: string }
@@ -36,7 +37,9 @@ export type OperationAction =
   | { type: 'application.reject'; applicationId: string; reason: string }
   | { type: 'partnerApp.save'; config: Pick<PartnerAppConfig, 'mode' | 'projectId' | 'apiKey' | 'databaseId' | 'partnersCollection' | 'endpointUrl'> }
   | { type: 'partnerApp.connected'; at: string }
-  | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; tickets?: PartnerAppTicket[]; at: string }
+  | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; tickets?: PartnerAppTicket[]; documents?: PartnerAppDocument[]; at: string }
+  | { type: 'partnerApp.ticket-status'; ticketId: string; status: string; at: string }
+  | { type: 'partnerApp.document-review'; uid: string; documentKey: string; review: PartnerDocumentReview; at: string }
   | { type: 'partnerApp.failed'; message: string }
   | { type: 'partnerApp.link'; recordId: string; partnerId: string }
   | { type: 'partnerApp.unlink'; partnerId: string }
@@ -81,6 +84,9 @@ const permissionByAction: Partial<Record<OperationAction['type'], Permission>> =
   'partnerApp.unlink': 'partner-management',
   'partnerApp.review': 'application-review',
   'partnerApp.write-result': 'read',
+  'partnerApp.ticket-status': 'partner-management',
+  'partnerApp.document-review': 'document-review',
+  'delivery.sync-live-orders': 'read',
   'notification.read': 'read',
   'notification.read-all': 'read',
   'settings.save': 'settings',
@@ -230,6 +236,290 @@ function autoLinkPartnerAppRecords(data: OperationsState) {
   }
 }
 
+/**
+ * Creates local directory records for already-approved delivery_app accounts.
+ * Without this, a fresh console has live partner records but an empty All
+ * Partners directory and no assignable rider records.
+ */
+function importApprovedPartnerAppRecords(data: OperationsState, at: string) {
+  let changed = 0
+  for (const record of data.partnerAppRecords) {
+    const approved = record.applicationStatus?.trim().toLowerCase() === 'approved'
+      || record.status?.trim().toLowerCase() === 'active'
+    if (!approved) continue
+    if (data.partners.some((partner) => partner.partnerAppUid === record.id)) continue
+
+    const nameKey = normalizeLinkName(record.name)
+    const unlinkedMatches = nameKey
+      ? data.partners.filter((partner) => !partner.partnerAppUid && normalizeLinkName(partner.name) === nameKey)
+      : []
+    if (unlinkedMatches.length === 1) {
+      unlinkedMatches[0].partnerAppUid = record.id
+      changed += 1
+      continue
+    }
+
+    const partnerId = nextPartnerId(data)
+    const registration = String(record.fields.registrationNumber ?? '').replace(/\D/g, '')
+    const online = record.isOnline === true
+      || record.status?.trim().toLowerCase() === 'online'
+      || record.status?.trim().toLowerCase() === 'available'
+    const partner: Partner = {
+      id: partnerId,
+      name: record.name,
+      maskedPhone: maskPhoneNumber(record.phone),
+      demoPhone: null,
+      maskedEmail: maskEmailAddress(record.email),
+      registeredAt: record.updatedAt ?? at,
+      vehicle: adminVehicleFor(record.vehicle),
+      maskedRegistration: registration.length >= 4 ? `WB-••-${registration.slice(-4)}` : 'Not provided',
+      serviceAreas: [...record.serviceAreas],
+      availability: online ? 'Available' : 'Offline',
+      restrictedReason: null,
+      suspendedReason: null,
+      suspendedUntil: null,
+      suspensionDays: null,
+      needsOperationalReview: false,
+      partnerAppUid: record.id,
+      source: 'delivery_app',
+    }
+    data.partners.unshift(partner)
+    partnerHistory(data, partnerId, 'Imported from delivery_app', `Approved delivery_app account ${record.id} added to the admin partner directory.`, null, at)
+    audit(data, 'Partner created', 'Partner', partnerId, 'Not in the directory', `${partnerId} · ${partner.name} · delivery_app`, 'Imported from an approved delivery_app account.', at)
+    changed += 1
+  }
+  return changed
+}
+
+const LIVE_MILESTONE_BY_STATUS: Record<string, DeliveryMilestoneName> = {
+  accepted: 'Accepted',
+  pickup_arrived: 'Pickup Arrived',
+  picked_up: 'Picked Up',
+  in_transit: 'In Transit',
+  drop_arrived: 'Drop Arrived',
+  delivered: 'Delivered',
+}
+
+function liveMilestones(order: LiveOrderSnapshot): Delivery['milestones'] {
+  return DELIVERY_MILESTONES.map((name) => {
+    const event = [...order.events]
+      .filter((item) => LIVE_MILESTONE_BY_STATUS[item.status] === name)
+      .sort((left, right) => right.at.localeCompare(left.at))[0]
+    return {
+      name,
+      completedAt: event?.at ?? null,
+      completedBy: event ? 'Partner app' : null,
+    }
+  })
+}
+
+function localStatusFromLive(order: LiveOrderSnapshot): DeliveryStatus {
+  if (order.nativeStatus === 'delivered') return 'Completed'
+  if (order.nativeStatus === 'cancelled') return 'Cancelled'
+  if (['picked_up', 'in_transit', 'drop_arrived'].includes(order.nativeStatus)) return 'In Transit'
+  if (['accepted', 'pickup_arrived'].includes(order.nativeStatus)) return 'Assigned'
+  return order.partnerUid ? 'Assigned' : 'Unassigned'
+}
+
+/**
+ * Reconciles every live order into the shared local queue. New delivery_app
+ * orders become visible in Deliveries/Overview, and acceptance, rejection and
+ * in-progress milestones stay in step instead of waiting for completion.
+ */
+function syncLiveOrders(data: OperationsState, orders: LiveOrderSnapshot[], at: string): number {
+  let changed = importApprovedPartnerAppRecords(data, at)
+  for (const order of orders) {
+    const livePartner = order.partnerUid
+      ? data.partners.find((partner) => partner.partnerAppUid === order.partnerUid)
+      : undefined
+    let delivery = data.deliveries.find((item) => item.id === order.id)
+    let previousLiveStatus: string | null | undefined = null
+    let previousStatus: DeliveryStatus | null = delivery?.status ?? null
+    const isNew = !delivery
+    const requestedAt = order.requestedAt ?? order.acceptedAt ?? at
+    const milestones = liveMilestones(order)
+    const nextStatus = localStatusFromLive(order)
+    let localChanged = false
+
+    if (!delivery) {
+      delivery = {
+        id: order.id,
+        pickup: order.pickup.name || 'Pickup',
+        drop: order.destination.name || 'Drop',
+        pickupAddress: order.pickup.address || order.pickup.name,
+        dropAddress: order.destination.address || order.destination.name,
+        pickupLocation: { latitude: order.pickup.latitude, longitude: order.pickup.longitude },
+        dropLocation: { latitude: order.destination.latitude, longitude: order.destination.longitude },
+        packageSize: 'Small',
+        estimatedWeightKg: 0,
+        vehicleRequirement: 'Any',
+        scheduledStart: requestedAt,
+        scheduledEnd: new Date(new Date(requestedAt).getTime() + Math.max(8, order.etaMinutes) * 60_000).toISOString(),
+        specialInstructions: order.note || 'No special instructions',
+        createdAt: requestedAt,
+        status: nextStatus,
+        statusBeforeDelay: null,
+        delayReason: null,
+        assignmentId: null,
+        milestones,
+        category: order.category,
+        itemCount: order.itemCount,
+        paymentMode: order.paymentMode,
+        partnerEarnings: order.earnings,
+        liveStatus: order.rejected ? 'rejected' : order.nativeStatus,
+        publicationStatus: 'Published',
+        publishError: null,
+      }
+      data.deliveries.unshift(delivery)
+      localChanged = true
+      if (!['delivered', 'cancelled'].includes(order.nativeStatus)) {
+        audit(data, 'Delivery created', 'Delivery', delivery.id, 'Not in the console', `${order.displayId} · delivery_app`, 'Imported from delivery_app.', at)
+      }
+      if (!order.rejected && ['assigned', 'accepted'].includes(order.nativeStatus)
+        && new Date(requestedAt).getTime() > Date.now() - 15 * 60_000) {
+        notify(data, 'Delivery Assigned', 'New live delivery order', `${order.displayId} · ${delivery.pickup} → ${delivery.drop}${livePartner ? ` · ${livePartner.name}` : ''}.`, `/admin/deliveries/${delivery.id}`, delivery.id, at)
+      }
+    } else {
+      previousStatus = delivery.status
+      previousLiveStatus = delivery.liveStatus
+      const shouldKeepDelay = delivery.status === 'Delayed' && !['delivered', 'cancelled'].includes(order.nativeStatus)
+      delivery.liveStatus = order.rejected ? 'rejected' : order.nativeStatus
+      delivery.publicationStatus = 'Published'
+      delivery.publishError = null
+      if (!shouldKeepDelay && delivery.status !== nextStatus) {
+        delivery.status = nextStatus
+        localChanged = true
+        if (!isNew) {
+          audit(data, 'Delivery status changed', 'Delivery', delivery.id, previousStatus, nextStatus, 'Reconciled from delivery_app status.', at)
+        }
+      }
+      if (JSON.stringify(delivery.milestones) !== JSON.stringify(milestones)) {
+        delivery.milestones = milestones
+        localChanged = true
+      }
+      if (order.pickup.name && delivery.pickup !== order.pickup.name) {
+        delivery.pickup = order.pickup.name
+        localChanged = true
+      }
+      if (order.destination.name && delivery.drop !== order.destination.name) {
+        delivery.drop = order.destination.name
+        localChanged = true
+      }
+      if (order.pickup.address && delivery.pickupAddress !== order.pickup.address) {
+        delivery.pickupAddress = order.pickup.address
+        localChanged = true
+      }
+      if (order.destination.address && delivery.dropAddress !== order.destination.address) {
+        delivery.dropAddress = order.destination.address
+        localChanged = true
+      }
+      delivery.pickupLocation = { latitude: order.pickup.latitude, longitude: order.pickup.longitude }
+      delivery.dropLocation = { latitude: order.destination.latitude, longitude: order.destination.longitude }
+      if (order.category && delivery.category !== order.category) {
+        delivery.category = order.category
+        localChanged = true
+      }
+      if (order.itemCount && delivery.itemCount !== order.itemCount) {
+        delivery.itemCount = order.itemCount
+        localChanged = true
+      }
+      if (order.paymentMode && delivery.paymentMode !== order.paymentMode) {
+        delivery.paymentMode = order.paymentMode
+        localChanged = true
+      }
+      if (order.earnings && delivery.partnerEarnings !== order.earnings) {
+        delivery.partnerEarnings = order.earnings
+        localChanged = true
+      }
+    }
+
+    const activeAssignment = delivery.assignmentId
+      ? data.assignments.find((item) => item.id === delivery.assignmentId && item.status === 'Active')
+      : undefined
+
+    if (order.rejected) {
+      if (activeAssignment) {
+        releaseAssignment(data, activeAssignment.id, 'Declined by the partner in delivery_app', at)
+        delivery.assignmentId = null
+        localChanged = true
+      }
+      if (delivery.status !== 'Unassigned') {
+        delivery.status = 'Unassigned'
+        localChanged = true
+      }
+      if (previousLiveStatus !== 'rejected') {
+        audit(data, 'Delivery status changed', 'Delivery', delivery.id, previousStatus ?? 'Assigned', 'Unassigned', 'Declined by the partner in delivery_app.', at)
+        notify(data, 'Partner Rejected Offer', 'Partner declined the delivery', `${order.displayId} was declined${livePartner ? ` by ${livePartner.name}` : ''}. Reassign the order.`, `/admin/deliveries/${delivery.id}`, delivery.id, at)
+      }
+    } else if (order.nativeStatus === 'delivered') {
+      if (activeAssignment) {
+        releaseAssignment(data, activeAssignment.id, 'Delivery completed by the partner app', at, 'Completed')
+        localChanged = true
+      }
+      if (delivery.status !== 'Completed') {
+        delivery.status = 'Completed'
+        localChanged = true
+      }
+      if (delivery.milestones.some((milestone) => !milestone.completedAt)) {
+        delivery.milestones = milestones.every((milestone) => milestone.completedAt) ? milestones : delivery.milestones.map((milestone) => ({ ...milestone, completedAt: milestone.completedAt ?? order.completedAt ?? at, completedBy: milestone.completedBy ?? 'Partner app' }))
+        localChanged = true
+      }
+    } else if (order.nativeStatus === 'cancelled') {
+      if (activeAssignment) {
+        releaseAssignment(data, activeAssignment.id, `Cancelled in delivery_app${order.cancellationReason ? `: ${order.cancellationReason}` : ''}`, at)
+        localChanged = true
+      }
+      if (delivery.status !== 'Cancelled') {
+        delivery.status = 'Cancelled'
+        localChanged = true
+      }
+    } else if (livePartner) {
+      if (!activeAssignment) {
+        const assignment: Assignment = {
+          id: uid('ASN'),
+          deliveryId: delivery.id,
+          partnerId: livePartner.id,
+          assignedAt: order.acceptedAt ?? requestedAt,
+          assignedBy: 'delivery_app',
+          status: 'Active',
+          releasedAt: null,
+          releaseReason: null,
+          attempt: data.assignments.filter((item) => item.deliveryId === delivery.id).length + 1,
+          dropOtp: order.dropOtp,
+        }
+        data.assignments.unshift(assignment)
+        delivery.assignmentId = assignment.id
+        localChanged = true
+      } else if (activeAssignment.partnerId !== livePartner.id) {
+        releaseAssignment(data, activeAssignment.id, 'Partner changed in delivery_app', at)
+        const assignment: Assignment = {
+          id: uid('ASN'),
+          deliveryId: delivery.id,
+          partnerId: livePartner.id,
+          assignedAt: order.acceptedAt ?? at,
+          assignedBy: 'delivery_app',
+          status: 'Active',
+          releasedAt: null,
+          releaseReason: null,
+          attempt: data.assignments.filter((item) => item.deliveryId === delivery.id).length + 1,
+          dropOtp: order.dropOtp,
+        }
+        data.assignments.unshift(assignment)
+        delivery.assignmentId = assignment.id
+        localChanged = true
+      }
+      if (livePartner.availability !== 'Suspended' && livePartner.availability !== 'Restricted' && livePartner.availability !== 'On Delivery') {
+        livePartner.availability = 'On Delivery'
+        localChanged = true
+      }
+    }
+
+    if (localChanged) changed += 1
+  }
+  if (changed) syncLinkedPartnerAvailability(data)
+  return changed
+}
+
 function nextApplicationId(data: OperationsState) {
   const numbers = data.applications.map((item) => Number(item.id.replace(/\D/g, ''))).filter(Number.isFinite)
   return `APP-${Math.max(2_040, ...numbers) + 1}`
@@ -250,6 +540,8 @@ function adminVehicleFor(value: string | null): Partner['vehicle'] {
   const normalized = (value ?? '').toLowerCase()
   if (normalized.includes('van')) return 'Van'
   if (normalized.includes('scooter')) return 'Scooter'
+  if (normalized.includes('bicycle') || normalized.includes('cycle')) return 'Bicycle'
+  if (normalized.includes('foot') || normalized.includes('walk')) return 'On foot'
   return 'Bike'
 }
 
@@ -490,6 +782,10 @@ function assignPartner(data: OperationsState, deliveryId: string, partnerId: str
   if (delivery.status === 'Cancelled') throw new Error('Cancelled deliveries cannot be assigned.')
   const previous = data.assignments.find((assignment) => assignment.deliveryId === deliveryId && assignment.status === 'Active')
   if (previous?.partnerId === partnerId) throw new Error(`${partner.name} is already assigned to ${delivery.id}.`)
+  if (previous && (delivery.status === 'In Transit'
+    || (delivery.liveStatus && !['assigned', 'rejected', 'cancelled'].includes(delivery.liveStatus)))) {
+    throw new Error('This partner has already accepted or started the delivery. Reassignment is blocked after acceptance.')
+  }
   const eligibility = getPartnerEligibility(data, partner, delivery, new Date(at).getTime())
   if (!eligibility.eligible) throw new Error(`${partner.name} is ineligible: ${eligibility.reasons.join('; ')}.`)
 
@@ -614,6 +910,9 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const delivery = findDelivery(data, action.deliveryId)
       const partner = findPartner(data, action.partnerId)
       assignPartner(data, delivery.id, partner.id, at)
+      delivery.liveStatus = 'assigned'
+      delivery.publicationStatus = partner.partnerAppUid ? 'Pending' : 'Not linked'
+      delivery.publishError = null
       // An unlinked partner has no delivery_app Firestore record, so the
       // write-through cannot publish an offer and the partner will never see
       // this assignment. Say so instead of reporting a silent success.
@@ -634,7 +933,9 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       delivery.assignmentId = null
       delivery.status = 'Unassigned'
       delivery.milestones = delivery.milestones.map((milestone) => ({ ...milestone, completedAt: null, completedBy: null }))
-      audit(data, 'Delivery status changed', 'Delivery', delivery.id, partner.id, 'Unassigned', action.reason, at)
+      delivery.liveStatus = 'cancelled'
+      delivery.publicationStatus = partner.partnerAppUid ? 'Pending' : 'Not linked'
+      audit(data, 'Delivery unassigned', 'Delivery', delivery.id, partner.id, 'Unassigned', action.reason, at)
       notify(data, 'Unassigned Delivery', 'Partner removed from delivery', `${partner.name} was removed from ${delivery.id} before acceptance.`, `/admin/deliveries/${delivery.id}/assign`, delivery.id, at)
       return { message: `${partner.name} was removed from ${delivery.id}.` }
     }
@@ -776,7 +1077,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const email = action.email.trim()
       if (email.length > 120) throw new Error('Email address must be 120 characters or fewer.')
       if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('Enter a valid email address or leave it blank.')
-      if (!['Bike', 'Scooter', 'Van'].includes(action.vehicle)) throw new Error('Choose a valid vehicle type.')
+      if (!['Bike', 'Scooter', 'Van', 'Bicycle', 'On foot'].includes(action.vehicle)) throw new Error('Choose a valid vehicle type.')
       const serviceAreas = [...new Set(action.serviceAreas.map((area) => area.trim().replace(/\s+/g, ' ')).filter(Boolean))]
       if (!serviceAreas.length) throw new Error('Add at least one service area.')
       if (serviceAreas.length > 8) throw new Error('Add no more than 8 service areas.')
@@ -977,11 +1278,13 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
               : null,
       }))
       data.partnerAppTickets = Array.isArray(action.tickets) ? action.tickets.slice(0, 1000) : data.partnerAppTickets
+      data.partnerAppDocuments = Array.isArray(action.documents) ? action.documents.slice(0, 1000) : data.partnerAppDocuments
       data.partnerApp.lastError = null
       data.partnerApp.lastSyncAt = action.at
       data.partnerApp.lastConnectedAt = action.at
       data.partnerApp.lastError = null
       autoLinkPartnerAppRecords(data)
+      importApprovedPartnerAppRecords(data, at)
       syncLinkedPartnerAvailability(data)
       for (const ticket of data.partnerAppTickets) {
         if (previousTicketIds.has(ticket.id)) continue
@@ -1061,10 +1364,33 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       }
       return { message: rejectApplication(data, application, action.note, at).message }
     }
+    case 'partnerApp.ticket-status': {
+      const ticket = data.partnerAppTickets.find((item) => item.id === action.ticketId)
+      if (!ticket) throw new Error('Support ticket could not be found.')
+      ticket.status = action.status
+      ticket.updatedAt = action.at
+      audit(data, 'Partner app account updated', 'Partner', ticket.partnerUid, 'Open', action.status, `Support ticket ${ticket.id} marked ${action.status}.`, action.at)
+      return { message: `Ticket ${ticket.id} marked ${action.status.toLowerCase()}.` }
+    }
+    case 'partnerApp.document-review': {
+      const record = data.partnerAppDocuments.find((item) => item.id === action.uid)
+      const file = record?.files.find((item) => item.key === action.documentKey)
+      if (!record || !file) throw new Error('Fetch the partner documents before reviewing them.')
+      file.review = action.review
+      audit(data, 'Document verification updated', 'Document', `${action.uid}:${action.documentKey}`, 'No admin review', action.review.status, action.review.note ?? 'Document reviewed by a main administrator.', action.at)
+      return { message: `${action.documentKey} marked ${action.review.status.toLowerCase()}.` }
+    }
     case 'partnerApp.write-result': {
       const message = action.message.trim() || (action.ok ? 'delivery_app account updated.' : 'delivery_app account update failed.')
       if (!action.ok) data.partnerApp.lastError = message
       else data.partnerApp.lastError = null
+      if (action.targetType === 'Delivery') {
+        const delivery = data.deliveries.find((item) => item.id === action.targetId)
+        if (delivery) {
+          delivery.publicationStatus = action.ok ? 'Published' : 'Failed'
+          delivery.publishError = action.ok ? null : message
+        }
+      }
       if (action.ok) {
         const cached = data.partnerAppRecords.find((item) => item.id === action.recordId)
         if (cached) {
@@ -1219,6 +1545,8 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
     }
     case 'offer.expire-due':
       throw new Error('Internal offer sweep must be handled by the scheduler.')
+    case 'delivery.sync-live-orders':
+      throw new Error('Live order reconciliation must be handled by the scheduler.')
     case 'partner.expire-suspensions':
       throw new Error('Internal suspension sweep must be handled by the scheduler.')
   }
@@ -1273,6 +1601,18 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
       return { ...frame, data, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'info', message: `${count} delivery record${count === 1 ? '' : 's'} synced from the partner app.` } }
     } catch (error) {
       return { ...frame, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'error', message: error instanceof Error ? error.message : 'Partner app sync could not be recorded.' } }
+    }
+  }
+
+  if (action.type === 'delivery.sync-live-orders') {
+    const data = structuredClone(frame.data)
+    try {
+      const count = syncLiveOrders(data, action.orders, action.at)
+      if (!count) return frame
+      // Background reconciliation should not raise a toast for every poll.
+      return { ...frame, data, sequence: frame.sequence + 1, feedback: null }
+    } catch (error) {
+      return { ...frame, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'error', message: error instanceof Error ? error.message : 'Live order sync could not be recorded.' } }
     }
   }
 

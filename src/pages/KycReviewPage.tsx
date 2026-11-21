@@ -1,21 +1,54 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { userCan } from '../domain/admin'
-import type { OperationsState, Partner, PartnerAppRecord, PartnerApplication } from '../domain/model'
+import type { OperationsState, Partner, PartnerAppDocument, PartnerAppDocumentFile, PartnerAppRecord, PartnerApplication, PartnerDocumentReview } from '../domain/model'
 import { buildKycQueue, type KycQueueItem } from '../domain/kyc'
 import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
+import { readPartnerAppToken, writePartnerDocumentReview } from '../services/partnerApp'
+import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
+const documentLabels: Record<string, string> = {
+  aadhaar: 'Aadhaar card',
+  pan: 'PAN card',
+  licence: 'Driving licence',
+  registration: 'Vehicle registration',
+  passbook: 'Bank passbook',
+}
+
+function documentLabel(key: string) {
+  return documentLabels[key] ?? key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
 type StatusFilter = 'Needs review' | 'KYC pending' | 'All' | 'Approved' | 'Rejected'
+
+function requiredLiveDocumentKeys(vehicle: string) {
+  const normalized = vehicle.toLowerCase()
+  if (normalized.includes('bicycle') || normalized.includes('foot') || normalized.includes('walk')) return ['aadhaar']
+  return ['aadhaar', 'licence', 'registration']
+}
+
+export function liveDocumentsBlocked(record: PartnerAppRecord | undefined, documents: PartnerAppDocument | undefined) {
+  if (!record) return 'No delivery_app application record was found.'
+  if (!documents) return 'No partner_documents record has been synced. Sync partner data before approving.'
+  for (const key of requiredLiveDocumentKeys(record.vehicle ?? '')) {
+    const file = documents.files.find((item) => item.key === key)
+    if (!file?.fileName) return `${documentLabel(key)} has not been uploaded.`
+    if (!file.review) return `${documentLabel(key)} has not been reviewed.`
+    if (file.review.status === 'Rejected') return `${documentLabel(key)} was rejected.`
+    if (file.review.expiresAt && new Date(file.review.expiresAt).getTime() <= Date.now()) return `${documentLabel(key)} has expired.`
+  }
+  return null
+}
 
 function vehicleIcon(vehicle: string): 'bike' | 'scooter' | 'van' | 'route' {
   const normalized = vehicle.toLowerCase()
   if (normalized.includes('van')) return 'van'
-  if (normalized.includes('bike')) return 'bike'
   if (normalized.includes('scooter')) return 'scooter'
+  if (normalized.includes('bicycle') || normalized.includes('bike') || normalized.includes('foot') || normalized.includes('walk')) return 'bike'
   return 'route'
 }
 
-export function ApplicationReviewDialog({ application, initialDecision, onClose }: { application: PartnerApplication; initialDecision: 'Approved' | 'Rejected'; onClose: () => void }) {
+export function ApplicationReviewDialog({ application, initialDecision, documentsBlockedReason, onClose }: { application: PartnerApplication; initialDecision: 'Approved' | 'Rejected'; documentsBlockedReason?: string | null; onClose: () => void }) {
   const { frame, dispatch } = useOperations()
   const [decision, setDecision] = useState<'Approved' | 'Rejected'>(initialDecision)
   const [note, setNote] = useState('')
@@ -26,6 +59,7 @@ export function ApplicationReviewDialog({ application, initialDecision, onClose 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!isAdmin) return
+    if (decision === 'Approved' && documentsBlockedReason && application.partnerAppUid) return
     if (decision === 'Approved') dispatch({ type: 'application.approve', applicationId: application.id, note })
     else dispatch({ type: 'application.reject', applicationId: application.id, reason: note })
     onClose()
@@ -48,13 +82,14 @@ export function ApplicationReviewDialog({ application, initialDecision, onClose 
       })}</div>
       <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
       <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
-      {!isRejected && <p className="dialog-description">Approving adds the applicant to the partner directory. Document completeness remains visible for follow-up but does not block delivery assignment for approved live partners.</p>}
-      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Main administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
+      {!isRejected && <p className="dialog-description">Approving adds the applicant to the partner directory. Required documents must be reviewed and valid for a delivery_app application.</p>}
+      {!isRejected && documentsBlockedReason && application.partnerAppUid && <div className="soft-notice error-notice"><Icon name="alert" size={15} /><span>{documentsBlockedReason} Review the documents from Details before approving.</span></div>}
+      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin || (!isRejected && Boolean(documentsBlockedReason) && Boolean(application.partnerAppUid))} title={isAdmin ? undefined : 'Main administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
     </form>
   </Dialog>
 }
 
-export function LiveApplicationReviewDialog({ record, application, linkedPartner, initialDecision = 'Approved', onClose }: { record: PartnerAppRecord; application: PartnerApplication | undefined; linkedPartner: Partner | undefined; initialDecision?: 'Approved' | 'Rejected'; onClose: () => void }) {
+export function LiveApplicationReviewDialog({ record, application, linkedPartner, initialDecision = 'Approved', documentsBlockedReason, onClose }: { record: PartnerAppRecord; application: PartnerApplication | undefined; linkedPartner: Partner | undefined; initialDecision?: 'Approved' | 'Rejected'; documentsBlockedReason?: string | null; onClose: () => void }) {
   const { frame, dispatch } = useOperations()
   const [decision, setDecision] = useState<'Approved' | 'Rejected'>(initialDecision)
   const [note, setNote] = useState('')
@@ -64,6 +99,7 @@ export function LiveApplicationReviewDialog({ record, application, linkedPartner
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!isAdmin) return
+    if (decision === 'Approved' && documentsBlockedReason) return
     dispatch({ type: 'partnerApp.review', recordId: record.id, decision, note })
     onClose()
   }
@@ -87,7 +123,8 @@ export function LiveApplicationReviewDialog({ record, application, linkedPartner
       <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
       <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
       <p className="dialog-description">{isRejected ? 'The reason appears in delivery_app on the partner’s application status screen.' : 'Approval activates the delivery_app account so the partner can go online.'}</p>
-      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin} title={isAdmin ? undefined : 'Main administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
+      {!isRejected && documentsBlockedReason && <div className="soft-notice error-notice"><Icon name="alert" size={15} /><span>{documentsBlockedReason} Review the documents from Details before approving.</span></div>}
+      <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant={isRejected ? 'danger' : 'primary'} disabled={!isAdmin || (!isRejected && Boolean(documentsBlockedReason))} title={isAdmin ? undefined : 'Main administrator access required'}>{isRejected ? 'Reject application' : 'Approve application'}</Button></div>
     </form>
   </Dialog>
 }
@@ -158,15 +195,55 @@ function sentenceCase(value: string) {
   return value ? value.charAt(0).toUpperCase() + value.slice(1) : value
 }
 
-export function KycApplicationDetailsDialog({ item, application, record, onClose, onReview, onOpenPartner }: { item: KycQueueItem; application?: PartnerApplication; record?: PartnerAppRecord; onClose: () => void; onReview?: () => void; onOpenPartner?: () => void }) {
+export function KycApplicationDetailsDialog({ item, application, record, documentRecord, onClose, onReview, onOpenPartner }: { item: KycQueueItem; application?: PartnerApplication; record?: PartnerAppRecord; documentRecord?: PartnerAppDocument; onClose: () => void; onReview?: () => void; onOpenPartner?: () => void }) {
+  const { frame, dispatch } = useOperations()
   const documents = application?.documents ?? item.documents
+  const attachedCount = documentRecord
+    ? documentRecord.files.filter((file) => file.fileName).length
+    : documents.length
   const phone = record?.phone ?? application?.maskedPhone ?? null
   const email = record?.email ?? application?.maskedEmail ?? null
+  const canReviewDocuments = userCan(frame.data.user, 'document-review') && hasFirebaseAdminSession()
+  const [reviewing, setReviewing] = useState<{ key: string; status: 'Verified' | 'Rejected'; expiresAt: string; note: string } | null>(null)
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [reviewError, setReviewError] = useState('')
   const detailFields = record
     ? Object.entries(record.fields)
         .filter(([key, value]) => value.trim() && !detailSummaryKeys.has(key) && !detailHiddenKeys.has(key))
         .sort(([left], [right]) => left.localeCompare(right))
     : []
+
+  function beginReview(file: PartnerAppDocumentFile) {
+    setReviewError('')
+    setReviewing({
+      key: file.key,
+      status: file.review?.status ?? 'Verified',
+      expiresAt: file.review?.expiresAt ? file.review.expiresAt.slice(0, 10) : '',
+      note: file.review?.note ?? '',
+    })
+  }
+
+  async function saveReview() {
+    if (!reviewing || !documentRecord) return
+    setReviewBusy(true)
+    setReviewError('')
+    try {
+      const review: PartnerDocumentReview = {
+        status: reviewing.status,
+        expiresAt: reviewing.expiresAt ? new Date(`${reviewing.expiresAt}T23:59:59`).toISOString() : null,
+        note: reviewing.note.trim() || null,
+        reviewedBy: frame.data.user.name,
+        reviewedAt: new Date().toISOString(),
+      }
+      await writePartnerDocumentReview(frame.data.partnerApp, readPartnerAppToken(), documentRecord.id, reviewing.key, review)
+      dispatch({ type: 'partnerApp.document-review', uid: documentRecord.id, documentKey: reviewing.key, review, at: new Date().toISOString() })
+      setReviewing(null)
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : 'Could not save the document review.')
+    } finally {
+      setReviewBusy(false)
+    }
+  }
 
   return <Dialog title="Application details" eyebrow="KYC APPLICATION DETAILS" onClose={onClose} wide>
     <div className="dialog-form kyc-details-dialog">
@@ -192,13 +269,36 @@ export function KycApplicationDetailsDialog({ item, application, record, onClose
         <div className="details-section-head">
           <span className="details-section-icon"><Icon name="file" size={14} /></span>
           <div><strong>Submitted documents</strong><small>KYC checklist</small></div>
-          <span className="details-section-count">{documents.length > 0 ? `${documents.length} attached` : 'Not available'}</span>
+          <span className="details-section-count">{attachedCount > 0 ? `${attachedCount} attached` : 'Not available'}</span>
         </div>
         <div className="application-doc-checklist details-document-list">
-          {documents.length > 0
-            ? documents.map((document) => <div key={document} className="attached"><span><Icon name="check-circle" size={13} />{document}</span><small>Attached</small></div>)
-            : <div className="details-empty"><span>No document details available</span><small>{item.status === 'KYC pending' ? 'Onboarding has not been submitted' : 'KYC files stay in delivery_app and are not copied into this synced record'}</small></div>}
+          {documentRecord && documentRecord.files.length > 0
+            ? documentRecord.files.map((file) => <div key={file.key} className="live-document-row">
+                <span className="live-document-main">
+                  <Icon name="file" size={13} />
+                  <span><strong>{documentLabel(file.key)}</strong><small>{file.fileName ?? 'No file uploaded'}{file.uploadedAt ? ` · ${formatDate(file.uploadedAt, { month: 'short', day: 'numeric', year: 'numeric' })}` : ''}</small></span>
+                </span>
+                <span className="live-document-meta">
+                  {file.review ? <StatusBadge status={file.review.status} /> : <StatusBadge status="Under Review" />}
+                  {file.review?.expiresAt && <small className={new Date(file.review.expiresAt).getTime() <= Date.now() ? 'text-danger' : ''}>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
+                  {file.downloadUrl && <a href={file.downloadUrl} target="_blank" rel="noreferrer">Open file</a>}
+                  {canReviewDocuments && <Button size="small" variant="quiet" onClick={() => beginReview(file)}>Review</Button>}
+                </span>
+              </div>)
+            : documents.length > 0
+              ? documents.map((document) => <div key={document} className="attached"><span><Icon name="check-circle" size={13} />{document}</span><small>Attached</small></div>)
+              : <div className="details-empty"><span>No document details available</span><small>{item.status === 'KYC pending' ? 'Onboarding has not been submitted' : 'No partner_documents record was synced for this account yet.'}</small></div>}
         </div>
+        {reviewing && <div className="document-review-inline">
+          <div className="document-review-inline-head"><strong>Review {documentLabel(reviewing.key)}</strong><span>Saved to delivery_app</span></div>
+          <div className="form-grid two-columns">
+            <label className="field-label">Status<select value={reviewing.status} onChange={(event) => setReviewing({ ...reviewing, status: event.target.value as 'Verified' | 'Rejected' })}><option>Verified</option><option>Rejected</option></select></label>
+            <label className="field-label">Expiry date<input type="date" value={reviewing.expiresAt} onChange={(event) => setReviewing({ ...reviewing, expiresAt: event.target.value })} /></label>
+            <label className="field-label span-two">Reviewer note<textarea rows={2} value={reviewing.note} onChange={(event) => setReviewing({ ...reviewing, note: event.target.value })} placeholder="Optional verification note" /></label>
+          </div>
+          {reviewError && <div className="admin-form-error" role="alert"><Icon name="alert" size={15} /><span>{reviewError}</span></div>}
+          <div className="dialog-actions"><Button onClick={() => setReviewing(null)}>Cancel</Button><Button variant="primary" disabled={reviewBusy} onClick={() => { void saveReview() }}>{reviewBusy ? 'Saving…' : 'Save review'}</Button></div>
+        </div>}
       </section>
       {detailFields.length > 0 && <section className="details-section">
         <div className="details-section-head">
@@ -258,9 +358,12 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
   const reviewRecord = reviewItem?.recordId ? data.partnerAppRecords.find((item) => item.id === reviewItem.recordId) : undefined
   const reviewLive = Boolean(reviewItem?.source === 'delivery_app' || reviewItem?.resubmitted)
   const reviewLinkedPartner = reviewRecord ? data.partners.find((item) => item.partnerAppUid === reviewRecord.id) : undefined
+  const reviewDocuments = reviewRecord ? data.partnerAppDocuments.find((document) => document.id === reviewRecord.id) : undefined
+  const reviewBlockedReason = reviewRecord ? liveDocumentsBlocked(reviewRecord, reviewDocuments) : null
   const detailsItem = details ? queue.find((item) => item.key === details) : undefined
   const detailsApplication = detailsItem?.applicationId ? data.applications.find((item) => item.id === detailsItem.applicationId) : undefined
   const detailsRecord = detailsItem?.recordId ? data.partnerAppRecords.find((item) => item.id === detailsItem.recordId) : undefined
+  const detailsDocuments = detailsRecord ? data.partnerAppDocuments.find((document) => document.id === detailsRecord.id) : undefined
 
   return <>
     <Panel className="records-panel kyc-queue-panel">
@@ -295,8 +398,8 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
       <div className="notification-history-note"><Icon name="shield" size={14} />Only a main administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. Sign-in-only partner accounts stay out of this queue until onboarding is submitted; delivery_app records sync automatically after Firebase sign-in and periodically refresh.</div>
     </Panel>
-    {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} initialDecision={review.decision} onClose={() => setReview(null)} />}
-    {review && !reviewLive && reviewApplication && <ApplicationReviewDialog key={`${reviewApplication.id}-${review.decision}`} application={reviewApplication} initialDecision={review.decision} onClose={() => setReview(null)} />}
-    {detailsItem && <KycApplicationDetailsDialog item={detailsItem} application={detailsApplication} record={detailsRecord} onClose={() => setDetails(null)} onReview={detailsItem.status === 'Submitted' && canReview ? () => { setDetails(null); setReview({ key: detailsItem.key, decision: 'Approved' }) } : undefined} onOpenPartner={detailsItem.partnerId ? () => { setDetails(null); open(`/admin/partners/${detailsItem.partnerId}`) } : undefined} />}
+    {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} documentsBlockedReason={reviewBlockedReason} initialDecision={review.decision} onClose={() => setReview(null)} />}
+    {review && !reviewLive && reviewApplication && <ApplicationReviewDialog key={`${reviewApplication.id}-${review.decision}`} application={reviewApplication} documentsBlockedReason={reviewBlockedReason} initialDecision={review.decision} onClose={() => setReview(null)} />}
+    {detailsItem && <KycApplicationDetailsDialog item={detailsItem} application={detailsApplication} record={detailsRecord} documentRecord={detailsDocuments} onClose={() => setDetails(null)} onReview={detailsItem.status === 'Submitted' && canReview ? () => { setDetails(null); setReview({ key: detailsItem.key, decision: 'Approved' }) } : undefined} onOpenPartner={detailsItem.partnerId ? () => { setDetails(null); open(`/admin/partners/${detailsItem.partnerId}`) } : undefined} />}
   </>
 }

@@ -1,4 +1,4 @@
-import { useEffect, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useRef, type FormEvent, type ReactNode } from 'react'
 import type { DeliveryStatus, DocumentStatus, OfferStatus, PartnerAvailability } from '../domain/model'
 
 export type IconName = 'overview' | 'deliveries' | 'partners' | 'applications' | 'kyc' | 'notifications' | 'audit' | 'settings' | 'search' | 'plus' | 'chevron' | 'arrow' | 'clock' | 'pin' | 'filter' | 'sort' | 'more' | 'close' | 'check' | 'alert' | 'calendar' | 'bike' | 'scooter' | 'van' | 'menu' | 'refresh' | 'file' | 'user' | 'shield' | 'route' | 'truck' | 'check-circle' | 'external' | 'lock' | 'home' | 'download' | 'eye' | 'edit' | 'logout' | 'sparkle' | 'info'
@@ -92,14 +92,42 @@ export function EmptyState({ title, detail, action }: { title: string; detail: s
 }
 
 export function Dialog({ title, eyebrow = 'OPERATIONS WORKFLOW', children, onClose, wide = false }: { title: string; eyebrow?: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+  const dialogRef = useRef<HTMLElement>(null)
+
   useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const focusable = () => Array.from(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]') ?? [])
+    const preferred = dialogRef.current?.querySelector<HTMLElement>('input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled)')
+    ;(preferred ?? focusable()[0])?.focus()
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        onClose()
+        return
+      }
+      if (event.key !== 'Tab') return
+      const elements = focusable()
+      if (!elements.length) return
+      const first = elements[0]
+      const last = elements[elements.length - 1]
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      previousFocus?.focus()
+    }
   }, [onClose])
 
   return <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
-    <section className={`dialog ${wide ? 'dialog-wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <section ref={dialogRef} className={`dialog ${wide ? 'dialog-wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="dialog-title">
       <div className="dialog-heading"><div><span className="eyebrow">{eyebrow}</span><h2 id="dialog-title">{title}</h2></div><button className="icon-button" aria-label="Close dialog" onClick={onClose}><Icon name="close" /></button></div>
       {children}
     </section>

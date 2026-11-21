@@ -225,6 +225,6 @@ export function OverviewPage({ data, open }: Props) {
         {!data.auditLogs.length && <p className="empty-inline">Operational changes will appear here after an action.</p>}
       </div>
     </Panel>
-    <div className="overview-footnote"><Icon name="shield" size={14} /> Administrator decisions are mirrored to delivery_app. The map uses OpenStreetMap tiles shared with the partner app; local jobs remain simulated.</div>
+    <div className="overview-footnote"><Icon name="shield" size={14} /> Administrator decisions are mirrored to delivery_app. The map uses OpenStreetMap tiles shared with the partner app; local admin records are not published until a partner is assigned.</div>
   </div>
 }

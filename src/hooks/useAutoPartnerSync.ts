@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { AdminSession } from '../auth/adminSession'
-import type { PartnerAppRecord, PartnerAppTicket } from '../domain/model'
-import { readPartnerAppToken, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
+import type { PartnerAppDocument, PartnerAppRecord, PartnerAppTicket } from '../domain/model'
+import { readPartnerAppToken, syncPartnerAppDocuments, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import {
   activeQuotaMessage,
@@ -56,6 +56,12 @@ function ticketsChanged(previous: PartnerAppTicket[], next: PartnerAppTicket[]) 
   })
 }
 
+function documentsChanged(previous: PartnerAppDocument[], next: PartnerAppDocument[]) {
+  if (previous.length !== next.length) return true
+  const previousById = new Map(previous.map((document) => [document.id, JSON.stringify(document.files)]))
+  return next.some((document) => previousById.get(document.id) !== JSON.stringify(document.files))
+}
+
 /**
  * Loads delivery_app partner records after a Firebase data connection and
  * keeps them fresh while the console stays open. The REST fallback refreshes
@@ -70,6 +76,7 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
   const lastAttempt = useRef(0)
   const recordsRef = useRef(frame.data.partnerAppRecords)
   const ticketsRef = useRef(frame.data.partnerAppTickets)
+  const documentsRef = useRef(frame.data.partnerAppDocuments)
   const config = frame.data.partnerApp
   const connectionKey = [
     config.mode,
@@ -83,7 +90,8 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
   useEffect(() => {
     recordsRef.current = frame.data.partnerAppRecords
     ticketsRef.current = frame.data.partnerAppTickets
-  }, [frame.data.partnerAppRecords, frame.data.partnerAppTickets])
+    documentsRef.current = frame.data.partnerAppDocuments
+  }, [frame.data.partnerAppRecords, frame.data.partnerAppTickets, frame.data.partnerAppDocuments])
 
   useEffect(() => {
     if (!enabled || !readFirebaseAdminSession()) return
@@ -117,16 +125,17 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
       inFlight = true
       try {
         const token = readPartnerAppToken()
-          const [records, tickets] = await Promise.all([
-            syncPartnerAppRecords(config, token),
-            // Ticket collection rules may be deployed after the partner
-            // collection rules; keep partner sync working during that rollout.
-            syncPartnerAppTickets(config, token).catch(() => []),
-          ])
+        const [records, tickets, documents] = await Promise.all([
+          syncPartnerAppRecords(config, token),
+          // Optional collections may deploy after the core partner rules;
+          // keep the core sync working during that rollout.
+          syncPartnerAppTickets(config, token).catch(() => []),
+          syncPartnerAppDocuments(config, token).catch(() => []),
+        ])
         if (!active) return
         clearQuotaBlock(config.projectId)
-        if (!recordsChanged(recordsRef.current, records) && !ticketsChanged(ticketsRef.current, tickets)) return
-        dispatch({ type: 'partnerApp.sync-result', records, tickets, at: new Date().toISOString() })
+        if (!recordsChanged(recordsRef.current, records) && !ticketsChanged(ticketsRef.current, tickets) && !documentsChanged(documentsRef.current, documents)) return
+        dispatch({ type: 'partnerApp.sync-result', records, tickets, documents, at: new Date().toISOString() })
       } catch (error) {
         if (!active) return
         // A quota-exhausted project keeps answering 429 until the daily reset;

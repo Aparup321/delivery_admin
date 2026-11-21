@@ -10,7 +10,7 @@ export const DELIVERY_MILESTONES = [
 export type DeliveryMilestoneName = (typeof DELIVERY_MILESTONES)[number]
 export type DeliveryStatus = 'Pending' | 'Unassigned' | 'Assigned' | 'In Transit' | 'Delayed' | 'Completed' | 'Cancelled'
 export type PackageSize = 'Small' | 'Medium' | 'Large' | 'Extra large'
-export type VehicleType = 'Bike' | 'Scooter' | 'Van'
+export type VehicleType = 'Bike' | 'Scooter' | 'Van' | 'Bicycle' | 'On foot'
 export type PartnerAvailability = 'Available' | 'On Delivery' | 'Offline' | 'Restricted' | 'Suspended'
 export type DocumentStatus = 'Missing' | 'Submitted' | 'Under Review' | 'Verified' | 'Rejected' | 'Expired'
 export type OfferStatus = 'Created' | 'Sent' | 'Awaiting Response' | 'Accepted' | 'Rejected' | 'Timed Out' | 'Cancelled'
@@ -35,6 +35,7 @@ export type AuditEventType =
   | 'Delivery created'
   | 'Delivery assigned'
   | 'Delivery reassigned'
+  | 'Delivery unassigned'
   | 'Delivery status changed'
   | 'Delivery delayed'
   | 'Delivery cancelled'
@@ -102,6 +103,11 @@ export interface Delivery {
   paymentMode?: 'Prepaid' | 'Cash on delivery'
   /** Partner payout in ₹ chosen by the Administrator, null when not set. */
   partnerEarnings?: number | null
+  /** Native delivery_app status, when this record is driven by the live app. */
+  liveStatus?: string | null
+  /** Whether the order offer reached delivery_app. */
+  publicationStatus?: 'Not linked' | 'Pending' | 'Published' | 'Failed' | null
+  publishError?: string | null
 }
 
 export interface VerificationHistoryEntry {
@@ -208,6 +214,56 @@ export interface Partner {
   needsOperationalReview: boolean
   /** Firestore document ID in delivery_app's partners collection, when linked. */
   partnerAppUid: string | null
+  /** Where the directory record originated. */
+  source?: 'admin' | 'delivery_app'
+}
+
+export interface PartnerDocumentReview {
+  status: 'Verified' | 'Rejected'
+  expiresAt: string | null
+  note: string | null
+  reviewedBy: string | null
+  reviewedAt: string | null
+}
+
+export interface PartnerAppDocumentFile {
+  key: string
+  fileName: string | null
+  downloadUrl: string | null
+  uploadedAt: string | null
+  review: PartnerDocumentReview | null
+}
+
+export interface PartnerAppDocument {
+  id: string
+  files: PartnerAppDocumentFile[]
+  updatedAt: string | null
+  syncedAt: string
+}
+
+export interface LiveOrderSnapshot {
+  id: string
+  displayId: string
+  partnerUid: string
+  partnerName: string
+  nativeStatus: string
+  category: 'Grocery' | 'Restaurant'
+  pickup: { name: string; address: string; latitude: number; longitude: number }
+  destination: { name: string; address: string; latitude: number; longitude: number }
+  distanceKm: number
+  etaMinutes: number
+  earnings: number
+  itemCount: number
+  paymentMode: 'Prepaid' | 'Cash on delivery'
+  note: string | null
+  dropOtp: string | null
+  requestedAt: string | null
+  acceptedAt: string | null
+  completedAt: string | null
+  updatedAt: string | null
+  cancellationReason: string | null
+  events: Array<{ status: string; at: string }>
+  rejected: boolean
 }
 
 export interface Assignment {
@@ -322,6 +378,7 @@ export interface OperationsState {
   partnerApp: PartnerAppConfig
   partnerAppRecords: PartnerAppRecord[]
   partnerAppTickets: PartnerAppTicket[]
+  partnerAppDocuments: PartnerAppDocument[]
   documents: PartnerDocument[]
   assignments: Assignment[]
   offers: AssignmentOffer[]

@@ -1367,3 +1367,40 @@ a { color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Production data surfaces */
+.support-table { min-width: 900px; }
+.support-ticket-cell { display: grid; gap: 3px; max-width: 420px; }
+.support-ticket-cell strong { color: #3f3949; font-size: 10px; }
+.support-ticket-cell small { overflow: hidden; color: #6b6573; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.live-document-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid #f2eff6; }
+.live-document-row:last-child { border-bottom: 0; }
+.live-document-main { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+.live-document-main > span { display: grid; gap: 3px; min-width: 0; }
+.live-document-main strong { color: #4c4655; font-size: 9px; }
+.live-document-main small { overflow: hidden; color: #6b6573; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.live-document-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
+.live-document-meta a { color: #6341a4; font-size: 8px; font-weight: 650; }
+.live-document-meta small { font-size: 8px; }
+.document-review-inline { display: grid; gap: 10px; margin-top: 10px; padding: 11px; background: #fbfafc; border: 1px solid #eeecf1; border-radius: 7px; }
+.document-review-inline-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.document-review-inline-head strong { color: #433d4b; font-size: 10px; }
+.document-review-inline-head span { color: #6b6573; font-size: 8px; }
+.publish-state { display: inline-flex; align-items: center; gap: 5px; padding: 3px 7px; border-radius: 4px; font-size: 8px; font-weight: 650; }
+.publish-published { color: #2b7d59; background: #eaf6ef; }
+.publish-pending { color: #8a5a0d; background: #fff4e2; }
+.publish-failed { color: #a43d49; background: #fff0f1; }
+.publish-unlinked { color: #6b6573; background: #f1f0f3; }
+
+/* Contrast corrections (Lighthouse) */
+.metric-hint, .panel-heading p, .status-legend strong small, .global-search kbd, .demo-caption,
+.cell-subtext, .field-help, .table-footer, .page-subtitle, .demo-disclaimer-small { color: #5f5a68; }
+.status-legend strong small { font-size: 9px; }
+.publish-not-linked { color: #6b6573; background: #f1f0f3; }
+.activity-day small, .osm-map-footnote, .attention-row small, .activity-feed-row small,
+.activity-chart small, .chart-legend-inline, .status-legend, .status-legend strong small,
+.tracking-toolbar span, .tracking-facts span, .detail-info-item small, .assignment-facts span,
+.policy-row span, .offer-row small, .candidate-tools > span { color: #5f5a68; }
+.attention-row small, .activity-feed-row time, .activity-event-copy small, .overview-footnote,
+.overview-footnote span, .osm-map-footnote, .activity-day small { color: #5f5a68; }
+.attention-row > span > small, button.attention-row small { color: #5f5a68; }

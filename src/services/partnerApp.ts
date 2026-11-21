@@ -1,4 +1,4 @@
-import type { PartnerAppConfig, PartnerAppRecord, PartnerAppTicket } from '../domain/model.ts'
+import type { PartnerAppConfig, PartnerAppDocument, PartnerAppDocumentFile, PartnerAppRecord, PartnerAppTicket, PartnerDocumentReview } from '../domain/model.ts'
 import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
 const TOKEN_KEY = 'picdrop-partner-app-token'
@@ -382,4 +382,106 @@ export async function syncPartnerAppTickets(config: PartnerAppConfig, token: str
   const payload = await requestFirestoreCollection(config, token, 'support_tickets')
   const documents = isRecord(payload) && Array.isArray(payload.documents) ? payload.documents : []
   return documents.map((document) => decodeTicketDocument(document, syncedAt)).filter((ticket): ticket is PartnerAppTicket => Boolean(ticket))
+}
+
+function decodeDocumentReview(value: unknown): PartnerDocumentReview | null {
+  if (!isRecord(value)) return null
+  const status = value.status === 'Rejected' ? 'Rejected' : value.status === 'Verified' ? 'Verified' : null
+  if (!status) return null
+  return {
+    status,
+    expiresAt: asString(value.expiresAt),
+    note: asString(value.note),
+    reviewedBy: asString(value.reviewedBy),
+    reviewedAt: asString(value.reviewedAt),
+  }
+}
+
+function decodeDocumentFiles(document: unknown, syncedAt: string): PartnerAppDocument | null {
+  if (!isRecord(document) || typeof document.name !== 'string' || !isRecord(document.fields)) return null
+  const id = document.name.split('/').pop() ?? ''
+  if (!id) return null
+  const fields = decodeFirestoreFields(document.fields)
+  const rawDocuments = isRecord(fields.documents) ? fields.documents : {}
+  const rawReviews = isRecord(fields.adminDocuments) ? fields.adminDocuments : {}
+  const files: PartnerAppDocumentFile[] = Object.entries(rawDocuments).map(([key, value]) => {
+    const record = isRecord(value) ? value : {}
+    return {
+      key,
+      fileName: asString(record.fileName),
+      downloadUrl: asString(record.downloadUrl),
+      uploadedAt: asString(record.uploadedAt),
+      review: decodeDocumentReview(rawReviews[key]),
+    }
+  })
+  return {
+    id,
+    files,
+    updatedAt: asString(fields.updatedAt),
+    syncedAt,
+  }
+}
+
+export async function syncPartnerAppDocuments(config: PartnerAppConfig, token: string): Promise<PartnerAppDocument[]> {
+  if (config.mode !== 'firestore') return []
+  const syncedAt = new Date().toISOString()
+  const payload = await requestFirestoreCollection(config, token, 'partner_documents')
+  const documents = isRecord(payload) && Array.isArray(payload.documents) ? payload.documents : []
+  return documents.map((document) => decodeDocumentFiles(document, syncedAt)).filter((record): record is PartnerAppDocument => Boolean(record))
+}
+
+async function patchFirestoreDocument(
+  config: PartnerAppConfig,
+  token: string,
+  collection: string,
+  documentId: string,
+  fields: Record<string, unknown>,
+  fieldPaths: string[],
+): Promise<void> {
+  const url = new URL(partnerAppCollectionDocumentEndpoint(config, collection, documentId))
+  for (const path of fieldPaths) url.searchParams.append('updateMask.fieldPaths', path)
+  const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json' }
+  const accessToken = await resolvePartnerAppToken(token, config.apiKey)
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`
+  const response = await fetch(url.toString(), {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({
+      fields: Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, encodeFirestoreValue(value)])),
+    }),
+  })
+  if (!response.ok) throw new PartnerAppRequestError(`delivery_app update failed (HTTP ${response.status}).`, url.toString())
+}
+
+function encodeFirestoreValue(value: unknown): unknown {
+  if (value === null || value === undefined) return { nullValue: null }
+  if (typeof value === 'string') return { stringValue: value }
+  if (typeof value === 'boolean') return { booleanValue: value }
+  if (typeof value === 'number') return Number.isInteger(value) ? { integerValue: String(value) } : { doubleValue: value }
+  if (Array.isArray(value)) return { arrayValue: { values: value.map(encodeFirestoreValue) } }
+  if (isRecord(value)) {
+    return { mapValue: { fields: Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encodeFirestoreValue(item)])) } }
+  }
+  return { nullValue: null }
+}
+
+export async function updateSupportTicketStatus(config: PartnerAppConfig, token: string, ticketId: string, status: string) {
+  await patchFirestoreDocument(config, token, 'support_tickets', ticketId, { status, updatedAt: new Date().toISOString() }, ['status', 'updatedAt'])
+}
+
+export async function writePartnerDocumentReview(
+  config: PartnerAppConfig,
+  token: string,
+  uid: string,
+  documentKey: string,
+  review: PartnerDocumentReview,
+) {
+  await patchFirestoreDocument(
+    config,
+    token,
+    'partner_documents',
+    uid,
+    { adminDocuments: { [documentKey]: review } },
+    [`adminDocuments.${documentKey}`],
+  )
 }

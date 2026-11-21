@@ -26,6 +26,11 @@ function haversineKm(
   return 2 * earthRadiusKm * Math.asin(Math.min(1, Math.sqrt(h)))
 }
 
+/** Distance between two selected map points in km, floored at 1 km and rounded. */
+export function coordinateDistanceKm(pickup: { latitude: number; longitude: number }, drop: { latitude: number; longitude: number }): number {
+  return Math.max(1, Math.round(haversineKm(pickup, drop) * 10) / 10)
+}
+
 /** Distance between two service areas in km, floored at 1 km and rounded. */
 export function areaDistanceKm(pickup: string, drop: string): number {
   const distance = haversineKm(serviceAreaCoordinate(pickup), serviceAreaCoordinate(drop))

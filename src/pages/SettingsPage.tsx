@@ -52,25 +52,24 @@ export function SettingsPage({ data, initialTab }: { data: OperationsState; init
         {tabs.map((item) => <button key={item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>
           <Icon name={item === 'General' ? 'settings' : item === 'Partner sync' ? 'external' : 'refresh'} size={16} />{item}
         </button>)}
-        <div className="settings-side-note"><Icon name="info" size={14} />Simple controls for the manager walkthrough.</div>
+        <div className="settings-side-note"><Icon name="info" size={14} />Operations configuration for assignment and partner sync.</div>
       </Panel>
 
       <Panel className="settings-content">
         <PanelHeading
           title={tab}
-          detail={tab === 'General' ? 'Offer rules and the delay threshold.' : tab === 'Partner sync' ? 'Partner records load automatically after Firebase sign-in.' : 'Seeded partners and deliveries used in the demo.'}
+          detail={tab === 'General' ? 'Offer rules and fallback behavior.' : 'Partner records load automatically after Firebase sign-in.'}
           action={isDirty && tab === 'General' && <span className="unsaved-indicator"><i />Unsaved changes</span>}
         />
 
         {tab === 'General' && <>
           <div className="settings-section">
-            <div className="settings-section-title"><strong>Assignment offers</strong><span>These settings control the local demo workflow.</span></div>
+            <div className="settings-section-title"><strong>Assignment offers</strong><span>These settings control offer expiry and local fallback behavior.</span></div>
             <div className="setting-row"><div><strong>Offer timeout</strong><span>Minutes before an awaiting partner offer expires.</span></div><label className="setting-control"><input aria-label="Offer timeout in minutes" type="number" min="1" max="60" value={draft.offerTimeoutMinutes} onChange={(event) => update('offerTimeoutMinutes', Number(event.target.value))} disabled={!canManage} /><small>minutes</small></label></div>
             <div className="setting-row"><div><strong>Maximum attempts</strong><span>Offer attempts before the delivery returns to dispatch.</span></div><label className="setting-control"><input aria-label="Maximum assignment attempts" type="number" min="1" max="10" value={draft.maxAssignmentAttempts} onChange={(event) => update('maxAssignmentAttempts', Number(event.target.value))} disabled={!canManage} /><small>attempts</small></label></div>
             <div className="setting-row"><div><strong>Next-partner fallback</strong><span>Allow a timed-out offer to move to the next eligible partner.</span></div><button className={`toggle ${draft.fallbackEnabled ? 'toggle-on' : ''}`} role="switch" aria-checked={draft.fallbackEnabled} aria-label="Enable next partner fallback" disabled={!canManage} onClick={() => update('fallbackEnabled', !draft.fallbackEnabled)}><i /></button></div>
-            <div className="setting-row"><div><strong>Delay alert</strong><span>Minutes past the scheduled end before a delay is considered due.</span></div><label className="setting-control"><input aria-label="Delay threshold in minutes" type="number" min="1" max="180" value={draft.delayThresholdMinutes} onChange={(event) => update('delayThresholdMinutes', Number(event.target.value))} disabled={!canManage} /><small>minutes</small></label></div>
           </div>
-          <div className="settings-note"><Icon name="shield" size={15} /><span>Verification, availability, vehicle, and service-area checks are enforced automatically. They are not configurable in this demo.</span></div>
+          <div className="settings-note"><Icon name="shield" size={15} /><span>Availability, vehicle compatibility, service-area matching, and document checks are enforced when assigning a partner.</span></div>
           <div className="settings-footer"><div><span>{canManage ? isDirty ? 'Changes have not been saved.' : 'Changes are stored locally after saving.' : `${frame.data.user.role} has read-only access.`}</span></div><div><Button onClick={() => setDraft(cloneSettings(data.settings))} disabled={!canManage || !isDirty}>Discard</Button><Button variant="primary" disabled={!canManage || !isDirty} onClick={() => dispatch({ type: 'settings.save', settings: draft })}>Save changes</Button></div></div>
         </>}
 

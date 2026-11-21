@@ -32,13 +32,12 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
 
   if (partner.availability === 'Restricted') reasons.push(`Partner is restricted${partner.restrictedReason ? `: ${partner.restrictedReason}` : ''}`)
   if (partner.availability === 'Suspended') reasons.push(`Partner is suspended${partner.suspendedReason ? `: ${partner.suspendedReason}` : ''}`)
-  // During the live onboarding rollout, an approved delivery_app account may
-  // be assigned while the console catches up with the partner's availability
-  // heartbeat. The Partner App remains the source of truth for online state.
-  if (partner.availability === 'Offline' && !liveApplicationApproved) reasons.push('Partner is offline')
+  // An offline partner cannot see the offer in delivery_app. Do not let a
+  // console write look successful while the partner has no way to respond.
+  if (partner.availability === 'Offline') reasons.push('Partner is offline')
   if (partner.availability === 'On Delivery') reasons.push('Partner is already on an active delivery')
 
-  if (!liveApplicationApproved) {
+  if (state.settings.requireVerifiedDocuments && !liveApplicationApproved) {
     for (const type of required) {
       const document = documents.find((record) => record.type === type)
       if (!document || document.status === 'Missing') reasons.push(`${type} is missing`)
@@ -53,9 +52,11 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   if (state.settings.enforceVehicleCompatibility && !vehicleCanCarry(partner.vehicle, delivery.packageSize)) {
     reasons.push(`${partner.vehicle} is not compatible with a ${delivery.packageSize.toLowerCase()} package`)
   }
-  // Service-area enforcement is intentionally disabled for the current
-  // cross-app test workflow; delivery assignment must not be blocked by an
-  // incomplete onboarding area list.
+  if (state.settings.requireServiceAreaMatch && partner.serviceAreas.length > 0) {
+    const servesPickup = partner.serviceAreas.some((area) => area.trim().toLowerCase() === delivery.pickup.trim().toLowerCase())
+    const servesDrop = partner.serviceAreas.some((area) => area.trim().toLowerCase() === delivery.drop.trim().toLowerCase())
+    if (!servesPickup && !servesDrop) reasons.push('Service area does not include pickup or drop area')
+  }
 
   const activeAssignment = state.assignments.find((assignment) => assignment.partnerId === partner.id && assignment.status === 'Active')
   if (activeAssignment && activeAssignment.deliveryId !== delivery.id) {
@@ -74,7 +75,8 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
 }
 
 export function vehicleCanCarry(vehicle: Partner['vehicle'], packageSize: Delivery['packageSize']) {
-  if (packageSize === 'Small' || packageSize === 'Medium') return true
+  if (packageSize === 'Small') return true
+  if (packageSize === 'Medium') return vehicle === 'Bike' || vehicle === 'Scooter' || vehicle === 'Van'
   if (packageSize === 'Large') return vehicle === 'Van'
   return vehicle === 'Van'
 }

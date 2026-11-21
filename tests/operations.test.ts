@@ -873,9 +873,9 @@ test('assigning a linked partner builds a delivery offer write for delivery_app'
     at: '2026-06-01T10:00:00.000Z',
     records: [{
       id: 'live-assignee-uid', partnerId: null, name: 'Sayan M.', phone: '+91 90000 04748',
-      email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved',
+      email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved', isOnline: true,
       serviceAreas: ['New Town', 'Bidhannagar', 'Rajarhat'], updatedAt: '2026-06-01T09:55:00.000Z',
-      fields: { phone: '+91 90000 04748' }, syncedAt: '2026-06-01T10:00:00.000Z',
+      fields: { phone: '+91 90000 04748', isOnline: 'true' }, syncedAt: '2026-06-01T10:00:00.000Z',
     }],
   })
   expectSuccess(synced)
@@ -1211,6 +1211,121 @@ test('demo reset restores interconnected seed records and records the reset even
   assert.equal(frame.data.admins.length, 2)
   assert.equal(frame.data.user.role, 'Main Administrator')
   assert.ok(frame.data.auditLogs.some((item) => item.eventType === 'Local data reset'))
+})
+
+test('live orders are imported into the admin queue, block reassignment after acceptance, and release on rejection', () => {
+  let frame = identifyMainAdmin(frameWithDemo())
+  frame = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-11-22T08:00:00.000Z',
+    records: [{
+      id: 'live-rider-1', partnerId: null, name: 'Live Rider', phone: '+91 90000 04111',
+      email: null, vehicle: 'Bike', status: 'active', applicationStatus: 'approved', isOnline: true,
+      serviceAreas: ['New Town'], updatedAt: '2026-11-22T07:50:00.000Z',
+      fields: { registrationNumber: 'WB1234' }, syncedAt: '2026-11-22T08:00:00.000Z',
+    }],
+  })
+  expectSuccess(frame)
+  const partner = frame.data.partners.find((item) => item.partnerAppUid === 'live-rider-1')!
+  assert.equal(partner.source, 'delivery_app')
+
+  const order = {
+    id: 'live-order-1', displayId: '#LIVE-1', partnerUid: 'live-rider-1', partnerName: 'Live Rider',
+    nativeStatus: 'assigned', category: 'Grocery' as const,
+    pickup: { name: 'New Town', address: 'New Town', latitude: 22.58, longitude: 88.46 },
+    destination: { name: 'Salt Lake', address: 'Salt Lake', latitude: 22.57, longitude: 88.41 },
+    distanceKm: 4.2, etaMinutes: 22, earnings: 85, itemCount: 2, paymentMode: 'Prepaid' as const,
+    note: null, dropOtp: '4321', requestedAt: '2026-11-22T08:00:00.000Z', acceptedAt: null,
+    completedAt: null, updatedAt: '2026-11-22T08:00:00.000Z', cancellationReason: null,
+    events: [], rejected: false,
+  }
+  const synced = apply(frame, { type: 'delivery.sync-live-orders', at: '2026-11-22T08:00:05.000Z', orders: [order] })
+  expectSuccess(synced)
+  const delivery = synced.data.deliveries.find((item) => item.id === 'live-order-1')!
+  assert.equal(delivery.status, 'Assigned')
+  assert.equal(delivery.publicationStatus, 'Published')
+  assert.equal(synced.data.assignments.find((item) => item.deliveryId === 'live-order-1' && item.status === 'Active')?.partnerId, partner.id)
+
+  const accepted = apply(synced, {
+    type: 'delivery.sync-live-orders',
+    at: '2026-11-22T08:01:00.000Z',
+    orders: [{ ...order, nativeStatus: 'accepted', acceptedAt: '2026-11-22T08:01:00.000Z', events: [{ status: 'accepted', at: '2026-11-22T08:01:00.000Z' }] }],
+  })
+  assert.equal(accepted.data.deliveries.find((item) => item.id === 'live-order-1')?.liveStatus, 'accepted')
+  const blocked = apply(accepted, { type: 'delivery.assign', deliveryId: 'live-order-1', partnerId: 'DP-0187' })
+  assert.equal(blocked.feedback?.kind, 'error')
+
+  const rejected = apply(accepted, {
+    type: 'delivery.sync-live-orders',
+    at: '2026-11-22T08:02:00.000Z',
+    orders: [{ ...order, rejected: true }],
+  })
+  assert.equal(rejected.data.deliveries.find((item) => item.id === 'live-order-1')?.status, 'Unassigned')
+  assert.equal(rejected.data.assignments.some((item) => item.deliveryId === 'live-order-1' && item.status === 'Active'), false)
+  assert.ok(rejected.data.notifications.some((item) => item.category === 'Partner Rejected Offer' && item.relatedRecordId === 'live-order-1'))
+})
+
+test('unassigning a published offer withdraws it from delivery_app before acceptance', () => {
+  let frame = identifyMainAdmin(frameWithDemo())
+  frame = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-11-22T10:00:00.000Z',
+    records: [{
+      id: 'live-withdraw-uid', partnerId: null, name: 'Sayan M.', phone: '+91 90000 04748',
+      email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved', isOnline: true,
+      serviceAreas: ['New Town', 'Bidhannagar', 'Rajarhat'], updatedAt: '2026-11-22T09:55:00.000Z',
+      fields: {}, syncedAt: '2026-11-22T10:00:00.000Z',
+    }],
+  })
+  expectSuccess(frame)
+  const approved = apply(frame, { type: 'partnerApp.review', recordId: 'live-withdraw-uid', decision: 'Approved', note: 'Approved for withdrawal test' })
+  expectSuccess(approved)
+  const partnerId = approved.data.applications.find((item) => item.partnerAppUid === 'live-withdraw-uid')!.partnerId!
+  const assigned = apply(approved, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId })
+  expectSuccess(assigned)
+  assert.equal(assigned.data.deliveries.find((item) => item.id === 'DLV-1046')?.publicationStatus, 'Pending')
+
+  const unassigned = apply(assigned, { type: 'delivery.unassign', deliveryId: 'DLV-1046', reason: 'Rider requested removal' })
+  expectSuccess(unassigned)
+  assert.equal(unassigned.data.deliveries.find((item) => item.id === 'DLV-1046')?.publicationStatus, 'Pending')
+  const log = unassigned.data.auditLogs.find((item) => item.eventType === 'Delivery unassigned' && item.targetId === 'DLV-1046')!
+  const intent = buildPartnerAppWriteIntent(unassigned.data, log)
+  assert.equal(intent?.kind, 'delivery-unassign')
+  if (intent?.kind === 'delivery-unassign') {
+    assert.equal(intent.partnerAppUid, 'live-withdraw-uid')
+    assert.equal(intent.reason, 'Rider requested removal')
+  }
+})
+
+test('support ticket and live document reviews update the synced admin records', () => {
+  let frame = identifyMainAdmin(frameWithDemo())
+  frame = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-11-22T09:00:00.000Z',
+    records: [],
+    tickets: [{
+      id: 'ticket-live-1', partnerUid: 'live-rider-2', subject: 'Payout missing', message: 'The weekly payout is short.',
+      status: 'Open', createdAt: '2026-11-22T08:00:00.000Z', updatedAt: null, syncedAt: '2026-11-22T09:00:00.000Z',
+    }],
+    documents: [{
+      id: 'live-rider-2', updatedAt: '2026-11-22T08:30:00.000Z', syncedAt: '2026-11-22T09:00:00.000Z',
+      files: [{ key: 'licence', fileName: 'licence.jpg', downloadUrl: 'https://example.test/licence.jpg', uploadedAt: '2026-11-22T08:30:00.000Z', review: null }],
+    }],
+  })
+  expectSuccess(frame)
+  assert.equal(frame.data.partnerAppTickets.length, 1)
+  assert.equal(frame.data.partnerAppDocuments[0].files[0].fileName, 'licence.jpg')
+
+  const reviewed = apply(frame, {
+    type: 'partnerApp.document-review', uid: 'live-rider-2', documentKey: 'licence', at: '2026-11-22T09:05:00.000Z',
+    review: { status: 'Verified', expiresAt: '2027-11-22T23:59:59.000Z', note: 'Checked', reviewedBy: 'Operations Administrator', reviewedAt: '2026-11-22T09:05:00.000Z' },
+  })
+  expectSuccess(reviewed)
+  assert.equal(reviewed.data.partnerAppDocuments[0].files[0].review?.status, 'Verified')
+
+  const resolved = apply(reviewed, { type: 'partnerApp.ticket-status', ticketId: 'ticket-live-1', status: 'Resolved', at: '2026-11-22T09:06:00.000Z' })
+  expectSuccess(resolved)
+  assert.equal(resolved.data.partnerAppTickets[0].status, 'Resolved')
 })
 
 test('live deliveries from delivery_app are normalized for the operations map', () => {

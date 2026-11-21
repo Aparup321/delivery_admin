@@ -4,7 +4,7 @@ import { readPartnerAppToken } from '../services/partnerApp'
 import { fetchLiveDeliveriesCached } from '../services/liveDeliveries'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { activeQuotaMessage, blockQuotaUntilReset, clearQuotaBlock } from '../services/firestoreQuota'
-import { writeDeliveryAssignment, writeDeliveryCancellation } from '../services/deliveryWrite'
+import { writeDeliveryAssignment, writeDeliveryCancellation, writeDeliveryUnassign } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
 import { appReducer, type AppFrame, type OperationAction } from './operationsReducer'
@@ -79,23 +79,33 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         if (!active) return
         clearQuotaBlock(config.projectId)
 
-        const pending = live
-          .filter((item) => {
-            const terminal = item.nativeStatus === 'delivered' || item.nativeStatus === 'cancelled'
-              || item.status === 'Completed' || item.status === 'Cancelled'
-            if (!terminal) return false
-            const local = latestData.current.deliveries.find((delivery) => delivery.id === item.id)
-            return Boolean(local) && local!.status !== 'Completed' && local!.status !== 'Cancelled'
-          })
-          .map((item) => ({
-            id: item.id,
-            status: (item.nativeStatus === 'cancelled' || item.status === 'Cancelled' ? 'cancelled' : 'delivered') as 'delivered' | 'cancelled',
-            cancellationReason: item.cancellationReason,
-            completedAt: item.completedAt,
-          }))
+        const orders = live.map((item) => ({
+          id: item.id,
+          displayId: item.displayId,
+          partnerUid: item.partnerUid,
+          partnerName: item.partnerName,
+          nativeStatus: item.nativeStatus,
+          category: item.category === 'Restaurant' ? 'Restaurant' as const : 'Grocery' as const,
+          pickup: item.pickup,
+          destination: item.destination,
+          distanceKm: item.distanceKm,
+          etaMinutes: item.etaMinutes,
+          earnings: item.earnings,
+          itemCount: item.itemCount,
+          paymentMode: item.paymentMode === 'Cash on delivery' ? 'Cash on delivery' as const : 'Prepaid' as const,
+          note: item.note,
+          dropOtp: item.dropOtp,
+          requestedAt: item.requestedAt,
+          acceptedAt: item.acceptedAt,
+          completedAt: item.completedAt,
+          updatedAt: item.updatedAt,
+          cancellationReason: item.cancellationReason,
+          events: item.events,
+          rejected: item.partnerResponse?.decision === 'rejected',
+        }))
 
-        if (pending.length) {
-          dispatch({ type: 'delivery.sync-live', at: new Date().toISOString(), deliveries: pending })
+        if (orders.length) {
+          dispatch({ type: 'delivery.sync-live-orders', at: new Date().toISOString(), orders })
         }
       } catch (error) {
         // Polling is best-effort; the tracking page surfaces sync errors. A
@@ -177,6 +187,15 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           reason: intent.reason,
           at: intent.at,
         })
+      } else if (intent.kind === 'delivery-unassign') {
+        await writeDeliveryUnassign({
+          config,
+          token: readPartnerAppToken(),
+          deliveryId: intent.deliveryId,
+          partnerAppUid: intent.partnerAppUid,
+          reason: intent.reason,
+          at: intent.at,
+        })
       } else {
         await writePartnerAccountStatus({
           config,
@@ -203,7 +222,9 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           ? 'Offer published to the partner app.'
           : intent.kind === 'delivery-cancel'
             ? 'Cancellation published to the partner app.'
-            : `${intent.targetType === 'Application' ? intent.decision.toLowerCase() : intent.active ? 'reinstated' : 'suspended'} in delivery_app.`,
+            : intent.kind === 'delivery-unassign'
+              ? 'Unassigned offer withdrawn from the partner app.'
+              : `${intent.targetType === 'Application' ? intent.decision.toLowerCase() : intent.active ? 'reinstated' : 'suspended'} in delivery_app.`,
         at: new Date().toISOString(),
         applicationStatus,
         accountStatus,

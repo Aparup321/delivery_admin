@@ -38,41 +38,92 @@ function PartnerSectionTabs({ active, data, open }: { active: PartnersSection; d
   return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>All partners<span>{data.partners.length}</span></button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'new' ? 'active' : ''} onClick={() => open('/admin/partners?view=new')}>Create partner</button><button className={active === 'expiring' ? 'active' : ''} onClick={() => open('/admin/partners?view=expiring')}>Expiring documents<span>{expiringCount}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
 }
 
+const liveDocumentLabels: Record<string, string> = {
+  aadhaar: 'Aadhaar card',
+  pan: 'PAN card',
+  licence: 'Driving licence',
+  registration: 'Vehicle registration',
+  passbook: 'Bank passbook',
+}
+
+interface ExpiringDocumentRow {
+  key: string
+  partnerId: string | null
+  partnerName: string
+  label: string
+  reference: string
+  status: string
+  expiresAt: string
+  reviewer: string | null
+  documentId: string | null
+}
+
 function ExpiringDocumentsPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
   const { frame } = useOperations()
   const canReview = userCan(frame.data.user, 'document-review')
   const now = Date.now()
   const cutoff = now + 30 * 24 * 60 * 60_000
-  const documents = data.documents
+  const localRows: ExpiringDocumentRow[] = data.documents
     .filter((document) => document.expiresAt && new Date(document.expiresAt).getTime() <= cutoff)
-    .sort((left, right) => new Date(left.expiresAt!).getTime() - new Date(right.expiresAt!).getTime())
+    .map((document) => {
+      const partner = data.partners.find((item) => item.id === document.partnerId)
+      return {
+        key: document.id,
+        partnerId: partner?.id ?? null,
+        partnerName: partner?.name ?? document.partnerId,
+        label: document.type,
+        reference: document.id,
+        status: displayedDocumentStatus(document),
+        expiresAt: document.expiresAt!,
+        reviewer: document.reviewer,
+        documentId: document.id,
+      }
+    })
+  const liveRows: ExpiringDocumentRow[] = data.partnerAppDocuments.flatMap((document) => {
+    const partner = data.partners.find((item) => item.partnerAppUid === document.id)
+    return document.files.flatMap((file) => file.review?.expiresAt && new Date(file.review.expiresAt).getTime() <= cutoff
+      ? [{
+        key: `${document.id}:${file.key}`,
+        partnerId: partner?.id ?? null,
+        partnerName: partner?.name ?? document.id,
+        label: liveDocumentLabels[file.key] ?? file.key,
+        reference: file.fileName ?? 'delivery_app document',
+        status: file.review.status,
+        expiresAt: file.review.expiresAt,
+        reviewer: file.review.reviewedBy,
+        documentId: null,
+      }]
+      : [])
+  })
+  const documents = [...localRows, ...liveRows].sort((left, right) => new Date(left.expiresAt).getTime() - new Date(right.expiresAt).getTime())
 
-  function expiryLabel(document: PartnerDocument) {
-    const expiresAt = new Date(document.expiresAt!).getTime()
+  function expiryLabel(document: ExpiringDocumentRow) {
+    const expiresAt = new Date(document.expiresAt).getTime()
     const days = Math.ceil((expiresAt - now) / (24 * 60 * 60_000))
     if (days < 0) return `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} overdue`
     if (days === 0) return 'Expires today'
     return `Expires in ${days} day${days === 1 ? '' : 's'}`
   }
 
+  function reviewRow(document: ExpiringDocumentRow) {
+    if (document.documentId && document.partnerId) open(`/admin/partners/${document.partnerId}?document=${encodeURIComponent(document.documentId)}`)
+    else open('/admin/kyc')
+  }
+
   return <div className="page-stack">
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{documents.length}</strong><span>documents expired or expiring</span><span className="dot-separator" />{documents.filter((document) => new Date(document.expiresAt!).getTime() <= now).length} overdue</div><span className="demo-caption">Next 30 days</span></div>
-      <div className="notification-history-note"><Icon name="clock" size={14} />Review expired documents first. Updating a document review from the partner profile recalculates the partner's assignment eligibility.</div>
+      <div className="records-topline"><div className="records-count"><strong>{documents.length}</strong><span>documents expired or expiring</span><span className="dot-separator" />{documents.filter((document) => new Date(document.expiresAt).getTime() <= now).length} overdue</div><span className="demo-caption">Next 30 days · local and delivery_app</span></div>
+      <div className="notification-history-note"><Icon name="clock" size={14} />Review expired documents first. Updating a document review recalculates the partner's assignment eligibility. delivery_app documents are reviewed from KYC Review → Details.</div>
       <div className="table-scroll"><table className="data-table expiring-documents-table"><thead><tr><th>Partner</th><th>Document</th><th>Status</th><th>Expiry</th><th>Reviewer</th><th>Action</th></tr></thead><tbody>
-        {documents.map((document) => {
-          const partner = data.partners.find((item) => item.id === document.partnerId)
-          const status = displayedDocumentStatus(document)
-          return <tr key={document.id}>
-            <td>{partner ? <button className="partner-cell partner-profile-button" onClick={() => open(`/admin/partners/${partner.id}?document=${encodeURIComponent(document.id)}`)}><span className="mini-avatar">{initials(partner.name)}</span><span><b>{partner.name}</b><small>{partner.id}</small></span></button> : <span className="muted-text">{document.partnerId}</span>}</td>
-            <td><span className="document-main"><strong>{document.type}<small>{document.id}</small></strong></span></td>
-            <td><StatusBadge status={status} /></td>
-            <td><span className={`expiry-cell ${new Date(document.expiresAt!).getTime() <= now ? 'overdue' : ''}`}><strong>{formatDate(document.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong><small>{expiryLabel(document)}</small></span></td>
-            <td>{document.reviewer ?? <span className="muted-text">Not reviewed</span>}</td>
-            <td>{partner ? <Button size="small" variant="quiet" disabled={!canReview} title={canReview ? undefined : 'Document review access required'} onClick={() => open(`/admin/partners/${partner.id}?document=${encodeURIComponent(document.id)}`)}>Review document</Button> : <span className="muted-text">—</span>}</td>
-          </tr>
-        })}
-      </tbody></table>{documents.length === 0 && <EmptyState title="No documents are expiring soon" detail="Verified documents expiring within the next 30 days and already expired documents will appear here." />}</div>
+        {documents.map((document) => <tr key={document.key}>
+          <td>{document.partnerId ? <button className="partner-cell partner-profile-button" onClick={() => open(`/admin/partners/${document.partnerId}`)}><span className="mini-avatar">{initials(document.partnerName)}</span><span><b>{document.partnerName}</b><small>{document.partnerId}</small></span></button> : <span className="muted-text">{document.partnerName}</span>}</td>
+          <td><span className="document-main"><strong>{document.label}<small>{document.reference}</small></strong></span></td>
+          <td><StatusBadge status={document.status} /></td>
+          <td><span className={`expiry-cell ${new Date(document.expiresAt).getTime() <= now ? 'overdue' : ''}`}><strong>{formatDate(document.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong><small>{expiryLabel(document)}</small></span></td>
+          <td>{document.reviewer ?? <span className="muted-text">Not reviewed</span>}</td>
+          <td><Button size="small" variant="quiet" disabled={!canReview} title={canReview ? undefined : 'Document review access required'} onClick={() => reviewRow(document)}>Review document</Button></td>
+        </tr>)}
+      </tbody></table>{documents.length === 0 && <EmptyState title="No documents are expiring soon" detail="Documents with an expiry within the next 30 days or already expired appear here. Review delivery_app documents from KYC Review to record an expiry." />}</div>
     </Panel>
   </div>
 }
@@ -330,7 +381,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
       <div className="filter-toolbar partner-filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search name, partner ID, vehicle, area" aria-label="Search delivery partners" /></label>
         <label className="filter-control"><span>Availability</span><select value={availability} onChange={(event) => { setAvailability(event.target.value); setPage(1) }}><option>All</option><option>Available</option><option>On Delivery</option><option>Offline</option><option>Restricted</option><option>Suspended</option></select></label>
-        <label className="filter-control"><span>Vehicle</span><select value={vehicle} onChange={(event) => { setVehicle(event.target.value); setPage(1) }}><option>All</option><option>Bike</option><option>Scooter</option><option>Van</option></select></label>
+        <label className="filter-control"><span>Vehicle</span><select value={vehicle} onChange={(event) => { setVehicle(event.target.value); setPage(1) }}><option>All</option><option>Bike</option><option>Scooter</option><option>Van</option><option>Bicycle</option><option>On foot</option></select></label>
         <label className="filter-control"><span>Service area</span><select value={area} onChange={(event) => { setArea(event.target.value); setPage(1) }}><option>All</option>{areas.map((item) => <option key={item}>{item}</option>)}</select></label>
         <label className="filter-control"><span>Verification</span><select value={verification} onChange={(event) => { setVerification(event.target.value); setPage(1) }}><option>All</option><option>Verified</option><option>Incomplete</option><option>Under Review</option><option>Attention Required</option></select></label>
         <label className="filter-control"><span>Eligibility</span><select value={eligibility} onChange={(event) => { setEligibility(event.target.value); setPage(1) }}><option>All</option><option>Eligible</option><option>Ineligible</option></select></label>
@@ -343,7 +394,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
           const eligibilityResult = deliveryForEligibility ? getPartnerEligibility(data, partner, deliveryForEligibility) : { eligible: partner.availability === 'Available', reasons: [] }
           return <tr key={partner.id}>
             <td><button className="partner-cell partner-profile-button" onClick={() => open(`/admin/partners/${partner.id}`)}><span className="mini-avatar">{initials(partner.name)}</span><span><b>{partner.name}</b><small>{partner.id} · Registered {formatDate(partner.registeredAt, { month: 'short', year: 'numeric' })}</small></span></button></td>
-            <td><span className="vehicle-cell"><Icon name={partner.vehicle === 'Bike' ? 'bike' : partner.vehicle === 'Van' ? 'van' : 'scooter'} size={16} />{partner.vehicle}</span></td>
+            <td><span className="vehicle-cell"><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{partner.vehicle}</span></td>
             <td><span className="area-list">{partner.serviceAreas.slice(0, 2).join(', ')}{partner.serviceAreas.length > 2 && <small>+{partner.serviceAreas.length - 2} areas</small>}</span></td>
             <td><StatusBadge status={verificationState} /></td>
             <td><span className="availability-cell"><StatusBadge status={partner.availability} />{partner.availability === 'Suspended' && partner.suspendedUntil && <small>Until {formatSuspensionEnd(partner.suspendedUntil)}</small>}</span></td>
@@ -354,7 +405,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
               : <Button size="small" variant="danger" disabled={!canManage} title={canManage ? `Suspend ${partner.name}` : 'Partner management access required'} onClick={() => setSuspendTarget(partner)}>Suspend</Button>}<button className="row-open-button" onClick={() => open(`/admin/partners/${partner.id}`)} aria-label={`View ${partner.name} profile`}><Icon name="arrow" size={15} /></button></span></td>
           </tr>
         })}
-      </tbody></table>{visible.length === 0 && <EmptyState title="No partners match these filters" detail="Adjust the filters to view partners in the directory." />}</div>
+      </tbody></table>{visible.length === 0 && <EmptyState title={data.partners.length === 0 && data.partnerAppRecords.length > 0 ? 'No local partner records yet' : 'No partners match these filters'} detail={data.partners.length === 0 && data.partnerAppRecords.length > 0 ? 'Approved delivery_app accounts are imported automatically on the next partner sync. Pending accounts must be approved in KYC Review first.' : 'Adjust the filters to view partners in the directory.'} />}</div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
     </Panel>
     <p className="overview-footnote"><Icon name="shield" size={14} />Personal and document details are visible only to authorized administrators. Unsynchronized fields are shown as not provided.</p>
@@ -433,7 +484,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
     <div className="profile-columns">
       <div className="profile-main-column">
         <Panel><PanelHeading title="Partner and vehicle" detail={liveRecord ? 'Live synchronized partner details' : 'Live partner details are not synchronized'} />
-          <div className="profile-data-grid"><div><span>Partner ID</span><strong>{partner.id}</strong></div><div><span>Firebase UID</span><strong>{liveRecord?.id ?? 'Not linked'}</strong></div><div><span>Phone</span><strong>{liveRecord?.phone ?? 'Not synchronized'}</strong></div><div><span>Email</span><strong>{liveRecord?.email ?? 'Not synchronized'}</strong></div><div><span>Vehicle</span><strong><Icon name={partner.vehicle === 'Bike' ? 'bike' : partner.vehicle === 'Van' ? 'van' : 'scooter'} size={16} />{liveValue('vehicleType', 'vehicle.type') ?? partner.vehicle}</strong></div><div><span>Model</span><strong>{liveValue('vehicleModel', 'vehicle.model', 'model') ?? 'Not provided'}</strong></div><div><span>Colour</span><strong>{liveValue('vehicleColour', 'vehicle.color', 'colour', 'color') ?? 'Not provided'}</strong></div><div><span>Registration number</span><strong>{liveValue('vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber') ?? 'Not provided'}</strong></div><div><span>Licence number</span><strong>{liveValue('vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber') ?? 'Not provided'}</strong></div><div><span>Address</span><strong>{liveValue('addressLine', 'address', 'fullAddress') ?? 'Not provided'}</strong></div><div><span>City / pincode</span><strong>{[liveValue('city'), liveValue('pincode', 'postalCode')].filter(Boolean).join(' / ') || 'Not provided'}</strong></div><div><span>Application status</span><strong>{liveRecord?.applicationStatus ?? 'Not synchronized'}</strong></div><div><span>Account status</span><strong>{liveRecord?.status ?? 'Not synchronized'}</strong></div><div><span>Verification</span><strong><StatusBadge status={verification} /></strong></div><div><span>Assignment eligibility</span><strong><StatusBadge status={partner.availability === 'Restricted' || partner.availability === 'Suspended' || (!liveApplicationApproved && verification !== 'Verified') || active ? 'Ineligible' : 'Eligible'} /></strong></div></div>
+          <div className="profile-data-grid"><div><span>Partner ID</span><strong>{partner.id}</strong></div><div><span>Firebase UID</span><strong>{liveRecord?.id ?? 'Not linked'}</strong></div><div><span>Phone</span><strong>{liveRecord?.phone ?? 'Not synchronized'}</strong></div><div><span>Email</span><strong>{liveRecord?.email ?? 'Not synchronized'}</strong></div><div><span>Vehicle</span><strong><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{liveValue('vehicleType', 'vehicle.type') ?? partner.vehicle}</strong></div><div><span>Model</span><strong>{liveValue('vehicleModel', 'vehicle.model', 'model') ?? 'Not provided'}</strong></div><div><span>Colour</span><strong>{liveValue('vehicleColour', 'vehicle.color', 'colour', 'color') ?? 'Not provided'}</strong></div><div><span>Registration number</span><strong>{liveValue('vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber') ?? 'Not provided'}</strong></div><div><span>Licence number</span><strong>{liveValue('vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber') ?? 'Not provided'}</strong></div><div><span>Address</span><strong>{liveValue('addressLine', 'address', 'fullAddress') ?? 'Not provided'}</strong></div><div><span>City / pincode</span><strong>{[liveValue('city'), liveValue('pincode', 'postalCode')].filter(Boolean).join(' / ') || 'Not provided'}</strong></div><div><span>Application status</span><strong>{liveRecord?.applicationStatus ?? 'Not synchronized'}</strong></div><div><span>Account status</span><strong>{liveRecord?.status ?? 'Not synchronized'}</strong></div><div><span>Verification</span><strong><StatusBadge status={verification} /></strong></div><div><span>Assignment eligibility</span><strong><StatusBadge status={partner.availability === 'Restricted' || partner.availability === 'Suspended' || (!liveApplicationApproved && verification !== 'Verified') || active ? 'Ineligible' : 'Eligible'} /></strong></div></div>
           {liveRecord && visibleLiveFields.length > 0 && <div className="submitted-fields"><strong>All synchronized submitted fields</strong><div className="profile-data-grid">{visibleLiveFields.map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}</strong></div>)}</div></div>}
           <div className="illustrative-note"><Icon name="shield" size={14} />Only authorized administrators can view these personal and document details. Security tokens and secrets are excluded.</div>
         </Panel>

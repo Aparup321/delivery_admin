@@ -22,7 +22,7 @@ function timeLeft(expiresAt: string, now: number) {
 }
 
 export function DeliveryDetailPage({ data, delivery, open }: Props) {
-  const { frame, dispatch } = useOperations()
+  const { frame, dispatch, retryPartnerAppWrites } = useOperations()
   const live = useLiveDeliveries(data.partnerApp, hasFirebaseAdminSession())
   const liveDelivery = live.deliveries.find((item) => item.id === delivery.id || item.displayId.replace(/^#/, '') === delivery.id)
   const [dialog, setDialog] = useState<'cancel' | 'delay' | 'resolve' | string | null>(null)
@@ -61,6 +61,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
       </div>
     </div>
 
+    {delivery.publicationStatus && delivery.publicationStatus !== 'Published' && <div className={`soft-notice ${delivery.publicationStatus === 'Failed' ? 'error-notice' : ''}`}><Icon name={delivery.publicationStatus === 'Failed' ? 'alert' : 'info'} size={15} /><span>{delivery.publicationStatus === 'Not linked' ? 'This partner is not linked to delivery_app, so no order was sent.' : delivery.publicationStatus === 'Pending' ? 'Publishing this order to delivery_app…' : `Publishing failed${delivery.publishError ? `: ${delivery.publishError}` : '.'}`}</span>{delivery.publicationStatus === 'Failed' && <Button size="small" variant="quiet" onClick={retryPartnerAppWrites}>Retry publish</Button>}</div>}
     {delivery.status === 'Delayed' && <div className="exception-banner"><Icon name="alert" size={17} /><div><strong>Delivery delayed · underlying milestone preserved</strong><span>{delivery.delayReason || 'No reason recorded.'} · Current progress: {delivery.milestones.filter((item) => item.completedAt).length} of 6 milestones</span></div></div>}
     {assignedPartner?.needsOperationalReview && <div className="exception-banner exception-review"><Icon name="shield" size={17} /><div><strong>Partner requires an operational review</strong><span>The partner’s availability changed while this assignment was active. Assignment history is preserved; review the operational handoff.</span></div></div>}
 
@@ -71,7 +72,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
           <div className="detail-info-grid">
             <div className="detail-info-item"><span>Pickup</span><strong><Icon name="pin" size={15} />{delivery.pickup}</strong><small>{delivery.pickupAddress}</small></div>
             <div className="detail-info-item"><span>Drop</span><strong><Icon name="pin" size={15} />{delivery.drop}</strong><small>{delivery.dropAddress}</small></div>
-            <div className="detail-info-item"><span>Package</span><strong><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg.toFixed(1)} kg</strong><small>Vehicle requirement: {delivery.vehicleRequirement}</small></div>
+            <div className="detail-info-item"><span>Package</span><strong><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg > 0 ? `${delivery.estimatedWeightKg.toFixed(1)} kg` : 'weight not provided'}</strong><small>Vehicle requirement: {delivery.vehicleRequirement}</small></div>
             <div className="detail-info-item"><span>Scheduled window</span><strong><Icon name="calendar" size={15} />{formatDate(delivery.scheduledStart)} — {formatDate(delivery.scheduledEnd)}</strong><small>Times are local schedule values</small></div>
             <div className="detail-info-item detail-instructions"><span>Special instructions</span><strong>{delivery.specialInstructions || 'No special instructions'}</strong><small>No customer-sensitive data is connected.</small></div>
           </div>

@@ -172,6 +172,24 @@ export interface DeliveryCancellationWrite {
   at: string
 }
 
+/** Removes an unaccepted offer from the previous partner's app. */
+export async function writeDeliveryUnassign(write: DeliveryCancellationWrite): Promise<void> {
+  await requestDeliveryDocument(
+    write.config,
+    write.token,
+    write.deliveryId,
+    {
+      partnerUid: '',
+      status: 'cancelled',
+      adminStatus: 'Pending',
+      cancellationReason: write.reason,
+      completedAt: null,
+      updatedAt: write.at,
+    },
+    ['partnerUid', 'status', 'adminStatus', 'cancellationReason', 'completedAt', 'updatedAt'],
+  )
+}
+
 /** Cancels an offer or an in-progress delivery on the shared document. */
 export async function writeDeliveryCancellation(write: DeliveryCancellationWrite): Promise<void> {
   await requestDeliveryDocument(

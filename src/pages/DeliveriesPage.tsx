@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { Delivery, DeliveryLocation, OperationsState, PackageSize, VehicleType } from '../domain/model'
-import { areaDistanceKm, estimatePartnerEarnings } from '../domain/estimates'
+import { coordinateDistanceKm, estimatePartnerEarnings } from '../domain/estimates'
 import { Button, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
 import { userCan } from '../domain/admin'
 import { useOperations } from '../state/OperationsProvider'
@@ -45,8 +45,8 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   const [start, setStart] = useState(() => localInputValue(new Date(Date.now() + 60 * 60_000)))
   const [end, setEnd] = useState(() => localInputValue(new Date(Date.now() + 3 * 60 * 60_000)))
   const [instructions, setInstructions] = useState('')
-  const suggestedEarnings = pickup.trim() && drop.trim()
-    ? estimatePartnerEarnings(areaDistanceKm(pickup, drop))
+  const suggestedEarnings = pickupLocation && dropLocation
+    ? estimatePartnerEarnings(coordinateDistanceKm(pickupLocation, dropLocation))
     : null
 
   useEffect(() => {
@@ -135,7 +135,7 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
         <label className="field-label">Item count<input type="number" min="1" max="99" step="1" value={itemCount} onChange={(event) => setItemCount(event.target.value)} required /></label>
         <label className="field-label">Payment mode<select value={paymentMode} onChange={(event) => setPaymentMode(event.target.value as Delivery['paymentMode'])}><option>Prepaid</option><option>Cash on delivery</option></select></label>
         <label className="field-label">Partner payout (₹)<input type="number" min="0" step="1" value={earnings} onChange={(event) => setEarnings(event.target.value)} placeholder={suggestedEarnings ? `Suggested ₹${suggestedEarnings}` : 'e.g. 95'} /></label>
-        <label className="field-label">Vehicle requirement<select value={vehicle} onChange={(event) => setVehicle(event.target.value as VehicleType | 'Any')}><option>Any</option><option>Bike</option><option>Scooter</option><option>Van</option></select></label>
+        <label className="field-label">Vehicle requirement<select value={vehicle} onChange={(event) => setVehicle(event.target.value as VehicleType | 'Any')}><option>Any</option><option>Bike</option><option>Scooter</option><option>Van</option><option>Bicycle</option><option>On foot</option></select></label>
         <label className="field-label">Pickup / delivery window start<input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} required /></label>
         <label className="field-label">Delivery window end<input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} required /></label>
         <label className="field-label span-two">Special instructions<textarea rows={2} maxLength={180} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Optional handling note" /></label>
@@ -231,14 +231,14 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
 
   return <div className="page-stack">
     <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery records</span><span className="dot-separator" />{data.deliveries.length} total</div><div className="records-actions">{selected.length > 0 && <Button size="small" variant="secondary" onClick={bulkAssign} disabled={!canAssign}><Icon name="route" size={14} />Assign selected ({selected.length})</Button>}<Button size="small" variant="primary" onClick={() => setCreateOpen(true)} disabled={!canCreate} title={canCreate ? undefined : 'Delivery management access required'}><Icon name="plus" size={15} />Create delivery</Button></div></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>delivery records</span><span className="dot-separator" />{data.deliveries.length} total</div><div className="records-actions">{selected.length > 0 && <Button size="small" variant="secondary" onClick={bulkAssign} disabled={!canAssign}><Icon name="route" size={14} />Assign first selected{selected.length > 1 ? ` (${selected.length} selected)` : ''}</Button>}<Button size="small" variant="primary" onClick={() => setCreateOpen(true)} disabled={!canCreate} title={canCreate ? undefined : 'Delivery management access required'}><Icon name="plus" size={15} />Create delivery</Button></div></div>
       <div className="filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search ID, location, or partner" aria-label="Search deliveries" /></label>
         <label className="filter-control"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1) }}>{statusFilters.map((value) => <option key={value}>{value}</option>)}</select></label>
         <label className="filter-control"><span>Pickup</span><select value={pickup} onChange={(event) => { setPickup(event.target.value); setPage(1) }}><option>All</option>{areas.map((area) => <option key={area}>{area}</option>)}</select></label>
         <label className="filter-control"><span>Drop</span><select value={drop} onChange={(event) => { setDrop(event.target.value); setPage(1) }}><option>All</option>{areas.map((area) => <option key={area}>{area}</option>)}</select></label>
         <label className="filter-control"><span>Partner</span><select value={partner} onChange={(event) => { setPartner(event.target.value); setPage(1) }}><option>All</option>{assignedPartners.map((item) => <option value={item.id} key={item.id}>{item.id} · {item.name}</option>)}</select></label>
-        <label className="filter-control"><span>Vehicle</span><select value={vehicle} onChange={(event) => { setVehicle(event.target.value); setPage(1) }}><option>All</option><option>Any</option><option>Bike</option><option>Scooter</option><option>Van</option></select></label>
+        <label className="filter-control"><span>Vehicle</span><select value={vehicle} onChange={(event) => { setVehicle(event.target.value); setPage(1) }}><option>All</option><option>Any</option><option>Bike</option><option>Scooter</option><option>Van</option><option>Bicycle</option><option>On foot</option></select></label>
         <label className="filter-control"><span>Package</span><select value={packageSize} onChange={(event) => { setPackageSize(event.target.value); setPage(1) }}><option>All</option><option>Small</option><option>Medium</option><option>Large</option><option>Extra large</option></select></label>
         <label className="filter-control filter-date"><span>Scheduled date</span><input type="date" value={scheduledDate} onChange={(event) => { setScheduledDate(event.target.value); setPage(1) }} /></label>
         <label className="filter-control"><span>Assignment</span><select value={assignmentState} onChange={(event) => { setAssignmentState(event.target.value); setPage(1) }}><option>All</option><option>Assigned</option><option>Unassigned</option></select></label>
@@ -264,10 +264,10 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
               <td className="select-cell"><input type="checkbox" checked={selected.includes(delivery.id)} onChange={() => setSelected((value) => value.includes(delivery.id) ? value.filter((id) => id !== delivery.id) : [...value, delivery.id])} aria-label={`Select ${delivery.id}`} /></td>
               <td><button className="record-id" onClick={() => open(`/admin/deliveries/${delivery.id}`)}>{delivery.id}</button><small className="cell-subtext">{formatDate(delivery.createdAt, { month: 'short', day: 'numeric' })}</small></td>
               <td><span className="route-cell">{delivery.pickup}<Icon name="arrow" size={13} />{delivery.drop}</span><small className="cell-subtext">{delivery.vehicleRequirement === 'Any' ? 'Any vehicle' : `${delivery.vehicleRequirement} required`}</small></td>
-              <td><strong className="package-value">{delivery.packageSize}</strong><small className="cell-subtext">{delivery.estimatedWeightKg.toFixed(1)} kg</small></td>
+              <td><strong className="package-value">{delivery.packageSize}</strong><small className="cell-subtext">{delivery.estimatedWeightKg > 0 ? `${delivery.estimatedWeightKg.toFixed(1)} kg` : 'Weight not provided'}</small></td>
               <td><strong className="window-value">{formatDate(delivery.scheduledStart, { hour: 'numeric', minute: '2-digit' })} – {formatDate(delivery.scheduledEnd, { hour: 'numeric', minute: '2-digit' })}</strong><small className="cell-subtext">{formatDate(delivery.scheduledStart, { month: 'short', day: 'numeric' })}</small></td>
               <td>{assigned ? <button className="partner-link" onClick={() => open(`/admin/partners/${assigned.id}`)}><span className="mini-avatar">{assigned.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{assigned.name}</b><small>{assigned.id}</small></span></button> : <span className="unassigned-cell">Unassigned</span>}</td>
-              <td><StatusBadge status={delivery.status} /></td>
+              <td><StatusBadge status={delivery.status} />{delivery.publicationStatus && delivery.publicationStatus !== 'Published' && <small className={`publish-state publish-${delivery.publicationStatus.toLowerCase().replace(/\s+/g, '-')}`}>{delivery.publicationStatus}</small>}</td>
               <td><span className={`assignment-chip ${isAssigned ? 'assignment-active' : ''}`}><i />{isAssigned ? delivery.status === 'Completed' ? 'Completed' : 'Assigned' : 'Unassigned'}</span></td>
               <td>{delivery.status === 'Delayed' ? <span className="exception-text" title={delivery.delayReason ?? 'Review needed'}><Icon name="alert" size={14} />Delayed</span> : delivery.status === 'Cancelled' ? <span className="muted-text">—</span> : <span className="muted-text">—</span>}</td>
               <td><details className="row-menu"><summary aria-label={`Actions for ${delivery.id}`}><Icon name="more" size={18} /></summary><div className="row-menu-popover"><button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>View details</button>{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canAssign} onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}>{isAssigned ? 'Reassign partner' : 'Assign partner'}</button>}{isAssigned && <button disabled={!canRemoveAssignment} title={partnerAccepted ? 'The partner has accepted or started this delivery.' : !canAssign ? 'Assignment management access required.' : undefined} onClick={() => { if (window.confirm(`Remove ${assigned?.name ?? 'the partner'} from ${delivery.id}?`)) dispatch({ type: 'delivery.unassign', deliveryId: delivery.id, reason: 'Removed by administrator before partner acceptance.' }) }}>Remove partner</button>}</div></details></td>

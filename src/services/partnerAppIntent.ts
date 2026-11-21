@@ -6,7 +6,7 @@
  * live verification script without rendering React.
  */
 
-import { areaDistanceKm, estimateEtaMinutes, estimatePartnerEarnings } from '../domain/estimates.ts'
+import { coordinateDistanceKm, estimateEtaMinutes, estimatePartnerEarnings } from '../domain/estimates.ts'
 import type { AuditLogEntry, OperationsState } from '../domain/model.ts'
 import { serviceAreaCoordinate } from '../domain/serviceAreas.ts'
 
@@ -21,6 +21,15 @@ export type PartnerAppWriteIntent =
     decision: 'Approved' | 'Rejected'
     reason: string
     reviewedBy: string
+    at: string
+  }
+  | {
+    kind: 'delivery-unassign'
+    targetType: 'Delivery'
+    targetId: string
+    deliveryId: string
+    partnerAppUid: string
+    reason: string
     at: string
   }
   | {
@@ -158,6 +167,22 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
     }
   }
 
+  if (log.eventType === 'Delivery unassigned') {
+    const delivery = data.deliveries.find((item) => item.id === log.targetId)
+    if (!delivery) return null
+    const previousPartner = data.partners.find((partner) => partner.id === log.previousValue)
+    if (!previousPartner?.partnerAppUid) return null
+    return {
+      kind: 'delivery-unassign',
+      targetType: 'Delivery',
+      targetId: delivery.id,
+      deliveryId: delivery.id,
+      partnerAppUid: previousPartner.partnerAppUid,
+      reason: log.reason,
+      at: log.timestamp,
+    }
+  }
+
   // Assigning a partner publishes the offer to delivery_app's deliveries
   // collection so the assigned partner's app receives it live. Reassignments
   // replace partnerUid, which removes the offer from the previous partner.
@@ -170,9 +195,9 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
     const partner = data.partners.find((item) => item.id === assignment.partnerId)
     if (!partner?.partnerAppUid) return null
 
-    const pickupCoordinate = serviceAreaCoordinate(delivery.pickup)
-    const dropCoordinate = serviceAreaCoordinate(delivery.drop)
-    const distanceKm = areaDistanceKm(delivery.pickup, delivery.drop)
+    const pickupCoordinate = delivery.pickupLocation ?? serviceAreaCoordinate(delivery.pickup)
+    const dropCoordinate = delivery.dropLocation ?? serviceAreaCoordinate(delivery.drop)
+    const distanceKm = coordinateDistanceKm(pickupCoordinate, dropCoordinate)
     const instructions = delivery.specialInstructions.trim()
     const expiresAt = new Date(
       new Date(log.timestamp).getTime() + data.settings.offerTimeoutMinutes * 60_000,
@@ -189,12 +214,12 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
       category: delivery.category ?? 'Grocery',
       pickupName: delivery.pickup,
       pickupAddress: delivery.pickupAddress,
-      pickupLatitude: delivery.pickupLocation?.latitude ?? pickupCoordinate.latitude,
-      pickupLongitude: delivery.pickupLocation?.longitude ?? pickupCoordinate.longitude,
+      pickupLatitude: pickupCoordinate.latitude,
+      pickupLongitude: pickupCoordinate.longitude,
       dropName: delivery.drop,
       dropAddress: delivery.dropAddress,
-      dropLatitude: delivery.dropLocation?.latitude ?? dropCoordinate.latitude,
-      dropLongitude: delivery.dropLocation?.longitude ?? dropCoordinate.longitude,
+      dropLatitude: dropCoordinate.latitude,
+      dropLongitude: dropCoordinate.longitude,
       distanceKm,
       etaMinutes: estimateEtaMinutes(distanceKm),
       earnings: delivery.partnerEarnings ?? estimatePartnerEarnings(distanceKm),
