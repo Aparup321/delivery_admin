@@ -1405,3 +1405,4 @@ a { color: inherit; }
 .overview-footnote span, .osm-map-footnote, .activity-day small { color: #5f5a68; }
 .attention-row > span > small, button.attention-row small { color: #5f5a68; }
 .attention-row > span:nth-child(2) small { color: #5f5a68; }
+.settings-note-error { color: #a43d49; background: #fff7f7; border-color: #f3dfe1; }

@@ -7,7 +7,15 @@ import { activeQuotaMessage, blockQuotaUntilReset, clearQuotaBlock } from '../se
 import { writeDeliveryAssignment, writeDeliveryCancellation, writeDeliveryUnassign } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
+import { loadSharedWorkflow, saveSharedWorkflow, toSharedPayload } from '../services/sharedState'
 import { appReducer, type AppFrame, type OperationAction } from './operationsReducer'
+
+export interface SharedStateStatus {
+  status: 'local' | 'loading' | 'synced' | 'saving' | 'error'
+  lastSyncedAt: string | null
+  updatedBy: string | null
+  error: string | null
+}
 
 interface OperationsContextValue {
   frame: AppFrame
@@ -16,6 +24,9 @@ interface OperationsContextValue {
   /** Failed delivery_app writes waiting for a retry. */
   partnerAppWriteFailures: number
   retryPartnerAppWrites: () => void
+  /** Firestore-backed administrator workflow state. */
+  sharedState: SharedStateStatus
+  refreshSharedState: () => void
 }
 
 const OperationsContext = createContext<OperationsContextValue | null>(null)
@@ -28,11 +39,88 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const writeQueue = useRef<Promise<void>>(Promise.resolve())
   const failedWrites = useRef(new Map<string, PartnerAppWriteIntent>())
   const latestData = useRef(frame.data)
+  const [sharedState, setSharedState] = useState<SharedStateStatus>({ status: 'local', lastSyncedAt: null, updatedBy: null, error: null })
+  const [sharedReady, setSharedReady] = useState(false)
+  const lastSavedPayload = useRef('')
+  const remoteRevision = useRef(0)
+  const hydrateGuard = useRef(false)
 
   useEffect(() => {
     latestData.current = frame.data
     setStorageAvailable(saveOperationsState(frame.data))
   }, [frame.data])
+
+  const refreshSharedState = useCallback(async () => {
+    const config = latestData.current.partnerApp
+    if (!hasFirebaseAdminSession() || config.mode !== 'firestore' || !config.projectId.trim()) {
+      setSharedState({ status: 'local', lastSyncedAt: null, updatedBy: null, error: null })
+      return
+    }
+    setSharedState((current) => current.status === 'loading' ? current : { ...current, status: 'loading', error: null })
+    try {
+      const remote = await loadSharedWorkflow(config, readPartnerAppToken(), latestData.current)
+      if (!remote) {
+        lastSavedPayload.current = ''
+        remoteRevision.current = 0
+        setSharedReady(true)
+        setSharedState({ status: 'synced', lastSyncedAt: null, updatedBy: null, error: null })
+        return
+      }
+      if (remote.revision === remoteRevision.current) {
+        setSharedReady(true)
+        setSharedState({ status: 'synced', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: null })
+        return
+      }
+      const localPayload = JSON.stringify(toSharedPayload(latestData.current))
+      const hasUnsavedLocalChange = lastSavedPayload.current !== '' && localPayload !== lastSavedPayload.current
+      if (hasUnsavedLocalChange) {
+        setSharedState({ status: 'error', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: 'Another administrator has newer workflow changes. Save or discard this browser’s pending changes before refreshing.' })
+        return
+      }
+      remoteRevision.current = remote.revision
+      lastSavedPayload.current = JSON.stringify(toSharedPayload(remote.state))
+      // Hydrated audit history has already been written by the administrator
+      // who created it. Never replay those decisions into delivery_app.
+      hydrateGuard.current = true
+      dispatch({ type: 'state.hydrate', state: remote.state })
+      setSharedReady(true)
+      setSharedState({ status: 'synced', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: null })
+    } catch (error) {
+      setSharedReady(false)
+      setSharedState({
+        status: 'error',
+        lastSyncedAt: null,
+        updatedBy: null,
+        error: error instanceof Error ? error.message : 'Shared workflow state could not be loaded.',
+      })
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!sharedReady || !hasFirebaseAdminSession()) return
+    const config = frame.data.partnerApp
+    if (config.mode !== 'firestore' || !config.projectId.trim()) return
+    const payload = JSON.stringify(toSharedPayload(frame.data))
+    if (payload === lastSavedPayload.current) return
+    const timer = window.setTimeout(async () => {
+      setSharedState((current) => ({ ...current, status: 'saving', error: null }))
+      try {
+        const revision = await saveSharedWorkflow(config, readPartnerAppToken(), frame.data, frame.data.user.name || 'Administrator')
+        lastSavedPayload.current = payload
+        remoteRevision.current = revision
+        setSharedState({ status: 'synced', lastSyncedAt: new Date().toISOString(), updatedBy: frame.data.user.name, error: null })
+      } catch (error) {
+        setSharedState((current) => ({ ...current, status: 'error', error: error instanceof Error ? error.message : 'Shared workflow state could not be saved.' }))
+      }
+    }, 900)
+    return () => window.clearTimeout(timer)
+  }, [frame.data, sharedReady])
+
+  useEffect(() => {
+    if (!sharedReady || !hasFirebaseAdminSession()) return
+    const timer = window.setInterval(() => { void refreshSharedState() }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [sharedReady, refreshSharedState])
 
   useEffect(() => {
     const hasOfferAwaiting = frame.data.offers.some((offer) => offer.status === 'Awaiting Response')
@@ -262,6 +350,11 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const logs = frame.data.auditLogs
+    if (hydrateGuard.current) {
+      hydrateGuard.current = false
+      processedLogs.current = new Set(logs.map((log) => log.id))
+      return
+    }
     if (!processedLogs.current) {
       processedLogs.current = new Set(logs.map((log) => log.id))
       return
@@ -283,8 +376,8 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   }, [frame.data, enqueueWrite])
 
   const value = useMemo(
-    () => ({ frame, dispatch, storageAvailable, partnerAppWriteFailures, retryPartnerAppWrites }),
-    [frame, storageAvailable, partnerAppWriteFailures, retryPartnerAppWrites],
+    () => ({ frame, dispatch, storageAvailable, partnerAppWriteFailures, retryPartnerAppWrites, sharedState, refreshSharedState }),
+    [frame, storageAvailable, partnerAppWriteFailures, retryPartnerAppWrites, sharedState, refreshSharedState],
   )
   return <OperationsContext.Provider value={value}>{children}</OperationsContext.Provider>
 }

@@ -8,6 +8,7 @@ import { loadOperationsState, saveOperationsState } from '../src/data/persistenc
 import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
+import { mergeSharedPayload, toSharedPayload } from '../src/services/sharedState.ts'
 import { isQuotaError, nextQuotaResetAt, quotaMessage } from '../src/services/firestoreQuota.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
 import type { AdminSection, PartnerAppConfig, Permission } from '../src/domain/model.ts'
@@ -1326,6 +1327,28 @@ test('support ticket and live document reviews update the synced admin records',
   const resolved = apply(reviewed, { type: 'partnerApp.ticket-status', ticketId: 'ticket-live-1', status: 'Resolved', at: '2026-11-22T09:06:00.000Z' })
   expectSuccess(resolved)
   assert.equal(resolved.data.partnerAppTickets[0].status, 'Resolved')
+})
+
+test('shared workflow state excludes identity and live caches and hydrates without overwriting them', () => {
+  const frame = frameWithDemo()
+  const payload = toSharedPayload(frame.data)
+  assert.equal('user' in payload, false)
+  assert.equal('partnerApp' in payload, false)
+  assert.equal('partnerAppRecords' in payload, false)
+  assert.equal(payload.admins.length, frame.data.admins.length)
+
+  const remote = structuredClone(payload)
+  remote.notifications = []
+  remote.deliveries = []
+  const merged = mergeSharedPayload(frame.data, remote)
+  assert.equal(merged.notifications.length, 0)
+  assert.equal(merged.deliveries.length, 0)
+  assert.equal(merged.user.email, frame.data.user.email)
+  assert.equal(merged.partnerApp.projectId, frame.data.partnerApp.projectId)
+
+  const hydrated = apply(frame, { type: 'state.hydrate', state: merged })
+  assert.equal(hydrated.data.deliveries.length, 0)
+  assert.equal(hydrated.feedback, null)
 })
 
 test('live deliveries from delivery_app are normalized for the operations map', () => {

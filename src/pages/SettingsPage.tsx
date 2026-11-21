@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { OperationsSettings, OperationsState } from '../domain/model'
-import { Button, Icon, Panel, PanelHeading } from '../components/ui'
+import { Button, formatDate, Icon, Panel, PanelHeading } from '../components/ui'
 import { PartnerAppSettings } from '../components/PartnerAppSettings'
 import { userCan } from '../domain/admin'
 import { useOperations } from '../state/OperationsProvider'
@@ -19,7 +19,7 @@ function cloneSettings(settings: OperationsSettings) {
 }
 
 export function SettingsPage({ data, initialTab }: { data: OperationsState; initialTab?: string }) {
-  const { frame, dispatch } = useOperations()
+  const { frame, dispatch, sharedState } = useOperations()
   const [tab, setTab] = useState<SettingsTab>(() => tabFrom(initialTab))
   const [draft, setDraft] = useState(() => cloneSettings(data.settings))
 
@@ -70,7 +70,18 @@ export function SettingsPage({ data, initialTab }: { data: OperationsState; init
             <div className="setting-row"><div><strong>Next-partner fallback</strong><span>Allow a timed-out offer to move to the next eligible partner.</span></div><button className={`toggle ${draft.fallbackEnabled ? 'toggle-on' : ''}`} role="switch" aria-checked={draft.fallbackEnabled} aria-label="Enable next partner fallback" disabled={!canManage} onClick={() => update('fallbackEnabled', !draft.fallbackEnabled)}><i /></button></div>
           </div>
           <div className="settings-note"><Icon name="shield" size={15} /><span>Availability, vehicle compatibility, service-area matching, and document checks are enforced when assigning a partner.</span></div>
-          <div className="settings-footer"><div><span>{canManage ? isDirty ? 'Changes have not been saved.' : 'Changes are stored locally after saving.' : `${frame.data.user.role} has read-only access.`}</span></div><div><Button onClick={() => setDraft(cloneSettings(data.settings))} disabled={!canManage || !isDirty}>Discard</Button><Button variant="primary" disabled={!canManage || !isDirty} onClick={() => dispatch({ type: 'settings.save', settings: draft })}>Save changes</Button></div></div>
+          <div className={`settings-note ${sharedState.status === 'error' ? 'settings-note-error' : ''}`}>
+            <Icon name={sharedState.status === 'error' ? 'alert' : 'info'} size={15} />
+            <span>
+              <strong>Workflow storage:</strong>{' '}
+              {sharedState.status === 'local' ? 'Browser only. Sign in with Firebase to share workflow state across administrators.' : null}
+              {sharedState.status === 'loading' ? 'Loading shared state from Firestore…' : null}
+              {sharedState.status === 'saving' ? 'Saving workflow state to Firestore…' : null}
+              {sharedState.status === 'synced' ? `Shared via Firestore${sharedState.lastSyncedAt ? ` · last saved ${formatDate(sharedState.lastSyncedAt)}` : ''}${sharedState.updatedBy ? ` by ${sharedState.updatedBy}` : ''}.` : null}
+              {sharedState.status === 'error' ? sharedState.error : null}
+            </span>
+          </div>
+          <div className="settings-footer"><div><span>{canManage ? isDirty ? 'Changes have not been saved.' : 'Changes are saved to the shared Firestore workflow.' : `${frame.data.user.role} has read-only access.`}</span></div><div><Button onClick={() => setDraft(cloneSettings(data.settings))} disabled={!canManage || !isDirty}>Discard</Button><Button variant="primary" disabled={!canManage || !isDirty} onClick={() => dispatch({ type: 'settings.save', settings: draft })}>Save changes</Button></div></div>
         </>}
 
         {tab === 'Partner sync' && <div className="settings-section"><PartnerAppSettings /></div>}

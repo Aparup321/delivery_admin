@@ -52,6 +52,7 @@ export type OperationAction =
   | { type: 'admin.update'; adminId: string; name: string; title: string; role: AdminRole; sections: AdminSection[]; permissions: Permission[] }
   | { type: 'admin.set-active'; adminId: string; active: boolean; reason: string }
   | { type: 'user.identify'; id: string; name: string; email: string }
+  | { type: 'state.hydrate'; state: OperationsState }
   | { type: 'demo.reset' }
 
 const permissionByAction: Partial<Record<OperationAction['type'], Permission>> = {
@@ -1547,6 +1548,8 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       throw new Error('Internal offer sweep must be handled by the scheduler.')
     case 'delivery.sync-live-orders':
       throw new Error('Live order reconciliation must be handled by the scheduler.')
+    case 'state.hydrate':
+      throw new Error('Shared state hydration must be handled by the provider.')
     case 'partner.expire-suspensions':
       throw new Error('Internal suspension sweep must be handled by the scheduler.')
   }
@@ -1602,6 +1605,10 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
     } catch (error) {
       return { ...frame, sequence: frame.sequence + 1, feedback: { id: frame.sequence + 1, kind: 'error', message: error instanceof Error ? error.message : 'Partner app sync could not be recorded.' } }
     }
+  }
+
+  if (action.type === 'state.hydrate') {
+    return { ...frame, data: action.state, sequence: frame.sequence + 1, feedback: null }
   }
 
   if (action.type === 'delivery.sync-live-orders') {

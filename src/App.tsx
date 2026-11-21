@@ -89,9 +89,10 @@ export default function App() {
 }
 
 function AdminWorkspace({ session, onSignedOut }: { session: AdminSession; onSignedOut: () => void }) {
-  const { frame, storageAvailable } = useOperations()
+  const { frame, storageAvailable, refreshSharedState } = useOperations()
   const user = frame.data.user
   const mainAdmin = isMainAdministrator(user)
+  useEffect(() => { void refreshSharedState() }, [session.userId, refreshSharedState])
   useAutoPartnerSync(session, user.provisioned)
   const [route, setRoute] = useState<RouteState>(() => currentRoute())
   const [collapsed, setCollapsed] = useState(false)
