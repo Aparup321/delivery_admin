@@ -1,3 +1,4 @@
+import { demoModeEnabled } from '../config/firebase.ts'
 import type {
   DocumentType,
   OperationsState,
@@ -135,12 +136,15 @@ function recordItem(data: OperationsState, record: PartnerAppRecord, status: Kyc
  * the queue contains actual applications rather than every Firebase account.
  */
 export function buildKycQueue(data: OperationsState): KycQueueItem[] {
-  // Production KYC is sourced from the currently synchronized partner app.
-  // Local/demo applications and stale rows without a live Firebase record are
-  // intentionally excluded from the operational queue.
+  // Production KYC is sourced from the currently synchronized partner app;
+  // stale local rows are excluded. The demo keeps its seeded applications so
+  // the queue remains usable without a live Firebase connection.
   const liveApplicationIds = new Set(data.partnerAppRecords.map((record) => record.id))
   const items = data.applications
-    .filter((application) => !application.demoRecord && Boolean(application.partnerAppUid && liveApplicationIds.has(application.partnerAppUid)))
+    .filter((application) => {
+      const live = !application.demoRecord && Boolean(application.partnerAppUid && liveApplicationIds.has(application.partnerAppUid))
+      return demoModeEnabled ? application.demoRecord || live : live
+    })
     .map((application) => applicationItem(data, application))
   for (const record of data.partnerAppRecords) {
     if (data.applications.some((application) => application.partnerAppUid === record.id)) continue

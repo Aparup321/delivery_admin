@@ -3,6 +3,7 @@ import { userCan } from '../domain/admin'
 import type { Delivery, OperationsState, Partner } from '../domain/model'
 import { getPartnerEligibility } from '../domain/operations'
 import { Button, Dialog, EmptyState, Icon, PageHeading, Panel, PanelHeading, StatusBadge } from '../components/ui'
+import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
 interface Props {
@@ -21,7 +22,24 @@ export function AssignmentPage({ data, delivery, open }: Props) {
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>('All')
   const [confirm, setConfirm] = useState(false)
   const now = Date.now()
-  const evaluations = useMemo(() => data.partners.map((partner) => ({ partner, ...getPartnerEligibility(data, partner, delivery, now) })), [data, delivery, now])
+  // In a live partner-app connection an unlinked admin record cannot receive
+  // the order, so it must not look assignable in the candidate list.
+  const liveAppConnected = hasFirebaseAdminSession()
+    && data.partnerApp.mode === 'firestore'
+    && Boolean(data.partnerApp.projectId.trim())
+    && data.partnerAppRecords.length > 0
+  const linkedToApp = (partner: Partner) => Boolean(partner.partnerAppUid
+    && data.partnerAppRecords.some((record) => record.id === partner.partnerAppUid))
+  const evaluations = useMemo(() => data.partners.map((partner) => {
+    const evaluation = getPartnerEligibility(data, partner, delivery, now)
+    if (!liveAppConnected || linkedToApp(partner)) return { partner, ...evaluation }
+    return {
+      partner,
+      ...evaluation,
+      eligible: false,
+      reasons: [...evaluation.reasons, 'Not linked to a delivery_app account'],
+    }
+  }), [data, delivery, liveAppConnected, now])
   const matches = (partner: Partner) => {
     const record = partner.partnerAppUid ? data.partnerAppRecords.find((item) => item.id === partner.partnerAppUid) : undefined
     const text = `${partner.id} ${partner.name} ${partner.vehicle} ${partner.serviceAreas.join(' ')} ${record?.applicationStatus ?? ''} ${record?.status ?? ''}`.toLowerCase()
@@ -50,6 +68,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     <PageHeading title={`Assign partner · ${delivery.id}`} subtitle="Eligibility uses approval, account status, vehicle compatibility, and active assignments. Live onboarding document and area gaps do not block approved Partner App accounts." breadcrumbs={[{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: delivery.id, path: `/admin/deliveries/${delivery.id}` }, { label: 'Assignment' }]} onNavigate={open} />
     <div className="assignment-summary-strip"><span><Icon name="pin" size={15} /><b>{delivery.pickup}</b><Icon name="arrow" size={13} /><b>{delivery.drop}</b></span><i /><span><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg.toFixed(1)} kg</span><i /><span><Icon name="calendar" size={15} />{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledStart))} – {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledEnd))}</span><i /><span>Vehicle: <b>{delivery.vehicleRequirement}</b></span>{assigned && <><i /><span className="reassign-label">Reassigning from {data.partners.find((item) => item.id === assigned.partnerId)?.name}</span></>}</div>
 
+    {liveAppConnected && <div className="notification-history-note"><Icon name="info" size={14} />Live partner-app data is connected. Only partners linked to a delivery_app account can receive app orders. Link an unlinked partner from <button className="text-link" onClick={() => open('/admin/partners?view=app')}>Partner app data</button> before assigning.</div>}
     {delivery.status === 'Delayed' && <div className="exception-banner"><Icon name="alert" size={17} /><div><strong>This delivery is delayed</strong><span>Assignment changes are allowed, but the delay and current milestone remain unchanged.</span></div></div>}
     {['Completed', 'Cancelled'].includes(delivery.status) && <EmptyState title={`This delivery is ${delivery.status.toLowerCase()}`} detail="Completed or cancelled deliveries cannot be assigned. Return to the delivery record to review its history." action={<Button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>Back to delivery</Button>} />}
 
@@ -65,7 +84,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
             const verified = liveApproved || validDocuments === requiredDocuments
             return <tr key={partner.id} onClick={() => canTake && setSelectedId(partner.id)} className={`${canTake && selectedId === partner.id ? 'candidate-selected' : ''} ${!canTake ? 'candidate-ineligible' : ''}`}>
               <td><input type="radio" name="partner" checked={canTake && selectedId === partner.id} disabled={!canTake} onChange={() => setSelectedId(partner.id)} aria-label={`Select ${partner.name}`} /></td>
-              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small></span></span></td>
+              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small>{liveAppConnected && (linkedToApp(partner) ? <em className="link-badge linked">App linked</em> : <em className="link-badge unlinked">Not linked</em>)}</span></span></td>
               <td><span className="application-documents"><strong>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.applicationStatus ?? (data.applications.find((application) => application.partnerId === partner.id)?.status ?? 'Admin record')}</strong><small>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.status ?? 'Local account'}</small></span></td>
               <td><span className="vehicle-cell"><Icon name={partner.vehicle === 'Bike' ? 'bike' : partner.vehicle === 'Van' ? 'van' : 'scooter'} size={16} />{partner.vehicle}</span></td>
               <td><span className="area-list">{partner.serviceAreas.slice(0, 2).join(', ')}{partner.serviceAreas.length > 2 && <small>+{partner.serviceAreas.length - 2} areas</small>}</span></td>
@@ -83,7 +102,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
         <Panel className="assignment-confirm-panel">
           <PanelHeading title="Assignment confirmation" detail="Review before updating shared records" />
           <div className="assignment-summary-card"><span className="summary-card-label">DELIVERY</span><strong>{delivery.id}</strong><span>{delivery.pickup} <Icon name="arrow" size={12} /> {delivery.drop}</span><small>{delivery.packageSize} · {delivery.vehicleRequirement} requirement</small></div>
-          {selectedEntry ? <div className="selected-partner-card"><span className="profile-large-avatar">{selectedEntry.partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><div><span className="summary-card-label">SELECTED PARTNER</span><strong>{selectedEntry.partner.name}</strong><small>{selectedEntry.partner.id} · {selectedEntry.partner.vehicle}</small><small>Service areas: {selectedEntry.partner.serviceAreas.join(', ')}</small><StatusBadge status="Eligible" /></div></div> : <div className="select-partner-hint"><span className="empty-icon"><Icon name="partners" /></span><strong>Select an eligible partner</strong><small>Ineligible partners cannot be assigned. Their reasons are shown in the table.</small></div>}
+          {selectedEntry ? <div className="selected-partner-card"><span className="profile-large-avatar">{selectedEntry.partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><div><span className="summary-card-label">SELECTED PARTNER</span><strong>{selectedEntry.partner.name}</strong><small>{selectedEntry.partner.id} · {selectedEntry.partner.vehicle}</small><small>Service areas: {selectedEntry.partner.serviceAreas.join(', ')}</small>{liveAppConnected && linkedToApp(selectedEntry.partner) && <small className="live-link-status"><Icon name="check-circle" size={12} />Live orders go to delivery_app · {selectedEntry.partner.partnerAppUid}</small>}<StatusBadge status="Eligible" /></div></div> : <div className="select-partner-hint"><span className="empty-icon"><Icon name="partners" /></span><strong>Select an eligible partner</strong><small>Ineligible partners cannot be assigned. Their reasons are shown in the table.</small></div>}
           <div className="assignment-effects"><span>On confirmation</span><ul><li>Partner availability updates</li><li>Assignment history is retained</li><li>Audit record is appended</li><li>Overview and notifications refresh</li></ul></div>
           <Button variant="primary" className="full-width" disabled={!selectedEntry || !canAssign} title={!canAssign ? 'Read-only operational access' : undefined} onClick={() => setConfirm(true)}>{assigned ? 'Confirm reassignment' : 'Confirm assignment'}<Icon name="arrow" size={15} /></Button>
           <Button className="full-width" disabled={!selectedEntry || !canAssign || Boolean(assigned)} onClick={createOffer}><Icon name="clock" size={15} />Create simulated partner offer</Button>
