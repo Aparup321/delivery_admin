@@ -36,10 +36,14 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
   const currentAssignment = history.find((assignment) => assignment.status === 'Active')
   const assignedPartner = currentAssignment ? data.partners.find((partner) => partner.id === currentAssignment.partnerId) : undefined
   const offers = data.offers.filter((offer) => offer.deliveryId === delivery.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  const liveAccepts = Boolean(liveDelivery && !['assigned', 'rejected', 'cancelled'].includes(liveDelivery.nativeStatus))
+  const localAccepts = Boolean(delivery.liveStatus && !['assigned', 'rejected', 'cancelled'].includes(delivery.liveStatus))
   const nextMilestone = delivery.milestones.findIndex((milestone) => !milestone.completedAt)
   const isTerminal = delivery.status === 'Completed' || delivery.status === 'Cancelled'
   const canOperate = userCan(frame.data.user, 'assignment')
   const canManage = userCan(frame.data.user, 'delivery-management')
+  const partnerAccepted = Boolean(currentAssignment && (delivery.status === 'In Transit' || liveAccepts || localAccepts))
+  const canRemovePartner = Boolean(currentAssignment && !partnerAccepted && delivery.status === 'Assigned' && canOperate && !isTerminal)
   const mapRoute = useMemo(() => ({
     approximate: liveDelivery ? false : !hasServiceAreaCoordinate(delivery.pickup) || !hasServiceAreaCoordinate(delivery.drop),
     points: liveDelivery ? [
@@ -55,7 +59,8 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
   return <div className="page-stack detail-page">
     <div className="detail-action-bar">
       <div className="detail-state"><span className="record-id-large">{delivery.id}</span><StatusBadge status={liveDelivery?.status ?? delivery.status} />{liveDelivery && <span className="source-tag source-live"><i />Live delivery_app status</span>}<span className="created-label">Created {formatDate(delivery.createdAt)}</span></div>
-      <div className="detail-actions"><Button size="small" variant="secondary" onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)} disabled={!canOperate || isTerminal} title={!canOperate ? 'Read-only operational access' : undefined}><Icon name="route" size={15} />{currentAssignment ? 'Reassign' : 'Assign partner'}</Button>
+      <div className="detail-actions"><Button size="small" variant="secondary" onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)} disabled={!canOperate || isTerminal || partnerAccepted} title={partnerAccepted ? 'The partner has already accepted this delivery.' : !canOperate ? 'Read-only operational access' : undefined}><Icon name="route" size={15} />{currentAssignment ? 'Reassign' : 'Assign partner'}</Button>
+        {canRemovePartner && <Button size="small" variant="quiet" onClick={() => setDialog('remove')}>Remove partner</Button>}
         {delivery.status === 'Delayed' ? <Button size="small" onClick={() => setDialog('resolve')} disabled={!canManage}>Resolve delay</Button> : <Button size="small" onClick={() => setDialog('delay')} disabled={!canManage || isTerminal}>Mark delayed</Button>}
         <Button size="small" variant="danger" onClick={() => setDialog('cancel')} disabled={!canManage || isTerminal}>Cancel delivery</Button>
       </div>
@@ -139,6 +144,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
     {dialog === 'cancel' && <ConfirmDialog title="Cancel this delivery?" detail="Cancellation is recorded with a required reason. Assignment and offer history are kept; partners are not silently removed." confirmLabel="Cancel delivery" danger onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.cancel', deliveryId: delivery.id, reason }); setDialog(null) }} />}
     {dialog === 'delay' && <ConfirmDialog title="Mark delivery delayed" detail="The current milestone will be preserved. A delay exception and operational notification are recorded." confirmLabel="Mark delayed" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.delay', deliveryId: delivery.id, reason }); setDialog(null) }} />}
     {dialog === 'resolve' && <ConfirmDialog title="Resolve delivery delay" detail="Add an operational note to clear the delay flag. The delivery returns to its prior status and milestone." reasonLabel="Resolution note" confirmLabel="Resolve delay" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.clear-delay', deliveryId: delivery.id, reason }); setDialog(null) }} />}
-    {dialog && !['cancel', 'delay', 'resolve'].includes(dialog) && <ConfirmDialog title="Record partner rejection" detail="This simulated response is saved to offer history and the audit log." reasonLabel="Rejection reason" confirmLabel="Record rejection" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'offer.reject', offerId: dialog, reason }); setDialog(null) }} />}
+    {dialog === 'remove' && currentAssignment && <ConfirmDialog title={`Remove ${assignedPartner?.name ?? 'the partner'} from ${delivery.id}?`} detail="The partner is removed before acceptance, the delivery returns to Unassigned, and the offer is withdrawn from delivery_app. The assignment remains in history." reasonLabel="Removal reason" confirmLabel="Remove partner" danger onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'delivery.unassign', deliveryId: delivery.id, reason: reason.trim() || 'Removed by administrator before partner acceptance.' }); setDialog(null) }} />}
+    {dialog && !['cancel', 'delay', 'resolve', 'remove'].includes(dialog) && <ConfirmDialog title="Record partner rejection" detail="This simulated response is saved to offer history and the audit log." reasonLabel="Rejection reason" confirmLabel="Record rejection" onCancel={() => setDialog(null)} onConfirm={(reason) => { dispatch({ type: 'offer.reject', offerId: dialog, reason }); setDialog(null) }} />}
   </div>
 }

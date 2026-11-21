@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { Delivery, DeliveryLocation, OperationsState, PackageSize, VehicleType } from '../domain/model'
 import { coordinateDistanceKm, estimatePartnerEarnings } from '../domain/estimates'
-import { Button, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
+import { Button, ConfirmDialog, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
 import { userCan } from '../domain/admin'
 import { useOperations } from '../state/OperationsProvider'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
@@ -167,6 +167,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<string[]>([])
   const [createOpen, setCreateOpen] = useState(false)
+  const [removeTarget, setRemoveTarget] = useState<Delivery | null>(null)
   const pageSize = 8
   const areas = [...new Set(data.deliveries.flatMap((delivery) => [delivery.pickup, delivery.drop]))].sort()
   const assignedPartners = [...new Map(data.assignments.map((assignment) => {
@@ -270,7 +271,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
               <td><StatusBadge status={delivery.status} />{delivery.publicationStatus && delivery.publicationStatus !== 'Published' && <small className={`publish-state publish-${delivery.publicationStatus.toLowerCase().replace(/\s+/g, '-')}`}>{delivery.publicationStatus}</small>}</td>
               <td><span className={`assignment-chip ${isAssigned ? 'assignment-active' : ''}`}><i />{isAssigned ? delivery.status === 'Completed' ? 'Completed' : 'Assigned' : 'Unassigned'}</span></td>
               <td>{delivery.status === 'Delayed' ? <span className="exception-text" title={delivery.delayReason ?? 'Review needed'}><Icon name="alert" size={14} />Delayed</span> : delivery.status === 'Cancelled' ? <span className="muted-text">—</span> : <span className="muted-text">—</span>}</td>
-              <td><details className="row-menu"><summary aria-label={`Actions for ${delivery.id}`}><Icon name="more" size={18} /></summary><div className="row-menu-popover"><button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>View details</button>{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canAssign} onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}>{isAssigned ? 'Reassign partner' : 'Assign partner'}</button>}{isAssigned && <button disabled={!canRemoveAssignment} title={partnerAccepted ? 'The partner has accepted or started this delivery.' : !canAssign ? 'Assignment management access required.' : undefined} onClick={() => { if (window.confirm(`Remove ${assigned?.name ?? 'the partner'} from ${delivery.id}?`)) dispatch({ type: 'delivery.unassign', deliveryId: delivery.id, reason: 'Removed by administrator before partner acceptance.' }) }}>Remove partner</button>}</div></details></td>
+              <td><details className="row-menu"><summary aria-label={`Actions for ${delivery.id}`}><Icon name="more" size={18} /></summary><div className="row-menu-popover"><button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>View details</button>{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canAssign || partnerAccepted} title={partnerAccepted ? 'The partner has accepted this delivery; reassignment is blocked.' : undefined} onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}>{isAssigned ? 'Reassign partner' : 'Assign partner'}</button>}{isAssigned && <button disabled={!canRemoveAssignment} title={partnerAccepted ? 'The partner has accepted or started this delivery.' : !canAssign ? 'Assignment management access required.' : 'Remove the partner before acceptance'} onClick={() => setRemoveTarget(delivery)}>Remove partner</button>}</div></details></td>
             </tr>
           })}</tbody>
         </table>
@@ -279,5 +280,17 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>Next</Button></div></div>
     </Panel>
     {createOpen && <CreateDeliveryDialog onClose={() => setCreateOpen(false)} />}
+    {removeTarget && <ConfirmDialog
+      title={`Remove ${partnerFor(data, removeTarget)?.name ?? 'the partner'} from ${removeTarget.id}?`}
+      detail="The partner is removed before acceptance, the delivery returns to Unassigned, and the offer is withdrawn from delivery_app. The assignment remains in history."
+      reasonLabel="Removal reason"
+      confirmLabel="Remove partner"
+      danger
+      onCancel={() => setRemoveTarget(null)}
+      onConfirm={(reason) => {
+        dispatch({ type: 'delivery.unassign', deliveryId: removeTarget.id, reason: reason.trim() || 'Removed by administrator before partner acceptance.' })
+        setRemoveTarget(null)
+      }}
+    />}
   </div>
 }

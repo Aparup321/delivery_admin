@@ -58,6 +58,9 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     if (!selectedEntry) return
     dispatch({ type: 'delivery.assign', deliveryId: delivery.id, partnerId: selectedEntry.partner.id })
     setConfirm(false)
+    // Return to the delivery record so the operator sees the published order
+    // instead of a now-empty candidate list that looks like a stalled screen.
+    open(`/admin/deliveries/${delivery.id}`)
   }
 
   function createOffer() {
