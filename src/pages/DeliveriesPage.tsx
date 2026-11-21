@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { Delivery, DeliveryLocation, OperationsState, PackageSize, VehicleType } from '../domain/model'
 import { coordinateDistanceKm, estimatePartnerEarnings } from '../domain/estimates'
 import { Button, ConfirmDialog, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
@@ -145,6 +146,57 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   </Dialog>
 }
 
+function DeliveryRowMenu({ deliveryId, children }: { deliveryId: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false)
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent) => {
+      if (triggerRef.current?.contains(event.target as Node)) return
+      const menu = document.getElementById(`delivery-menu-${deliveryId}`)
+      if (menu?.contains(event.target as Node)) return
+      setOpen(false)
+    }
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false) }
+    const closeForViewport = () => setOpen(false)
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    window.addEventListener('resize', closeForViewport)
+    window.addEventListener('scroll', closeForViewport, true)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', closeForViewport)
+      window.removeEventListener('scroll', closeForViewport, true)
+    }
+  }, [open, deliveryId])
+
+  function toggle() {
+    if (open) {
+      setOpen(false)
+      return
+    }
+    const rect = triggerRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const width = 188
+    setPosition({
+      top: Math.min(rect.bottom + 4, window.innerHeight - 160),
+      left: Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8)),
+    })
+    setOpen(true)
+  }
+
+  return <>
+    <button ref={triggerRef} className={`row-menu-trigger ${open ? 'open' : ''}`} onClick={toggle} aria-label={`Actions for ${deliveryId}`} aria-haspopup="menu" aria-expanded={open}><Icon name="more" size={18} /></button>
+    {open && position && createPortal(
+      <div id={`delivery-menu-${deliveryId}`} className="row-menu-popover" role="menu" style={{ position: 'fixed', top: position.top, left: position.left }} onClick={() => setOpen(false)}>{children}</div>,
+      document.body,
+    )}
+  </>
+}
+
 function partnerFor(data: OperationsState, delivery: Delivery) {
   const assignment = data.assignments.find((item) => item.id === delivery.assignmentId)
   return assignment ? data.partners.find((partner) => partner.id === assignment.partnerId) : undefined
@@ -271,7 +323,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
               <td><StatusBadge status={delivery.status} />{delivery.publicationStatus && delivery.publicationStatus !== 'Published' && <small className={`publish-state publish-${delivery.publicationStatus.toLowerCase().replace(/\s+/g, '-')}`}>{delivery.publicationStatus}</small>}</td>
               <td><span className={`assignment-chip ${isAssigned ? 'assignment-active' : ''}`}><i />{isAssigned ? delivery.status === 'Completed' ? 'Completed' : 'Assigned' : 'Unassigned'}</span></td>
               <td>{delivery.status === 'Delayed' ? <span className="exception-text" title={delivery.delayReason ?? 'Review needed'}><Icon name="alert" size={14} />Delayed</span> : delivery.status === 'Cancelled' ? <span className="muted-text">—</span> : <span className="muted-text">—</span>}</td>
-              <td><details className="row-menu"><summary aria-label={`Actions for ${delivery.id}`}><Icon name="more" size={18} /></summary><div className="row-menu-popover"><button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>View details</button>{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canAssign || partnerAccepted} title={partnerAccepted ? 'The partner has accepted this delivery; reassignment is blocked.' : undefined} onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}>{isAssigned ? 'Reassign partner' : 'Assign partner'}</button>}{isAssigned && <button disabled={!canRemoveAssignment} title={partnerAccepted ? 'The partner has accepted or started this delivery.' : !canAssign ? 'Assignment management access required.' : 'Remove the partner before acceptance'} onClick={() => setRemoveTarget(delivery)}>Remove partner</button>}</div></details></td>
+              <td><DeliveryRowMenu deliveryId={delivery.id}><button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>View details</button>{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canAssign || partnerAccepted} title={partnerAccepted ? 'The partner has accepted this delivery; reassignment is blocked.' : undefined} onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}>{isAssigned ? 'Reassign partner' : 'Assign partner'}</button>}{isAssigned && <button disabled={!canRemoveAssignment} title={partnerAccepted ? 'The partner has accepted or started this delivery.' : !canAssign ? 'Assignment management access required.' : 'Remove the partner before acceptance'} onClick={() => setRemoveTarget(delivery)}>Remove partner</button>}{partnerAccepted && <span className="row-menu-note">Accepted by partner · actions locked</span>}</DeliveryRowMenu></td>
             </tr>
           })}</tbody>
         </table>

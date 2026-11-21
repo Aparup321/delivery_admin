@@ -1406,3 +1406,6 @@ a { color: inherit; }
 .attention-row > span > small, button.attention-row small { color: #5f5a68; }
 .attention-row > span:nth-child(2) small { color: #5f5a68; }
 .settings-note-error { color: #a43d49; background: #fff7f7; border-color: #f3dfe1; }
+.row-menu-trigger { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; color: #827c8b; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.row-menu-trigger:hover, .row-menu-trigger.open { color: var(--purple); background: #f3eff9; }
+.row-menu-note { display: block; padding: 8px; color: #6b6573; border-top: 1px solid #efedf3; font-size: 8px; }
