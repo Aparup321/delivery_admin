@@ -1404,3 +1404,4 @@ a { color: inherit; }
 .attention-row small, .activity-feed-row time, .activity-event-copy small, .overview-footnote,
 .overview-footnote span, .osm-map-footnote, .activity-day small { color: #5f5a68; }
 .attention-row > span > small, button.attention-row small { color: #5f5a68; }
+.attention-row > span:nth-child(2) small { color: #5f5a68; }
