@@ -11,7 +11,7 @@
  */
 
 import type { PartnerAppConfig } from '../domain/model.ts'
-import { isRecord, PartnerAppRequestError, partnerAppDocumentEndpoint } from './partnerApp.ts'
+import { isRecord, PartnerAppRequestError, partnerAppCollectionDocumentEndpoint } from './partnerApp.ts'
 import { encodeValue } from './partnerAppWrite.ts'
 import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
@@ -22,7 +22,7 @@ async function requestDeliveryDocument(
   fields: Record<string, unknown>,
   fieldPaths: string[] | null,
 ): Promise<void> {
-  const url = new URL(partnerAppDocumentEndpoint(config, documentId))
+  const url = new URL(partnerAppCollectionDocumentEndpoint(config, 'deliveries', documentId))
 
   if (fieldPaths) {
     for (const path of fieldPaths) url.searchParams.append('updateMask.fieldPaths', path)

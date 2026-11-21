@@ -130,6 +130,18 @@ export function partnerAppDocumentEndpoint(config: PartnerAppConfig, documentId:
   return `${firestoreCollectionUrl(config)}/${encodeURIComponent(id)}${query}`
 }
 
+export function partnerAppCollectionDocumentEndpoint(config: PartnerAppConfig, collection: string, documentId: string) {
+  if (config.mode !== 'firestore') throw new Error('Live data actions require a Firestore connection.')
+  const collectionName = collection.trim().replace(/^\/+|\/+$/g, '')
+  const id = documentId.trim()
+  if (!collectionName) throw new Error('The delivery_app collection name is missing.')
+  if (!id) throw new Error('The delivery_app document ID is missing.')
+  const params = new URLSearchParams()
+  if (config.apiKey.trim()) params.set('key', config.apiKey.trim())
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return `${firestoreCollectionUrl(config, collectionName)}/${encodeURIComponent(id)}${query}`
+}
+
 async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSize?: number): Promise<unknown> {
   const url = partnerAppEndpoint(config, pageSize)
   const headers: Record<string, string> = { Accept: 'application/json' }

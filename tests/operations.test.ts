@@ -5,7 +5,7 @@ import { getPartnerEligibility, nextPartnerId } from '../src/domain/operations.t
 import { buildKycQueue, liveApplicationStatus } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
-import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppEndpoint } from '../src/services/partnerApp.ts'
+import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { isQuotaError, nextQuotaResetAt, quotaMessage } from '../src/services/firestoreQuota.ts'
@@ -919,6 +919,29 @@ test('assigning a linked partner builds a delivery offer write for delivery_app'
     assert.equal(cancelIntent.partnerAppUid, 'live-assignee-uid')
     assert.equal(cancelIntent.reason, 'Customer changed the window')
   }
+})
+
+test('delivery writes target deliveries while partner actions stay on partners', () => {
+  const config: PartnerAppConfig = {
+    mode: 'firestore',
+    projectId: 'delivery-231a0',
+    apiKey: 'public-web-key',
+    databaseId: '(default)',
+    partnersCollection: 'partners',
+    endpointUrl: '',
+    lastConnectedAt: null,
+    lastSyncAt: null,
+    lastError: null,
+  }
+
+  assert.equal(
+    partnerAppCollectionDocumentEndpoint(config, 'deliveries', 'DLV-1049'),
+    'https://firestore.googleapis.com/v1/projects/delivery-231a0/databases/(default)/documents/deliveries/DLV-1049?key=public-web-key',
+  )
+  assert.match(
+    partnerAppDocumentEndpoint(config, 'partner-uid'),
+    /\/documents\/partners\/partner-uid\?key=public-web-key$/,
+  )
 })
 
 test('partner-app completions reconcile local assignments so the partner becomes eligible again', () => {
