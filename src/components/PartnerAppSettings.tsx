@@ -4,6 +4,7 @@ import { hasFirebaseEnvConfig } from '../config/firebase'
 import { userCan } from '../domain/admin'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import { readPartnerAppToken, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
+import { clearQuotaBlock, describeSyncError } from '../services/firestoreQuota'
 import { Button, formatDate, Icon } from './ui'
 import { useOperations } from '../state/OperationsProvider'
 
@@ -36,12 +37,13 @@ export function PartnerAppSettings() {
         syncPartnerAppRecords(saved, token),
         syncPartnerAppTickets(saved, token).catch(() => []),
       ])
+      clearQuotaBlock(saved.projectId)
       dispatch({ type: 'partnerApp.sync-result', records, tickets, at: new Date().toISOString() })
       setNotice(records.length > 0
         ? { kind: 'success', message: `${records.length} partner record${records.length === 1 ? '' : 's'} loaded from delivery_app.` }
         : { kind: 'info', message: 'The connection worked, but the collection returned 0 records. Check the collection name and Firestore rules.' })
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Partner data sync failed.'
+      const message = describeSyncError(error, 'Partner data sync failed.', saved.projectId)
       dispatch({ type: 'partnerApp.failed', message })
       setNotice({ kind: 'error', message })
     } finally {

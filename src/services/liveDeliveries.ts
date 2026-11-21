@@ -155,6 +155,28 @@ export function normalizeLiveDeliveries(payload: unknown): LiveDelivery[] {
     .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''))
 }
 
+// A short shared cache keeps page navigation and the provider's terminal-state
+// reconciliation from re-reading the same collection seconds apart. Firestore
+// charges one document read per record returned to every REST list call.
+const LIVE_CACHE_MS = 30_000
+let liveCache: { key: string; at: number; deliveries: LiveDelivery[] } | null = null
+let liveInFlight: { key: string; promise: Promise<LiveDelivery[]> } | null = null
+
+function liveConnectionKey(config: PartnerAppConfig) {
+  return [config.projectId.trim(), config.databaseId.trim(), config.apiKey.trim()].join('|')
+}
+
+/** The last successful read for this connection, when it is still fresh. */
+export function readCachedLiveDeliveries(config: PartnerAppConfig) {
+  if (!liveCache || liveCache.key !== liveConnectionKey(config)) return null
+  return Date.now() - liveCache.at < LIVE_CACHE_MS ? liveCache.deliveries : null
+}
+
+/** Forces the next read to hit Firestore (used by explicit refresh actions). */
+export function invalidateLiveDeliveries() {
+  liveCache = null
+}
+
 function deliveryCollectionUrl(config: PartnerAppConfig, pageSize: number) {
   const projectId = config.projectId.trim()
   if (!projectId) throw new Error('Enter the Firebase project ID for the partner app.')
@@ -211,6 +233,32 @@ export async function fetchLiveDeliveries(
   }
 
   return normalizeLiveDeliveries(await response.json())
+}
+
+/**
+ * Reads live deliveries through a shared cache and in-flight request, so a page
+ * mount, a retry and the provider's reconciliation pass collapse into one
+ * Firestore read. Failures are not cached.
+ */
+export async function fetchLiveDeliveriesCached(
+  config: PartnerAppConfig,
+  token: string,
+): Promise<LiveDelivery[]> {
+  const key = liveConnectionKey(config)
+  const cached = readCachedLiveDeliveries(config)
+  if (cached) return cached
+  if (liveInFlight?.key === key) return liveInFlight.promise
+
+  const request = fetchLiveDeliveries(config, token)
+    .then((deliveries) => {
+      liveCache = { key, at: Date.now(), deliveries }
+      return deliveries
+    })
+    .finally(() => {
+      if (liveInFlight?.key === key) liveInFlight = null
+    })
+  liveInFlight = { key, promise: request }
+  return request
 }
 
 /** Token reader kept here so pages do not reach into session storage. */

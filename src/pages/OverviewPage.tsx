@@ -192,7 +192,7 @@ export function OverviewPage({ data, open }: Props) {
             {mapRoute?.detailPath && <button className="text-link" onClick={() => open(mapRoute.detailPath!)}>Open delivery <Icon name="arrow" size={14} /></button>}
           </span>}
         />
-        {live.error && <div className="soft-notice map-sync-notice"><Icon name="alert" size={15} /><span>Live delivery sync failed. {mapRoute?.source === 'live' ? 'The map may be stale.' : 'Showing the local route instead.'}</span><Button size="small" variant="quiet" title={live.error} onClick={live.refresh}>Retry</Button></div>}
+        {live.error && <div className="soft-notice map-sync-notice"><Icon name="alert" size={15} /><span>{live.error} {mapRoute?.source === 'live' ? 'The map may be stale.' : 'Showing the local route instead.'}</span><Button size="small" variant="quiet" onClick={live.refresh}>Retry</Button></div>}
         <MapPreview
           points={mapRoute?.points ?? []}
           ariaLabel={mapRoute ? `OpenStreetMap preview of ${mapRoute.summary}` : 'OpenStreetMap delivery area preview'}

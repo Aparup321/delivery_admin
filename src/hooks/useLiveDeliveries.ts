@@ -1,10 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { PartnerAppConfig } from '../domain/model'
 import {
-  fetchLiveDeliveries,
+  fetchLiveDeliveriesCached,
+  invalidateLiveDeliveries,
+  readCachedLiveDeliveries,
   readLiveDeliveryToken,
   type LiveDelivery,
 } from '../services/liveDeliveries'
+import {
+  activeQuotaMessage,
+  clearQuotaBlock,
+  describeSyncError,
+} from '../services/firestoreQuota'
 
 interface LiveDeliveriesState {
   deliveries: LiveDelivery[]
@@ -14,18 +21,20 @@ interface LiveDeliveriesState {
 
 /**
  * Polls the delivery collection written by delivery_app. Firestore REST has no
- * live subscription, so the admin overview refreshes on an interval and after
- * an explicit retry.
+ * live subscription, so the admin overview refreshes on a minute interval, on
+ * tab focus and after an explicit retry. Reads are shared with the provider and
+ * other open pages, and stop entirely until the daily reset when Firestore
+ * answers 429 Quota exceeded.
  */
 export function useLiveDeliveries(
   config: PartnerAppConfig,
   enabled = true,
 ): LiveDeliveriesState & { refresh: () => void } {
-  const [state, setState] = useState<LiveDeliveriesState>({
-    deliveries: [],
-    error: null,
+  const [state, setState] = useState<LiveDeliveriesState>(() => ({
+    deliveries: readCachedLiveDeliveries(config) ?? [],
+    error: activeQuotaMessage(config.projectId),
     loading: false,
-  })
+  }))
   const [refreshToken, setRefreshToken] = useState(0)
   const configKey = [
     config.mode,
@@ -42,20 +51,24 @@ export function useLiveDeliveries(
     }
 
     let active = true
-    // Every poll reads documents against the project's daily Firestore quota.
-    // Poll at most once a minute, pause while the tab is hidden, and back off
-    // for ten minutes when Firestore answers 429 Quota exceeded.
-    let quotaBlockedUntil = 0
 
     const load = async (showLoading: boolean) => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-      if (Date.now() < quotaBlockedUntil) return
+      const paused = activeQuotaMessage(config.projectId)
+      if (paused) {
+        if (active) {
+          setState((current) => current.error === paused && !current.loading
+            ? current
+            : { ...current, error: paused, loading: false })
+        }
+        return
+      }
       if (showLoading) {
         setState((current) => ({ ...current, loading: true }))
       }
 
       try {
-        const deliveries = await fetchLiveDeliveries(
+        const deliveries = await fetchLiveDeliveriesCached(
           config,
           readLiveDeliveryToken(),
         )
@@ -63,20 +76,12 @@ export function useLiveDeliveries(
           setState({ deliveries, error: null, loading: false })
         }
       } catch (error) {
-        if (active) {
-          const message =
-            error instanceof Error
-              ? error.message
-              : 'Could not load live deliveries.'
-          if (message.includes('HTTP 429') || message.toLowerCase().includes('quota')) {
-            quotaBlockedUntil = Date.now() + 10 * 60_000
-          }
-          setState((current) => ({
-            ...current,
-            error: message,
-            loading: false,
-          }))
-        }
+        if (!active) return
+        setState((current) => ({
+          ...current,
+          error: describeSyncError(error, 'Could not load live deliveries.', config.projectId),
+          loading: false,
+        }))
       }
     }
 
@@ -84,18 +89,27 @@ export function useLiveDeliveries(
     const timer = window.setInterval(() => {
       void load(false)
     }, 60_000)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') void load(false)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     return () => {
       active = false
       window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
     // configKey captures every connection value that changes the request.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configKey, enabled, refreshToken])
 
   const refresh = useCallback(() => {
+    // An explicit retry is the operator's decision: drop the shared cache and
+    // the quota pause so one real request measures the current quota state.
+    invalidateLiveDeliveries()
+    clearQuotaBlock(config.projectId)
     setRefreshToken((value) => value + 1)
-  }, [])
+  }, [config.projectId])
 
   return { ...state, refresh }
 }

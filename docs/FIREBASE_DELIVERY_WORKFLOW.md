@@ -67,7 +67,9 @@ UID with a custom-claims or administrator-document authorization function.
 ## Synchronization note
 
 The Admin App currently uses its existing Firestore REST fallback and refreshes
-partner and live delivery data every 10 seconds. The Partner App uses Firestore
-SDK `onSnapshot` listeners. Moving the Admin App to the Firebase Web SDK is the
-next step for true bidirectional realtime listeners; do not claim zero-latency
-Admin updates while the REST fallback is enabled.
+partner and live delivery data once a minute, pausing automatic polling while
+the tab is hidden and for the rest of the day when Firestore answers
+`429 Quota exceeded` (the daily quota resets at midnight Pacific Time). The
+Partner App uses Firestore SDK `onSnapshot` listeners. Moving the Admin App to
+the Firebase Web SDK is the next step for true bidirectional realtime listeners;
+do not claim zero-latency Admin updates while the REST fallback is enabled.

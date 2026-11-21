@@ -7,6 +7,7 @@ import { formatSuspensionEnd, suspensionTimeline } from '../domain/suspension'
 import { useOperations } from '../state/OperationsProvider'
 import { beginFirebaseDataConnection } from '../auth/adminSession'
 import { partnerAppEndpoint, readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
+import { clearQuotaBlock, describeSyncError } from '../services/firestoreQuota'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { userCan } from '../domain/admin'
 import { PartnerCreatePage } from './PartnerCreatePage'
@@ -194,9 +195,10 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
     setSyncing(true)
     try {
       const records = await syncPartnerAppRecords(config, readPartnerAppToken())
+      clearQuotaBlock(config.projectId)
       dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString() })
     } catch (error) {
-      dispatch({ type: 'partnerApp.failed', message: error instanceof Error ? error.message : 'Partner data refresh failed.' })
+      dispatch({ type: 'partnerApp.failed', message: describeSyncError(error, 'Partner data refresh failed.', config.projectId) })
     } finally {
       setSyncing(false)
     }

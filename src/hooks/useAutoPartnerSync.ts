@@ -3,15 +3,20 @@ import type { AdminSession } from '../auth/adminSession'
 import type { PartnerAppRecord, PartnerAppTicket } from '../domain/model'
 import { readPartnerAppToken, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
+import {
+  activeQuotaMessage,
+  blockQuotaUntilReset,
+  clearQuotaBlock,
+  readQuotaBlockedUntil,
+} from '../services/firestoreQuota'
 import { useOperations } from '../state/OperationsProvider'
 
 // REST has no Firestore listener, but every poll reads documents against the
-// project's daily quota. Poll no faster than 30 seconds and back off for ten
-// minutes when Firestore answers 429 Quota exceeded, so an exhausted quota
-// stops generating failing requests until it resets.
-const POLL_INTERVAL_MS = 30_000
-const FOCUS_REFRESH_MS = 30_000
-const QUOTA_BACKOFF_MS = 10 * 60_000
+// project's daily quota. Poll once a minute and stay paused until the next
+// daily reset when Firestore answers 429 Quota exceeded, so an exhausted quota
+// stops generating failing requests instead of retrying every few minutes.
+const POLL_INTERVAL_MS = 60_000
+const FOCUS_REFRESH_MS = 45_000
 
 /** Stable comparison for the extra string fields a record carries. */
 function fieldsKey(fields: Record<string, string>) {
@@ -54,8 +59,9 @@ function ticketsChanged(previous: PartnerAppTicket[], next: PartnerAppTicket[]) 
 /**
  * Loads delivery_app partner records after a Firebase data connection and
  * keeps them fresh while the console stays open. The REST fallback refreshes
- * every 10 seconds because this app does not yet use the Firestore Web SDK.
- * The console identity can
+ * once a minute because this app does not yet use the Firestore Web SDK, and it
+ * pauses entirely until the daily reset when Firestore reports quota
+ * exhaustion. The console identity can
  * remain Demo access; the Firebase session only authorizes delivery_app data.
  * Without a Firebase session the seeded sample partners are left untouched.
  */
@@ -91,11 +97,12 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
     // run while the first request is still pending; a shared ref would make the
     // second run skip the request while the first run discards its result.
     let inFlight = false
-    let quotaBlockedUntil = 0
 
-    const isQuotaError = (error: unknown) => {
-      const message = error instanceof Error ? error.message : ''
-      return message.includes('HTTP 429') || message.toLowerCase().includes('quota')
+    // Replace the raw 429 stored by an earlier session with the reset notice,
+    // once, so a reload explains why live data is paused.
+    const pausedMessage = activeQuotaMessage(config.projectId)
+    if (pausedMessage && config.lastError !== pausedMessage) {
+      dispatch({ type: 'partnerApp.failed', message: pausedMessage })
     }
 
     const refresh = async (force: boolean) => {
@@ -103,8 +110,8 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
       // Hidden tabs gain nothing from a refresh; save the quota until the
       // operator looks at the console again.
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      if (readQuotaBlockedUntil(config.projectId)) return
       const now = Date.now()
-      if (now < quotaBlockedUntil) return
       if (!force && now - lastAttempt.current < FOCUS_REFRESH_MS) return
       lastAttempt.current = now
       inFlight = true
@@ -117,19 +124,16 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
             syncPartnerAppTickets(config, token).catch(() => []),
           ])
         if (!active) return
+        clearQuotaBlock(config.projectId)
         if (!recordsChanged(recordsRef.current, records) && !ticketsChanged(ticketsRef.current, tickets)) return
         dispatch({ type: 'partnerApp.sync-result', records, tickets, at: new Date().toISOString() })
       } catch (error) {
         if (!active) return
         // A quota-exhausted project keeps answering 429 until the daily reset;
-        // stop hammering it for ten minutes so the failure appears once.
-        if (isQuotaError(error)) {
-          quotaBlockedUntil = Date.now() + QUOTA_BACKOFF_MS
-        }
-        dispatch({
-          type: 'partnerApp.failed',
-          message: error instanceof Error ? error.message : 'Automatic partner sync failed.',
-        })
+        // pause automatic polling rather than repeating the same failure.
+        const message = blockQuotaUntilReset(error, config.projectId)?.message
+          ?? (error instanceof Error ? error.message : 'Automatic partner sync failed.')
+        dispatch({ type: 'partnerApp.failed', message })
       } finally {
         inFlight = false
       }

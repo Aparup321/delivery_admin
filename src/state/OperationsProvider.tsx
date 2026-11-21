@@ -1,8 +1,9 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import { loadOperationsState, saveOperationsState } from '../data/persistence'
 import { readPartnerAppToken } from '../services/partnerApp'
-import { fetchLiveDeliveries } from '../services/liveDeliveries'
+import { fetchLiveDeliveriesCached } from '../services/liveDeliveries'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
+import { activeQuotaMessage, blockQuotaUntilReset, clearQuotaBlock } from '../services/firestoreQuota'
 import { writeDeliveryAssignment, writeDeliveryCancellation } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
@@ -68,15 +69,15 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
     if (!hasFirebaseAdminSession()) return
 
     let active = true
-    let quotaBlockedUntil = 0
 
     const sync = async () => {
       // Hidden tabs gain nothing from a reconciliation pass; save the quota.
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
-      if (Date.now() < quotaBlockedUntil) return
+      if (activeQuotaMessage(config.projectId)) return
       try {
-        const live = await fetchLiveDeliveries(config, readPartnerAppToken())
+        const live = await fetchLiveDeliveriesCached(config, readPartnerAppToken())
         if (!active) return
+        clearQuotaBlock(config.projectId)
 
         const pending = live
           .filter((item) => {
@@ -99,11 +100,8 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         // Polling is best-effort; the tracking page surfaces sync errors. A
         // quota-exhausted project keeps answering 429 until the daily reset,
-        // so stop hammering it for ten minutes.
-        const message = error instanceof Error ? error.message : ''
-        if (message.includes('HTTP 429') || message.toLowerCase().includes('quota')) {
-          quotaBlockedUntil = Date.now() + 10 * 60_000
-        }
+        // so pause automatic polling instead of retrying every minute.
+        blockQuotaUntilReset(error, config.projectId)
       }
     }
 

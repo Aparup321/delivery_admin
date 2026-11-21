@@ -8,6 +8,7 @@ import { loadOperationsState, saveOperationsState } from '../src/data/persistenc
 import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppEndpoint } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
+import { isQuotaError, nextQuotaResetAt, quotaMessage } from '../src/services/firestoreQuota.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
 import type { AdminSection, PartnerAppConfig, Permission } from '../src/domain/model.ts'
 import { DEFAULT_ADMIN_EMAIL, DEMO_RESTRICTED_ADMIN_EMAIL } from '../src/domain/admin.ts'
@@ -1289,4 +1290,38 @@ test('live delivery normalization tolerates missing optional fields', () => {
   assert.equal(delivery.partnerName, 'Delivery partner')
   assert.equal(delivery.currentLocation, null)
   assert.deepEqual(delivery.events, [])
+})
+
+test('Firestore quota errors are recognized without hiding other failures', () => {
+  assert.equal(isQuotaError(new Error('Partner app request failed (HTTP 429): Quota exceeded.')), true)
+  assert.equal(isQuotaError(new Error('{"status":"RESOURCE_EXHAUSTED"}')), true)
+  assert.equal(isQuotaError('Quota exceeded.'), true)
+  assert.equal(isQuotaError(new Error('Partner app request failed (HTTP 403): Missing or insufficient permissions.')), false)
+  assert.equal(isQuotaError(null), false)
+})
+
+test('the quota pause lasts until the next Pacific midnight', () => {
+  // 2026-11-21T10:00:00Z is 02:00 PST, so the reset is 2026-11-22T08:00:00Z.
+  assert.equal(new Date(nextQuotaResetAt(Date.parse('2026-11-21T10:00:00.000Z'))).toISOString(), '2026-11-22T08:00:00.000Z')
+  // 2026-07-01T12:00:00Z is 05:00 PDT, so the reset is 2026-07-02T07:00:00Z.
+  assert.equal(new Date(nextQuotaResetAt(Date.parse('2026-07-01T12:00:00.000Z'))).toISOString(), '2026-07-02T07:00:00.000Z')
+})
+
+test('the quota notice explains the pause and the reset time', () => {
+  const reset = Date.parse('2026-11-22T08:00:00.000Z')
+  const message = quotaMessage(reset)
+  assert.match(message, /daily read quota is exhausted/)
+  assert.match(message, /paused until the quota resets/)
+  assert.match(message, /quota resets \([^)]+\)/)
+  // The locale decides whether the reset renders as "Nov 22" or "22 Nov".
+  const formatted = new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+    timeZone: 'America/Los_Angeles',
+  }).format(new Date(reset))
+  assert.ok(message.includes(formatted), message)
+  assert.match(message, /cached data remains available/)
 })
