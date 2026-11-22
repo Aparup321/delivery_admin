@@ -8,7 +8,7 @@ import { activeQuotaMessage, blockQuotaUntilReset, clearQuotaBlock } from '../se
 import { writeDeliveryAssignment, writeDeliveryCancellation, writeDeliveryUnassign } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
-import { loadSharedWorkflow, saveSharedWorkflow, toSharedPayload } from '../services/sharedState'
+import { hashSharedPayload, loadSharedWorkflow, readSharedWorkflowMeta, saveSharedWorkflow, toSharedPayload, writeSharedWorkflowMeta } from '../services/sharedState'
 import { appReducer, type AppFrame, type OperationAction } from './operationsReducer'
 
 export interface SharedStateStatus {
@@ -42,6 +42,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
   const latestData = useRef(frame.data)
   const [sharedState, setSharedState] = useState<SharedStateStatus>({ status: 'local', lastSyncedAt: null, updatedBy: null, error: null })
   const [sharedReady, setSharedReady] = useState(false)
+  const [saveTick, setSaveTick] = useState(0)
   const lastSavedPayload = useRef('')
   const remoteRevision = useRef(0)
   const hydrateGuard = useRef(false)
@@ -67,19 +68,35 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         setSharedState({ status: 'synced', lastSyncedAt: null, updatedBy: null, error: null })
         return
       }
+      const localPayload = JSON.stringify(toSharedPayload(latestData.current))
+      const localHash = hashSharedPayload(localPayload)
+      const meta = readSharedWorkflowMeta()
+      const localHasData = latestData.current.deliveries.length > 0
+        || latestData.current.partners.length > 0
+        || latestData.current.applications.length > 0
+        || latestData.current.auditLogs.length > 0
+      const localHasUnsavedChanges = meta
+        ? meta.payloadHash !== localHash
+        : localHasData
+      if (localHasUnsavedChanges) {
+        // A refresh can happen before the debounced shared write completes.
+        // Keep the local workflow and push it instead of restoring stale Firestore data.
+        remoteRevision.current = remote.revision
+        lastSavedPayload.current = ''
+        setSharedReady(true)
+        setSharedState({ status: 'saving', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: null })
+        setSaveTick((value) => value + 1)
+        return
+      }
       if (remote.revision === remoteRevision.current) {
         setSharedReady(true)
         setSharedState({ status: 'synced', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: null })
         return
       }
-      const localPayload = JSON.stringify(toSharedPayload(latestData.current))
-      const hasUnsavedLocalChange = lastSavedPayload.current !== '' && localPayload !== lastSavedPayload.current
-      if (hasUnsavedLocalChange) {
-        setSharedState({ status: 'error', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: 'Another administrator has newer workflow changes. Save or discard this browser’s pending changes before refreshing.' })
-        return
-      }
       remoteRevision.current = remote.revision
-      lastSavedPayload.current = JSON.stringify(toSharedPayload(remote.state))
+      const remotePayload = JSON.stringify(toSharedPayload(remote.state))
+      lastSavedPayload.current = remotePayload
+      writeSharedWorkflowMeta({ revision: remote.revision, payloadHash: hashSharedPayload(remotePayload), savedAt: new Date().toISOString() })
       // Hydrated audit history has already been written by the administrator
       // who created it. Never replay those decisions into delivery_app.
       hydrateGuard.current = true
@@ -109,12 +126,42 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         const revision = await saveSharedWorkflow(config, readPartnerAppToken(), frame.data, frame.data.user.name || 'Administrator')
         lastSavedPayload.current = payload
         remoteRevision.current = revision
-        setSharedState({ status: 'synced', lastSyncedAt: new Date().toISOString(), updatedBy: frame.data.user.name, error: null })
+        const savedAt = new Date().toISOString()
+        writeSharedWorkflowMeta({ revision, payloadHash: hashSharedPayload(payload), savedAt })
+        setSharedState({ status: 'synced', lastSyncedAt: savedAt, updatedBy: frame.data.user.name, error: null })
       } catch (error) {
         setSharedState((current) => ({ ...current, status: 'error', error: error instanceof Error ? error.message : 'Shared workflow state could not be saved.' }))
       }
-    }, 900)
+    }, 250)
     return () => window.clearTimeout(timer)
+  }, [frame.data, sharedReady, saveTick])
+
+  // Refresh and tab-close can race the debounced write. Flush a small shared
+  // payload with keepalive before the page goes away.
+  useEffect(() => {
+    if (!sharedReady || readDemoAdminSession() || !hasFirebaseAdminSession()) return
+    const config = frame.data.partnerApp
+    if (config.mode !== 'firestore' || !config.projectId.trim()) return
+    const flush = () => {
+      const payload = JSON.stringify(toSharedPayload(frame.data))
+      if (payload === lastSavedPayload.current) return
+      void saveSharedWorkflow(config, readPartnerAppToken(), frame.data, frame.data.user.name || 'Administrator', true)
+        .then((revision) => {
+          lastSavedPayload.current = payload
+          remoteRevision.current = revision
+          writeSharedWorkflowMeta({ revision, payloadHash: hashSharedPayload(payload), savedAt: new Date().toISOString() })
+        })
+        .catch(() => {
+          // The normal debounced save remains the retry path.
+        })
+    }
+    const onVisibility = () => { if (document.visibilityState === 'hidden') flush() }
+    window.addEventListener('pagehide', flush)
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
   }, [frame.data, sharedReady])
 
   useEffect(() => {

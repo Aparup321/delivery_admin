@@ -30,11 +30,13 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   const liveApplicationApproved = liveRecord?.applicationStatus?.trim().toLowerCase() === 'approved'
   const validDocuments = required.filter((type) => documents.some((document) => document.type === type && isDocumentCurrent(document, now))).length
 
+  const liveOnline = liveRecord?.isOnline === true
+    || ['online', 'available'].includes((liveRecord?.status ?? '').trim().toLowerCase())
   if (partner.availability === 'Restricted') reasons.push(`Partner is restricted${partner.restrictedReason ? `: ${partner.restrictedReason}` : ''}`)
   if (partner.availability === 'Suspended') reasons.push(`Partner is suspended${partner.suspendedReason ? `: ${partner.suspendedReason}` : ''}`)
-  // An offline partner cannot see the offer in delivery_app. Do not let a
-  // console write look successful while the partner has no way to respond.
-  if (partner.availability === 'Offline') reasons.push('Partner is offline')
+  // The live presence heartbeat is the source of truth for online state. A
+  // stale local Offline value must not block an actually online partner.
+  if (partner.availability === 'Offline' && !liveOnline) reasons.push('Partner is offline')
   if (partner.availability === 'On Delivery') reasons.push('Partner is already on an active delivery')
 
   if (state.settings.requireVerifiedDocuments && !liveApplicationApproved) {
@@ -53,9 +55,17 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
     reasons.push(`${partner.vehicle} is not compatible with a ${delivery.packageSize.toLowerCase()} package`)
   }
   if (state.settings.requireServiceAreaMatch && partner.serviceAreas.length > 0) {
-    const servesPickup = partner.serviceAreas.some((area) => area.trim().toLowerCase() === delivery.pickup.trim().toLowerCase())
-    const servesDrop = partner.serviceAreas.some((area) => area.trim().toLowerCase() === delivery.drop.trim().toLowerCase())
-    if (!servesPickup && !servesDrop) reasons.push('Service area does not include pickup or drop area')
+    const areaKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    const deliveryAreas = [delivery.pickup, delivery.drop, delivery.pickupAddress, delivery.dropAddress]
+      .map(areaKey)
+      .filter(Boolean)
+    // Delivery pickup/drop can be a full geocoded address while partner areas
+    // are short locality names. Use containment rather than exact equality.
+    const serves = partner.serviceAreas.some((area) => {
+      const key = areaKey(area)
+      return Boolean(key) && deliveryAreas.some((text) => text.includes(key))
+    })
+    if (!serves) reasons.push('Service area does not include pickup or drop area')
   }
 
   const activeAssignment = state.assignments.find((assignment) => assignment.partnerId === partner.id && assignment.status === 'Active')

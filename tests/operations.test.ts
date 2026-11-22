@@ -1214,6 +1214,32 @@ test('demo reset restores interconnected seed records and records the reset even
   assert.ok(frame.data.auditLogs.some((item) => item.eventType === 'Local data reset'))
 })
 
+test('an online live partner is assignable even when local availability is stale, and full addresses match short service areas', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.availability = 'Offline'
+  partner.partnerAppUid = 'live-online-partner'
+  partner.serviceAreas = ['New Town']
+  frame.data.partnerAppRecords = [{
+    id: 'live-online-partner', partnerId: null, name: partner.name, phone: '+91 90000 04748',
+    email: null, vehicle: 'Scooter', status: 'online', applicationStatus: 'approved', isOnline: true,
+    serviceAreas: ['New Town'], updatedAt: '2026-11-22T10:00:00.000Z',
+    fields: { isOnline: 'true' }, syncedAt: '2026-11-22T10:00:00.000Z',
+  }]
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  delivery.pickup = 'New Town, Kolkata'
+  delivery.drop = 'Salt Lake, Kolkata'
+  delivery.pickupAddress = 'New Town, Kolkata'
+  delivery.dropAddress = 'Salt Lake, Kolkata'
+  const eligible = getPartnerEligibility(frame.data, partner, delivery)
+  assert.equal(eligible.eligible, true, eligible.reasons.join('; '))
+
+  partner.serviceAreas = ['Barasat']
+  const ineligible = getPartnerEligibility(frame.data, partner, delivery)
+  assert.equal(ineligible.eligible, false)
+  assert.ok(ineligible.reasons.some((reason) => /Service area/.test(reason)))
+})
+
 test('live orders are imported into the admin queue, block reassignment after acceptance, and release on rejection', () => {
   let frame = identifyMainAdmin(frameWithDemo())
   frame = apply(frame, {

@@ -5,6 +5,13 @@ import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
 const COLLECTION = 'admin_state'
 const DOCUMENT = 'operations'
+const META_KEY = 'picdrop-admin-shared-workflow-meta-v1'
+
+export interface SharedWorkflowMeta {
+  revision: number
+  payloadHash: string
+  savedAt: string
+}
 
 export interface SharedWorkflowPayload {
   schemaVersion: 3
@@ -111,11 +118,44 @@ export async function loadSharedWorkflow(config: OperationsState['partnerApp'], 
   }
 }
 
+/** Small non-cryptographic hash used only to detect local unsaved changes. */
+export function hashSharedPayload(payload: string) {
+  let hash = 2166136261
+  for (let index = 0; index < payload.length; index += 1) {
+    hash ^= payload.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(16)
+}
+
+export function readSharedWorkflowMeta(): SharedWorkflowMeta | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = window.localStorage.getItem(META_KEY)
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!isRecord(parsed) || typeof parsed.payloadHash !== 'string' || typeof parsed.savedAt !== 'string' || typeof parsed.revision !== 'number') return null
+    return { revision: parsed.revision, payloadHash: parsed.payloadHash, savedAt: parsed.savedAt }
+  } catch {
+    return null
+  }
+}
+
+export function writeSharedWorkflowMeta(meta: SharedWorkflowMeta) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(META_KEY, JSON.stringify(meta))
+  } catch {
+    // Metadata is a reconciliation hint; the Firestore document remains authoritative.
+  }
+}
+
 export async function saveSharedWorkflow(
   config: OperationsState['partnerApp'],
   token: string,
   state: OperationsState,
   updatedBy: string,
+  keepalive = false,
 ): Promise<number> {
   const payload = JSON.stringify(toSharedPayload(state))
   if (new Blob([payload]).size > 900_000) {
@@ -129,6 +169,7 @@ export async function saveSharedWorkflow(
   const response = await fetch(url, {
     method: 'PATCH',
     headers,
+    keepalive,
     body: JSON.stringify({
       fields: {
         payload: encodeValue(payload),
