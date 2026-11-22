@@ -3,6 +3,7 @@ import { userCan } from '../domain/admin'
 import type { Delivery, OperationsState, Partner } from '../domain/model'
 import { getPartnerEligibility } from '../domain/operations'
 import { Button, Dialog, EmptyState, Icon, PageHeading, Panel, PanelHeading, StatusBadge } from '../components/ui'
+import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
@@ -21,6 +22,8 @@ export function AssignmentPage({ data, delivery, open }: Props) {
   const [selectedId, setSelectedId] = useState('')
   const [availabilityFilter, setAvailabilityFilter] = useState<AvailabilityFilter>('All')
   const [confirm, setConfirm] = useState(false)
+  const [refreshingPartners, setRefreshingPartners] = useState(false)
+  const [refreshError, setRefreshError] = useState('')
   const now = Date.now()
   // In a live partner-app connection an unlinked admin record cannot receive
   // the order, so it must not look assignable in the candidate list.
@@ -69,6 +72,23 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     open(`/admin/deliveries/${delivery.id}`)
   }
 
+  async function refreshPartnerAvailability() {
+    if (!hasFirebaseAdminSession()) {
+      setRefreshError('Sign in with a Firebase administrator to refresh live partner availability.')
+      return
+    }
+    setRefreshingPartners(true)
+    setRefreshError('')
+    try {
+      const records = await syncPartnerAppRecords(data.partnerApp, readPartnerAppToken())
+      dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString() })
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : 'Partner availability could not be refreshed.')
+    } finally {
+      setRefreshingPartners(false)
+    }
+  }
+
   return <div className="page-stack assignment-page">
     <PageHeading title={`Assign partner · ${delivery.id}`} subtitle="Eligibility uses approval, account status, vehicle compatibility, and active assignments. Live onboarding document and area gaps do not block approved Partner App accounts." breadcrumbs={[{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: delivery.id, path: `/admin/deliveries/${delivery.id}` }, { label: 'Assignment' }]} onNavigate={open} />
     <div className="assignment-summary-strip"><span><Icon name="pin" size={15} /><b>{delivery.pickup}</b><Icon name="arrow" size={13} /><b>{delivery.drop}</b></span><i /><span><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg.toFixed(1)} kg</span><i /><span><Icon name="calendar" size={15} />{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledStart))} – {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledEnd))}</span><i /><span>Vehicle: <b>{delivery.vehicleRequirement}</b></span>{assigned && <><i /><span className="reassign-label">Reassigning from {data.partners.find((item) => item.id === assigned.partnerId)?.name}</span></>}</div>
@@ -81,7 +101,8 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     {!['Completed', 'Cancelled'].includes(delivery.status) && <div className="assignment-workspace">
       <Panel className="candidate-panel">
         <div className="partner-tabs"><button className={tab === 'Eligible' ? 'active' : ''} onClick={() => setTab('Eligible')}>Eligible <span>{eligible.length}</span></button><button className={tab === 'Ineligible' ? 'active' : ''} onClick={() => setTab('Ineligible')}>Ineligible <span>{ineligible.length}</span></button></div>
-        <div className="candidate-tools"><label className="search-control"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search partner, vehicle, service area, or status" aria-label="Search partners" /></label><label className="filter-control"><span>Availability</span><select value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value as AvailabilityFilter)}><option>All</option><option>Available</option><option>On Delivery</option><option>Offline</option><option>Restricted</option><option>Suspended</option></select></label><span>Eligibility checked at {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(now)}</span></div>
+        <div className="candidate-tools"><label className="search-control"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search partner, vehicle, service area, or status" aria-label="Search partners" /></label><label className="filter-control"><span>Availability</span><select value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value as AvailabilityFilter)}><option>All</option><option>Available</option><option>On Delivery</option><option>Offline</option><option>Restricted</option><option>Suspended</option></select></label><span>Eligibility checked at {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(now)}</span><Button size="small" variant="quiet" disabled={refreshingPartners} onClick={() => { void refreshPartnerAvailability() }}><Icon name="refresh" size={14} />{refreshingPartners ? 'Refreshing…' : 'Refresh availability'}</Button></div>
+        {refreshError && <div className="soft-notice error-notice"><Icon name="alert" size={15} /><span>{refreshError}</span></div>}
         <div className="table-scroll"><table className="data-table candidate-table"><thead><tr><th></th><th>Partner</th><th>Approval / account</th><th>Vehicle</th><th>Service area</th><th>Availability</th><th>Verification</th><th>Current assignment</th><th>Eligibility / reason</th></tr></thead><tbody>
           {entries.map(({ partner, reasons, eligible: canTake, validDocuments, requiredDocuments, currentAssignment }) => {
             const active = currentAssignment ? data.deliveries.find((item) => item.id === currentAssignment) : null
