@@ -103,6 +103,12 @@ export interface Delivery {
   paymentMode?: 'Prepaid' | 'Cash on delivery'
   /** Partner payout in ₹ chosen by the Administrator, null when not set. */
   partnerEarnings?: number | null
+  /** Optional customer handover details sent to the partner. */
+  customerName?: string
+  customerPhone?: string
+  /** Value of the order and the cash the partner must collect for COD. */
+  orderValue?: number | null
+  collectAmount?: number | null
   /** Native delivery_app status, when this record is driven by the live app. */
   liveStatus?: string | null
   /** Whether the order offer reached delivery_app. */

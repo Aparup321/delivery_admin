@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { userCan } from '../domain/admin'
 import type { Delivery, OperationsState, Partner } from '../domain/model'
 import { getPartnerEligibility, isLivePartnerApproved } from '../domain/operations'
-import { Button, Dialog, EmptyState, Icon, PageHeading, Panel, PanelHeading, StatusBadge } from '../components/ui'
+import { Button, Dialog, EmptyState, formatDate, Icon, PageHeading, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
@@ -56,6 +56,8 @@ export function AssignmentPage({ data, delivery, open }: Props) {
   }
   const eligible = evaluations.filter((entry) => entry.eligible && matches(entry.partner))
   const ineligible = evaluations.filter((entry) => !entry.eligible && matches(entry.partner))
+  const offlineOnlyBlocked = eligible.length === 0
+    && ineligible.some((entry) => entry.reasons.some((reason) => /offline|presence record/i.test(reason)))
   const entries = tab === 'Eligible' ? eligible : ineligible
   const selectedEntry = evaluations.find((entry) => entry.partner.id === selectedId && entry.eligible)
   const assigned = delivery.assignmentId ? data.assignments.find((item) => item.id === delivery.assignmentId && item.status === 'Active') : undefined
@@ -95,13 +97,12 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     }
   }
 
-  // Opening the assignment screen should use current online presence instead
-  // of waiting for the next background poll. Skip it when a sync just ran.
+  // Opening the assignment screen must always read current online presence.
+  // A recent background sync can still predate the partner going online, so it
+  // must not be treated as fresh enough to skip this read.
   useEffect(() => {
     if (autoSyncRef.current) return
     if (!hasFirebaseAdminSession() || data.partnerApp.mode !== 'firestore' || !data.partnerApp.projectId.trim()) return
-    const lastSync = data.partnerApp.lastSyncAt ? new Date(data.partnerApp.lastSyncAt).getTime() : 0
-    if (lastSync && Date.now() - lastSync < 10_000) return
     autoSyncRef.current = true
     let active = true
     setRefreshingPartners(true)
@@ -135,15 +136,21 @@ export function AssignmentPage({ data, delivery, open }: Props) {
         <div className="partner-tabs"><button className={tab === 'Eligible' ? 'active' : ''} onClick={() => setTab('Eligible')}>Eligible <span>{eligible.length}</span></button><button className={tab === 'Ineligible' ? 'active' : ''} onClick={() => setTab('Ineligible')}>Ineligible <span>{ineligible.length}</span></button></div>
         <div className="candidate-tools"><label className="search-control"><Icon name="search" size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search partner, vehicle, service area, or status" aria-label="Search partners" /></label><label className="filter-control"><span>Availability</span><select value={availabilityFilter} onChange={(event) => setAvailabilityFilter(event.target.value as AvailabilityFilter)}><option>All</option><option>Available</option><option>On Delivery</option><option>Offline</option><option>Restricted</option><option>Suspended</option></select></label><span>Eligibility checked at {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit', second: '2-digit' }).format(now)}</span><Button size="small" variant="quiet" disabled={refreshingPartners} onClick={() => { void refreshPartnerAvailability() }}><Icon name="refresh" size={14} />{refreshingPartners ? 'Refreshing…' : 'Refresh availability'}</Button></div>
         {refreshError && <div className="soft-notice error-notice"><Icon name="alert" size={15} /><span>{refreshError}</span></div>}
+        {offlineOnlyBlocked && <div className="soft-notice"><Icon name="alert" size={15} /><span>No partner is currently online in delivery_app. Open the partner app, switch <strong>Online</strong>, wait about a minute for the presence heartbeat, then click <strong>Refresh availability</strong>.</span></div>}
         <div className="table-scroll"><table className="data-table candidate-table"><thead><tr><th></th><th>Partner</th><th>Approval / account</th><th>Vehicle</th><th>Service area</th><th>Availability</th><th>Verification</th><th>Current assignment</th><th>Eligibility / reason</th></tr></thead><tbody>
           {entries.map(({ partner, reasons, eligible: canTake, validDocuments, requiredDocuments, currentAssignment }) => {
             const active = currentAssignment ? data.deliveries.find((item) => item.id === currentAssignment) : null
             const liveRecord = partner.partnerAppUid ? data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid) : undefined
             const liveApproved = isLivePartnerApproved(liveRecord)
             const verified = liveApproved || validDocuments === requiredDocuments
+            const livePresence = !partner.partnerAppUid
+              ? 'No app account linked'
+              : liveRecord
+                ? `Live: ${liveRecord.isOnline === true ? 'online' : liveRecord.isOnline === false ? 'offline' : 'unknown'}${liveRecord.fields.availability ? ` · ${liveRecord.fields.availability}` : ''}`
+                : 'Live record not loaded'
             return <tr key={partner.id} onClick={() => canTake && setSelectedId(partner.id)} className={`${canTake && selectedId === partner.id ? 'candidate-selected' : ''} ${!canTake ? 'candidate-ineligible' : ''}`}>
               <td><input type="radio" name="partner" checked={canTake && selectedId === partner.id} disabled={!canTake} onChange={() => setSelectedId(partner.id)} aria-label={`Select ${partner.name}`} /></td>
-              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small>{liveAppConnected && (linkedToApp(partner) ? <em className="link-badge linked">App linked</em> : <em className="link-badge unlinked">Not linked</em>)}</span></span></td>
+              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small>{liveAppConnected && (linkedToApp(partner) ? <em className="link-badge linked">App linked</em> : <em className="link-badge unlinked">Not linked</em>)}<small className={`live-presence ${liveRecord?.isOnline === true ? 'online' : liveRecord?.isOnline === false ? 'offline' : ''}`} title={liveRecord?.updatedAt ? `Live record updated ${formatDate(liveRecord.updatedAt)}` : undefined}>{livePresence}</small></span></span></td>
               <td><span className="application-documents"><strong>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.applicationStatus ?? (data.applications.find((application) => application.partnerId === partner.id)?.status ?? 'Admin record')}</strong><small>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.status ?? 'Local account'}</small></span></td>
               <td><span className="vehicle-cell"><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{partner.vehicle}</span></td>
               <td><span className="area-list">{partner.serviceAreas.slice(0, 2).join(', ')}{partner.serviceAreas.length > 2 && <small>+{partner.serviceAreas.length - 2} areas</small>}</span></td>

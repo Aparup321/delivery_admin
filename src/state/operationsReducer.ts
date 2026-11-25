@@ -12,7 +12,7 @@ export interface AppFrame {
 }
 
 export type OperationAction =
-  | { type: 'delivery.create'; pickup: string; drop: string; pickupLocation?: Delivery['pickupLocation']; dropLocation?: Delivery['dropLocation']; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string; category?: Delivery['category']; itemCount?: number; paymentMode?: Delivery['paymentMode']; earnings?: number | null }
+  | { type: 'delivery.create'; pickup: string; drop: string; pickupLocation?: Delivery['pickupLocation']; dropLocation?: Delivery['dropLocation']; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string; category?: Delivery['category']; itemCount?: number; paymentMode?: Delivery['paymentMode']; earnings?: number | null; customerName?: string; customerPhone?: string; orderValue?: number | null; collectAmount?: number | null }
   | { type: 'delivery.assign'; deliveryId: string; partnerId: string }
   | { type: 'delivery.unassign'; deliveryId: string; reason: string }
   | { type: 'delivery.advance'; deliveryId: string }
@@ -913,6 +913,10 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       if (!Number.isFinite(action.weight) || action.weight <= 0 || action.weight > 100) throw new Error('Estimated weight must be between 0.1 and 100 kg.')
       if (action.earnings != null && (!Number.isFinite(action.earnings) || action.earnings < 0)) throw new Error('Partner payout must be a positive amount.')
       if (action.itemCount != null && (!Number.isInteger(action.itemCount) || action.itemCount < 1 || action.itemCount > 99)) throw new Error('Item count must be between 1 and 99.')
+      const customerPhone = (action.customerPhone ?? '').replace(/\D/g, '')
+      if (customerPhone && customerPhone.length < 10) throw new Error('Customer phone must have at least 10 digits.')
+      if (action.orderValue != null && (!Number.isFinite(action.orderValue) || action.orderValue < 0)) throw new Error('Order value must be a positive amount.')
+      if (action.collectAmount != null && (!Number.isFinite(action.collectAmount) || action.collectAmount < 0)) throw new Error('COD amount must be a positive amount.')
       const numbers = data.deliveries.map((item) => Number(item.id.replace(/\D/g, ''))).filter(Number.isFinite)
       const id = `DLV-${Math.max(1048, ...numbers) + 1}`
       const starts = new Date(action.scheduledStart)
@@ -933,6 +937,14 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
         itemCount: action.itemCount ?? 1,
         paymentMode: action.paymentMode ?? 'Prepaid',
         partnerEarnings: action.earnings ?? null,
+        customerName: action.customerName?.trim() || undefined,
+        customerPhone: customerPhone || undefined,
+        orderValue: action.orderValue ?? null,
+        collectAmount:
+          action.collectAmount ??
+          (action.paymentMode === 'Cash on delivery'
+            ? action.orderValue ?? null
+            : null),
       }
       data.deliveries.unshift(delivery)
       audit(data, 'Delivery created', 'Delivery', id, '—', 'Unassigned', 'Created as a local delivery record.', at)

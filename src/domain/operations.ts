@@ -64,7 +64,13 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   // a stale local On Delivery value must not block a partner with no active
   // assignment. A live "On Delivery" signal still blocks if another system
   // has the partner busy outside this console.
-  if ((partner.availability === 'Offline' && !liveOnline) || liveOffline) reasons.push('Partner is offline')
+  if ((partner.availability === 'Offline' && !liveOnline) || liveOffline) {
+    reasons.push(!partner.partnerAppUid
+      ? 'Partner is offline'
+      : !liveRecord
+        ? 'No live presence record; refresh partner data'
+        : 'Partner is offline in delivery_app')
+  }
   if (liveBusy && !activeAssignment) reasons.push('Partner is already on an active delivery')
 
   if (state.settings.requireVerifiedDocuments && !liveApplicationApproved) {
@@ -116,6 +122,22 @@ export function vehicleCanCarry(vehicle: Partner['vehicle'], packageSize: Delive
   if (packageSize === 'Medium') return vehicle === 'Bike' || vehicle === 'Scooter' || vehicle === 'Van'
   if (packageSize === 'Large') return vehicle === 'Van'
   return vehicle === 'Van'
+}
+
+/**
+ * Whether the partner has accepted or started a delivery. A live document is
+ * authoritative. Without one, only an active assignment can be accepted — an
+ * unassigned delivery must never lock its Assign/Reassign/Remove actions.
+ */
+export function hasPartnerAccepted(
+  delivery: Pick<Delivery, 'status' | 'liveStatus'>,
+  liveNativeStatus: string | null | undefined,
+  hasActiveAssignment: boolean,
+) {
+  if (liveNativeStatus) return !['assigned', 'rejected', 'cancelled'].includes(liveNativeStatus)
+  if (!hasActiveAssignment) return false
+  if (delivery.liveStatus) return !['assigned', 'rejected', 'cancelled'].includes(delivery.liveStatus)
+  return delivery.status === 'In Transit' || delivery.status === 'Completed'
 }
 
 export function getActiveAssignment(state: OperationsState, partnerId: string) {

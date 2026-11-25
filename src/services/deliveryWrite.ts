@@ -97,6 +97,10 @@ export interface DeliveryAssignmentWrite {
   earnings: number
   itemCount: number
   paymentMode: 'Prepaid' | 'Cash on delivery'
+  customerName: string | null
+  customerPhone: string | null
+  orderValue: number | null
+  collectAmount: number | null
   note: string | null
   /** 4-digit code the customer reads out; empty when the console has none. */
   dropOtp: string | null
@@ -143,8 +147,13 @@ export async function writeDeliveryAssignment(write: DeliveryAssignmentWrite): P
       earnings: write.earnings,
       itemCount: write.itemCount,
       paymentMode: write.paymentMode,
-      customerName: null,
-      customerPhoneMasked: null,
+      customerName: write.customerName,
+      customerPhone: write.customerPhone,
+      customerPhoneMasked: write.customerPhone
+        ? `+91 ••••• ${write.customerPhone.replace(/\D/g, '').slice(-4)}`
+        : null,
+      orderValue: write.orderValue,
+      collectAmount: write.collectAmount,
       note: write.note,
       dropOtp: write.dropOtp,
       expiresAt: write.expiresAt,

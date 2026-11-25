@@ -79,7 +79,9 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
             <div className="detail-info-item"><span>Drop</span><strong><Icon name="pin" size={15} />{delivery.drop}</strong><small>{delivery.dropAddress}</small></div>
             <div className="detail-info-item"><span>Package</span><strong><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg > 0 ? `${delivery.estimatedWeightKg.toFixed(1)} kg` : 'weight not provided'}</strong><small>Vehicle requirement: {delivery.vehicleRequirement}</small></div>
             <div className="detail-info-item"><span>Scheduled window</span><strong><Icon name="calendar" size={15} />{formatDate(delivery.scheduledStart)} — {formatDate(delivery.scheduledEnd)}</strong><small>Times are local schedule values</small></div>
-            <div className="detail-info-item detail-instructions"><span>Special instructions</span><strong>{delivery.specialInstructions || 'No special instructions'}</strong><small>No customer-sensitive data is connected.</small></div>
+            <div className="detail-info-item detail-instructions"><span>Special instructions</span><strong>{delivery.specialInstructions || 'No special instructions'}</strong><small>Customer details are shared only with the assigned partner.</small></div>
+            {delivery.customerName || delivery.customerPhone ? <div className="detail-info-item"><span>Customer</span><strong>{delivery.customerName || 'Customer'}{delivery.customerPhone ? ` · ${delivery.customerPhone}` : ''}</strong><small>Contact shared with the assigned partner</small></div> : null}
+            {delivery.paymentMode === 'Cash on delivery' && delivery.collectAmount != null ? <div className="detail-info-item"><span>COD to collect</span><strong>₹{delivery.collectAmount.toLocaleString('en-IN')}</strong><small>Order value ₹{(delivery.orderValue ?? delivery.collectAmount).toLocaleString('en-IN')}</small></div> : null}
           </div>
         </Panel>
 

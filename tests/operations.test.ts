@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDemoState } from '../src/domain/seed.ts'
-import { getPartnerEligibility, nextPartnerId } from '../src/domain/operations.ts'
+import { getPartnerEligibility, hasPartnerAccepted, nextPartnerId } from '../src/domain/operations.ts'
 import { buildKycQueue, liveApplicationStatus } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
@@ -1307,6 +1307,19 @@ test('an online live partner with only status active is treated as approved', ()
   assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Available')
   const after = getPartnerEligibility(synced.data, synced.data.partners.find((item) => item.id === partner.id)!, delivery)
   assert.equal(after.eligible, true, after.reasons.join('; '))
+})
+
+test('unassigned deliveries are not treated as partner-accepted for row actions', () => {
+  const frame = frameWithDemo()
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  // This was the three-dot regression: no live doc and no assignment must
+  // leave Assign/Remove enabled instead of reporting "Accepted by partner".
+  assert.equal(hasPartnerAccepted(delivery, undefined, false), false)
+  assert.equal(hasPartnerAccepted({ ...delivery, status: 'Assigned', liveStatus: 'assigned' }, undefined, true), false)
+  assert.equal(hasPartnerAccepted({ ...delivery, status: 'Assigned', liveStatus: 'accepted' }, undefined, true), true)
+  assert.equal(hasPartnerAccepted(delivery, 'accepted', true), true)
+  assert.equal(hasPartnerAccepted(delivery, 'assigned', true), false)
+  assert.equal(hasPartnerAccepted({ ...delivery, status: 'In Transit', liveStatus: null }, undefined, true), true)
 })
 
 test('live orders are imported into the admin queue, block reassignment after acceptance, and release on rejection', () => {

@@ -4,6 +4,7 @@ import type { Delivery, DeliveryLocation, OperationsState, PackageSize, VehicleT
 import { coordinateDistanceKm, estimatePartnerEarnings } from '../domain/estimates'
 import { Button, ConfirmDialog, Dialog, EmptyState, Icon, Panel, StatusBadge, formatDate } from '../components/ui'
 import { userCan } from '../domain/admin'
+import { hasPartnerAccepted } from '../domain/operations'
 import { useOperations } from '../state/OperationsProvider'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useLiveDeliveries } from '../hooks/useLiveDeliveries'
@@ -56,6 +57,10 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   const [weight, setWeight] = useState('2')
   const [itemCount, setItemCount] = useState('1')
   const [paymentMode, setPaymentMode] = useState<Delivery['paymentMode']>('Prepaid')
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [orderValue, setOrderValue] = useState('')
+  const [collectAmount, setCollectAmount] = useState('')
   const [earnings, setEarnings] = useState('')
   const [vehicle, setVehicle] = useState<VehicleType | 'Any'>('Any')
   const [start, setStart] = useState(() => localInputValue(new Date(Date.now() + 60 * 60_000)))
@@ -233,6 +238,10 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
       scheduledStart: new Date(start).toISOString(), scheduledEnd: new Date(end).toISOString(),
       instructions, category, itemCount: Number(itemCount), paymentMode,
       earnings: earnings.trim() ? Number(earnings) : null,
+      customerName: customerName.trim() || undefined,
+      customerPhone: customerPhone.trim() || undefined,
+      orderValue: orderValue.trim() ? Number(orderValue) : null,
+      collectAmount: collectAmount.trim() ? Number(collectAmount) : null,
     })
     onClose()
   }
@@ -340,6 +349,10 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
         <label className="field-label">Estimated weight (kg)<input type="number" min="0.1" max="100" step="0.1" value={weight} onChange={(event) => setWeight(event.target.value)} required /></label>
         <label className="field-label">Item count<input type="number" min="1" max="99" step="1" value={itemCount} onChange={(event) => setItemCount(event.target.value)} required /></label>
         <label className="field-label">Payment mode<select value={paymentMode} onChange={(event) => setPaymentMode(event.target.value as Delivery['paymentMode'])}><option>Prepaid</option><option>Cash on delivery</option></select></label>
+        <label className="field-label">Customer name<input value={customerName} onChange={(event) => setCustomerName(event.target.value)} placeholder="Name shared with the partner" /></label>
+        <label className="field-label">Customer phone<input inputMode="tel" value={customerPhone} onChange={(event) => setCustomerPhone(event.target.value)} placeholder="10-digit contact number" /></label>
+        <label className="field-label">Order value (₹)<input type="number" min="0" step="1" value={orderValue} onChange={(event) => setOrderValue(event.target.value)} placeholder="e.g. 450" /></label>
+        <label className="field-label">COD amount to collect (₹)<input type="number" min="0" step="1" value={collectAmount} onChange={(event) => setCollectAmount(event.target.value)} placeholder="Leave blank for prepaid" /></label>
         <label className="field-label">Partner payout (₹)<input type="number" min="0" step="1" value={earnings} onChange={(event) => setEarnings(event.target.value)} placeholder={suggestedEarnings ? `Suggested ₹${suggestedEarnings}` : 'e.g. 95'} /></label>
         <label className="field-label">Vehicle requirement<select value={vehicle} onChange={(event) => setVehicle(event.target.value as VehicleType | 'Any')}><option>Any</option><option>Bike</option><option>Scooter</option><option>Van</option><option>Bicycle</option><option>On foot</option></select></label>
         <label className="field-label">Pickup / delivery window start<input type="datetime-local" value={start} onChange={(event) => setStart(event.target.value)} required /></label>
@@ -516,17 +529,10 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
             const assigned = partnerFor(data, delivery)
             const isAssigned = Boolean(delivery.assignmentId && delivery.status !== 'Cancelled')
             const liveDelivery = live.deliveries.find((item) => item.id === delivery.id || item.displayId.replace(/^#/, '') === delivery.id)
-            // With no live document, only an active local assignment can be
-            // "accepted". An unassigned delivery must keep its menu actions
-            // enabled; the old fallback treated it as accepted.
-            const liveAccepted = liveDelivery
-              ? !['assigned', 'rejected', 'cancelled'].includes(liveDelivery.nativeStatus)
-              : null
-            const partnerAccepted = liveAccepted ?? Boolean(isAssigned && (
-              delivery.liveStatus
-                ? !['assigned', 'rejected', 'cancelled'].includes(delivery.liveStatus)
-                : delivery.status === 'In Transit' || delivery.status === 'Completed'
-            ))
+            // A live document is authoritative. With no live document, only
+            // an active assignment can be accepted; an unassigned delivery
+            // must keep its menu actions enabled.
+            const partnerAccepted = hasPartnerAccepted(delivery, liveDelivery?.nativeStatus, isAssigned)
             const canRemoveAssignment = Boolean(assigned && isAssigned && !partnerAccepted && canAssign)
             return <tr key={delivery.id}>
               <td className="select-cell"><input type="checkbox" checked={selected.includes(delivery.id)} onChange={() => setSelected((value) => value.includes(delivery.id) ? value.filter((id) => id !== delivery.id) : [...value, delivery.id])} aria-label={`Select ${delivery.id}`} /></td>

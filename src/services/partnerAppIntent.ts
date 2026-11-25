@@ -68,6 +68,10 @@ export type PartnerAppWriteIntent =
     earnings: number
     itemCount: number
     paymentMode: 'Prepaid' | 'Cash on delivery'
+    customerName: string | null
+    customerPhone: string | null
+    orderValue: number | null
+    collectAmount: number | null
     note: string | null
     dropOtp: string | null
     expiresAt: string
@@ -225,6 +229,10 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
       earnings: delivery.partnerEarnings ?? estimatePartnerEarnings(distanceKm),
       itemCount: delivery.itemCount ?? 1,
       paymentMode: delivery.paymentMode ?? 'Prepaid',
+      customerName: delivery.customerName?.trim() || null,
+      customerPhone: delivery.customerPhone?.trim() || null,
+      orderValue: delivery.orderValue ?? null,
+      collectAmount: delivery.collectAmount ?? null,
       note: instructions && instructions !== 'No special instructions' ? instructions : null,
       dropOtp: assignment.dropOtp,
       expiresAt,
