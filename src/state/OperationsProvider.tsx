@@ -8,7 +8,7 @@ import { activeQuotaMessage, blockQuotaUntilReset, clearQuotaBlock } from '../se
 import { writeDeliveryAssignment, writeDeliveryCancellation, writeDeliveryDetails, writeDeliveryUnassign } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
-import { hashSharedPayload, loadSharedWorkflow, mergeSharedPayload, readSharedWorkflowMeta, saveSharedWorkflow, toSharedPayload, writeSharedWorkflowMeta } from '../services/sharedState'
+import { clearDemoLocalWorkflow, hashSharedPayload, hasDemoLocalWorkflow, loadSharedWorkflow, markDemoLocalWorkflow, mergeSharedPayload, readSharedWorkflowMeta, saveSharedWorkflow, toSharedPayload, writeSharedWorkflowMeta } from '../services/sharedState'
 import { appReducer, type AppFrame, type OperationAction } from './operationsReducer'
 
 export interface SharedStateStatus {
@@ -49,6 +49,11 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     latestData.current = frame.data
+    if (readDemoAdminSession()) {
+      // Remember the exact demo workflow left in localStorage. A later real
+      // sign-in must not mistake it for unsaved administrator work.
+      markDemoLocalWorkflow(hashSharedPayload(JSON.stringify(toSharedPayload(frame.data))))
+    }
     setStorageAvailable(saveOperationsState(frame.data))
   }, [frame.data])
 
@@ -65,15 +70,47 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       : { ...current, status: 'loading', error: null })
     try {
       const remote = await loadSharedWorkflow(config, readPartnerAppToken(), latestData.current)
+      const localPayload = JSON.stringify(toSharedPayload(latestData.current))
+      const localHash = hashSharedPayload(localPayload)
+      const demoLocalWorkflow = hasDemoLocalWorkflow(localHash)
       if (!remote) {
+        if (demoLocalWorkflow) {
+          // Never seed the shared workflow with demo sample data. The operator
+          // must clear the demo leftovers before a real Firebase session.
+          setSharedReady(false)
+          setSharedState({
+            status: 'error',
+            lastSyncedAt: null,
+            updatedBy: null,
+            error: 'This browser still contains demo workflow data. Sign out, clear this site’s local data, then sign in again before using the shared Firebase workflow.',
+          })
+          return
+        }
         lastSavedPayload.current = ''
         remoteRevision.current = 0
         setSharedReady(true)
         setSharedState({ status: 'synced', lastSyncedAt: null, updatedBy: null, error: null })
         return
       }
-      const localPayload = JSON.stringify(toSharedPayload(latestData.current))
-      const localHash = hashSharedPayload(localPayload)
+      if (demoLocalWorkflow) {
+        // The remote shared workflow is authoritative; discard the demo
+        // workflow and its live caches instead of uploading them.
+        const remotePayload = JSON.stringify(toSharedPayload(remote.state))
+        remoteRevision.current = remote.revision
+        lastSavedPayload.current = remotePayload
+        writeSharedWorkflowMeta({ revision: remote.revision, payloadHash: hashSharedPayload(remotePayload), savedAt: new Date().toISOString() })
+        const hydrated = mergeSharedPayload(latestData.current, remote.state)
+        hydrated.partnerAppRecords = []
+        hydrated.partnerAppTickets = []
+        hydrated.partnerAppDocuments = []
+        hydrated.partnerApp = { ...hydrated.partnerApp, lastSyncAt: null, lastConnectedAt: null, lastError: null }
+        hydrateGuard.current = true
+        dispatch({ type: 'state.hydrate', state: hydrated })
+        clearDemoLocalWorkflow()
+        setSharedReady(true)
+        setSharedState({ status: 'synced', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: null })
+        return
+      }
       const meta = readSharedWorkflowMeta()
       const localHasData = latestData.current.deliveries.length > 0
         || latestData.current.partners.length > 0
@@ -144,6 +181,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         remoteRevision.current = revision
         const savedAt = new Date().toISOString()
         writeSharedWorkflowMeta({ revision, payloadHash: hashSharedPayload(payload), savedAt })
+        clearDemoLocalWorkflow()
         setSharedState({ status: 'synced', lastSyncedAt: savedAt, updatedBy: frame.data.user.name, error: null })
       } catch (error) {
         setSharedState((current) => ({ ...current, status: 'error', error: error instanceof Error ? error.message : 'Shared workflow state could not be saved.' }))
@@ -166,6 +204,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           lastSavedPayload.current = payload
           remoteRevision.current = revision
           writeSharedWorkflowMeta({ revision, payloadHash: hashSharedPayload(payload), savedAt: new Date().toISOString() })
+          clearDemoLocalWorkflow()
         })
         .catch(() => {
           // The normal debounced save remains the retry path.

@@ -119,8 +119,11 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
 
 export function vehicleCanCarry(vehicle: Partner['vehicle'], packageSize: Delivery['packageSize']) {
   if (packageSize === 'Small') return true
-  if (packageSize === 'Medium') return vehicle === 'Bike' || vehicle === 'Scooter' || vehicle === 'Van'
-  if (packageSize === 'Large') return vehicle === 'Van'
+  // A bicycle can safely carry a normal medium grocery order. Large and extra
+  // large packages still require a van.
+  if (packageSize === 'Medium') {
+    return vehicle === 'Bike' || vehicle === 'Scooter' || vehicle === 'Bicycle' || vehicle === 'Van'
+  }
   return vehicle === 'Van'
 }
 

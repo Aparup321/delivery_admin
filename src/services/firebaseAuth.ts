@@ -190,14 +190,28 @@ export async function signInFirebaseAdmin(email: string, password: string, apiKe
 async function refreshSession(session: FirebaseAdminSession, apiKey: string): Promise<FirebaseAdminSession> {
   if (!apiKey.trim()) throw new FirebaseAuthRequestError('The Firebase web API key is missing, so the admin session cannot be refreshed.')
   let response: Response
+  const controller = new AbortController()
+  const timer = globalThis.setTimeout(() => controller.abort(), 20_000)
   try {
     response = await fetch(`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(apiKey.trim())}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
       body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: session.refreshToken }),
+      signal: controller.signal,
     })
   } catch (error) {
+    const name = typeof error === 'object' && error !== null && 'name' in error
+      ? String((error as { name: unknown }).name)
+      : ''
+    if (name === 'AbortError') {
+      clearFirebaseAdminSession()
+      throw new FirebaseAuthRequestError(
+        'The Firebase administrator session refresh timed out after 20 seconds. Sign in again from Settings → Partner app.',
+      )
+    }
     throw new FirebaseAuthRequestError(`Could not refresh the Firebase administrator session.${error instanceof Error ? ` (${error.message})` : ''}`)
+  } finally {
+    globalThis.clearTimeout(timer)
   }
   let payload: unknown = null
   try {

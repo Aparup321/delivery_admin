@@ -119,8 +119,11 @@ export function AssignmentPage({ data, delivery, open }: Props) {
       .finally(() => {
         if (active) setRefreshingPartners(false)
       })
-    return () => { active = false }
-  }, [delivery.id, data.partnerApp.mode, data.partnerApp.projectId, data.partnerApp.apiKey, data.partnerApp.lastSyncAt, dispatch])
+    return () => {
+      active = false
+      autoSyncRef.current = false
+    }
+  }, [delivery.id, data.partnerApp.mode, data.partnerApp.projectId, data.partnerApp.apiKey, data.partnerApp.databaseId, data.partnerApp.partnersCollection, dispatch])
 
   return <div className="page-stack assignment-page">
     <PageHeading title={`Assign partner · ${delivery.id}`} subtitle="Eligibility uses live presence, approval, account status, vehicle compatibility, service areas, and active assignments. Approved live Partner App accounts bypass local KYC document checks." breadcrumbs={[{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: delivery.id, path: `/admin/deliveries/${delivery.id}` }, { label: 'Assignment' }]} onNavigate={open} />

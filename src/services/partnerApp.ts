@@ -142,6 +142,34 @@ export function partnerAppCollectionDocumentEndpoint(config: PartnerAppConfig, c
   return `${firestoreCollectionUrl(config, collectionName)}/${encodeURIComponent(id)}${query}`
 }
 
+const REQUEST_TIMEOUT_MS = 20_000
+
+/**
+ * Firebase REST requests must fail visibly instead of leaving the assignment
+ * screen on "Refreshing…" forever when the network or token refresh stalls.
+ */
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMessage: string,
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = globalThis.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    const name = typeof error === 'object' && error !== null && 'name' in error
+      ? String((error as { name: unknown }).name)
+      : ''
+    if (name === 'AbortError') {
+      throw new PartnerAppRequestError(timeoutMessage, url)
+    }
+    throw error
+  } finally {
+    globalThis.clearTimeout(timer)
+  }
+}
+
 async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSize?: number): Promise<unknown> {
   const url = partnerAppEndpoint(config, pageSize)
   const headers: Record<string, string> = { Accept: 'application/json' }
@@ -149,8 +177,13 @@ async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSi
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`
   let response: Response
   try {
-    response = await fetch(url, { method: 'GET', headers, cache: 'no-store' })
+    response = await fetchWithTimeout(
+      url,
+      { method: 'GET', headers, cache: 'no-store' },
+      'Partner data request timed out after 20 seconds. Check the Firebase connection and try again.',
+    )
   } catch (error) {
+    if (error instanceof PartnerAppRequestError) throw error
     throw new PartnerAppRequestError(`Could not reach the partner app. Check the URL, CORS, and network access.${error instanceof Error ? ` (${error.message})` : ''}`, url)
   }
   if (!response.ok) {
@@ -185,7 +218,11 @@ async function requestFirestoreCollection(config: PartnerAppConfig, token: strin
   const headers: Record<string, string> = { Accept: 'application/json' }
   const accessToken = await resolvePartnerAppToken(token, config.apiKey)
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`
-  const response = await fetch(url, { method: 'GET', headers, cache: 'no-store' })
+  const response = await fetchWithTimeout(
+    url,
+    { method: 'GET', headers, cache: 'no-store' },
+    'Support ticket/document request timed out after 20 seconds. Check the Firebase connection and try again.',
+  )
   if (!response.ok) throw new PartnerAppRequestError(`Support ticket request failed (HTTP ${response.status}).`, url)
   return response.json()
 }

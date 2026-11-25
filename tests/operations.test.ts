@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDemoState } from '../src/domain/seed.ts'
-import { getPartnerEligibility, hasPartnerAccepted, nextPartnerId } from '../src/domain/operations.ts'
+import { getPartnerEligibility, hasPartnerAccepted, nextPartnerId, vehicleCanCarry } from '../src/domain/operations.ts'
 import { buildKycQueue, liveApplicationStatus } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
 import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
-import { mergeSharedPayload, toSharedPayload } from '../src/services/sharedState.ts'
+import { clearDemoLocalWorkflow, hasDemoLocalWorkflow, markDemoLocalWorkflow, mergeSharedPayload, toSharedPayload } from '../src/services/sharedState.ts'
 import { isQuotaError, nextQuotaResetAt, quotaMessage } from '../src/services/firestoreQuota.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
 import type { AdminSection, PartnerAppConfig, Permission } from '../src/domain/model.ts'
@@ -1447,6 +1447,13 @@ test('an online live partner with only status active is treated as approved', ()
   assert.equal(after.eligible, true, after.reasons.join('; '))
 })
 
+test('bicycles can carry medium packages but not large ones', () => {
+  assert.equal(vehicleCanCarry('Bicycle', 'Medium'), true)
+  assert.equal(vehicleCanCarry('Bicycle', 'Large'), false)
+  assert.equal(vehicleCanCarry('On foot', 'Medium'), false)
+  assert.equal(vehicleCanCarry('Van', 'Large'), true)
+})
+
 test('unassigned deliveries are not treated as partner-accepted for row actions', () => {
   const frame = frameWithDemo()
   const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
@@ -1719,6 +1726,30 @@ test('support ticket and live document reviews update the synced admin records',
   const resolved = apply(reviewed, { type: 'partnerApp.ticket-status', ticketId: 'ticket-live-1', status: 'Resolved', at: '2026-11-22T09:06:00.000Z' })
   expectSuccess(resolved)
   assert.equal(resolved.data.partnerAppTickets[0].status, 'Resolved')
+})
+
+test('demo workflow marker only matches the exact local payload and can be cleared', () => {
+  const store = new Map<string, string>()
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    value: {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value) },
+        removeItem: (key: string) => { store.delete(key) },
+      },
+    },
+  })
+  try {
+    markDemoLocalWorkflow('demo-hash')
+    assert.equal(hasDemoLocalWorkflow('demo-hash'), true)
+    // A real local edit changes the hash and must not be mistaken for demo data.
+    assert.equal(hasDemoLocalWorkflow('real-edit-hash'), false)
+    clearDemoLocalWorkflow()
+    assert.equal(hasDemoLocalWorkflow('demo-hash'), false)
+  } finally {
+    delete (globalThis as { window?: unknown }).window
+  }
 })
 
 test('shared workflow state excludes identity and live caches and hydrates without overwriting them', () => {

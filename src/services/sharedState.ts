@@ -6,6 +6,42 @@ import { resolvePartnerAppToken } from './firebaseAuth.ts'
 const COLLECTION = 'admin_state'
 const DOCUMENT = 'operations'
 const META_KEY = 'picdrop-admin-shared-workflow-meta-v1'
+const DEMO_LOCAL_KEY = 'picdrop-admin-demo-workflow-hash-v1'
+
+/**
+ * A demo session writes its workflow to localStorage like a real session. If
+ * the same browser later signs in with Firebase, those demo leftovers must not
+ * be mistaken for unsaved administrator work and pushed over Firestore.
+ *
+ * The marker stores the exact shared-payload hash, so real edits made after the
+ * demo session no longer match and are still allowed to win.
+ */
+export function markDemoLocalWorkflow(payloadHash: string) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(DEMO_LOCAL_KEY, payloadHash)
+  } catch {
+    // The guard is best-effort when storage is unavailable.
+  }
+}
+
+export function hasDemoLocalWorkflow(payloadHash: string) {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(DEMO_LOCAL_KEY) === payloadHash
+  } catch {
+    return false
+  }
+}
+
+export function clearDemoLocalWorkflow() {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.removeItem(DEMO_LOCAL_KEY)
+  } catch {
+    // Nothing to clear when storage is unavailable.
+  }
+}
 
 export interface SharedWorkflowMeta {
   revision: number
