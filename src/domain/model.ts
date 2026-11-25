@@ -247,6 +247,8 @@ export interface LiveOrderSnapshot {
   partnerUid: string
   partnerName: string
   nativeStatus: string
+  /** The offer was withdrawn after Remove partner; the delivery is Unassigned. */
+  withdrawn: boolean
   category: 'Grocery' | 'Restaurant'
   pickup: { name: string; address: string; latitude: number; longitude: number }
   destination: { name: string; address: string; latitude: number; longitude: number }

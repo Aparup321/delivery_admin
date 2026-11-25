@@ -8,7 +8,7 @@ import { activeQuotaMessage, blockQuotaUntilReset, clearQuotaBlock } from '../se
 import { writeDeliveryAssignment, writeDeliveryCancellation, writeDeliveryUnassign } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
-import { hashSharedPayload, loadSharedWorkflow, readSharedWorkflowMeta, saveSharedWorkflow, toSharedPayload, writeSharedWorkflowMeta } from '../services/sharedState'
+import { hashSharedPayload, loadSharedWorkflow, mergeSharedPayload, readSharedWorkflowMeta, saveSharedWorkflow, toSharedPayload, writeSharedWorkflowMeta } from '../services/sharedState'
 import { appReducer, type AppFrame, type OperationAction } from './operationsReducer'
 
 export interface SharedStateStatus {
@@ -58,7 +58,11 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       setSharedState({ status: 'local', lastSyncedAt: null, updatedBy: null, error: null })
       return
     }
-    setSharedState((current) => current.status === 'loading' ? current : { ...current, status: 'loading', error: null })
+    // Background polls should not flicker the Settings status when the state
+    // is already synced or a save is in progress.
+    setSharedState((current) => ['loading', 'saving', 'synced'].includes(current.status)
+      ? current
+      : { ...current, status: 'loading', error: null })
     try {
       const remote = await loadSharedWorkflow(config, readPartnerAppToken(), latestData.current)
       if (!remote) {
@@ -95,12 +99,24 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       }
       remoteRevision.current = remote.revision
       const remotePayload = JSON.stringify(toSharedPayload(remote.state))
+      // A newer revision can still contain identical shared data. Keep the
+      // local view and its live caches instead of forcing a needless render.
+      if (hashSharedPayload(remotePayload) === localHash) {
+        lastSavedPayload.current = remotePayload
+        writeSharedWorkflowMeta({ revision: remote.revision, payloadHash: localHash, savedAt: new Date().toISOString() })
+        setSharedReady(true)
+        setSharedState({ status: 'synced', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: null })
+        return
+      }
       lastSavedPayload.current = remotePayload
       writeSharedWorkflowMeta({ revision: remote.revision, payloadHash: hashSharedPayload(remotePayload), savedAt: new Date().toISOString() })
       // Hydrated audit history has already been written by the administrator
       // who created it. Never replay those decisions into delivery_app.
+      // Merge into the latest state, not the snapshot from when the request
+      // started, so a partner sync or identity refresh that landed meanwhile
+      // is not replaced by older live caches.
       hydrateGuard.current = true
-      dispatch({ type: 'state.hydrate', state: remote.state })
+      dispatch({ type: 'state.hydrate', state: mergeSharedPayload(latestData.current, remote.state) })
       setSharedReady(true)
       setSharedState({ status: 'synced', lastSyncedAt: remote.updatedAt, updatedBy: remote.updatedBy, error: null })
     } catch (error) {
@@ -221,6 +237,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           partnerUid: item.partnerUid,
           partnerName: item.partnerName,
           nativeStatus: item.nativeStatus,
+          withdrawn: item.withdrawn,
           category: item.category === 'Restaurant' ? 'Restaurant' as const : 'Grocery' as const,
           pickup: item.pickup,
           destination: item.destination,

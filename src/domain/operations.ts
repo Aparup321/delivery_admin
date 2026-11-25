@@ -1,4 +1,16 @@
-import type { Delivery, DeliveryStatus, OperationsState, Partner, PartnerDocument } from './model.ts'
+import type { Delivery, DeliveryStatus, OperationsState, Partner, PartnerAppRecord, PartnerDocument } from './model.ts'
+
+/**
+ * Older delivery_app accounts may only have `status: active` and no
+ * `applicationStatus`. An explicit application status always wins; the active
+ * fallback keeps those legacy approved accounts usable.
+ */
+export function isLivePartnerApproved(record: PartnerAppRecord | undefined) {
+  if (!record) return false
+  const applicationStatus = (record.applicationStatus ?? '').trim().toLowerCase()
+  if (applicationStatus) return applicationStatus === 'approved'
+  return ['active', 'approved'].includes((record.status ?? '').trim().toLowerCase())
+}
 
 export interface EligibilityResult {
   eligible: boolean
@@ -27,17 +39,33 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   const liveRecord = partner.partnerAppUid
     ? state.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)
     : undefined
-  const liveApplicationApproved = liveRecord?.applicationStatus?.trim().toLowerCase() === 'approved'
+  const liveApplicationStatus = (liveRecord?.applicationStatus ?? '').trim().toLowerCase()
+  const liveApplicationApproved = isLivePartnerApproved(liveRecord)
+  const liveAvailability = String(liveRecord?.fields.availability ?? '').trim().toLowerCase()
   const validDocuments = required.filter((type) => documents.some((document) => document.type === type && isDocumentCurrent(document, now))).length
+  const activeAssignment = getActiveAssignment(state, partner.id)
 
   const liveOnline = liveRecord?.isOnline === true
     || ['online', 'available'].includes((liveRecord?.status ?? '').trim().toLowerCase())
+    || ['online', 'available'].includes(liveAvailability)
+  const liveOffline = Boolean(liveRecord)
+    && (liveRecord?.isOnline === false || liveAvailability === 'offline')
+    && !liveOnline
+  const liveBusy = ['on delivery', 'busy'].includes(liveAvailability)
+
   if (partner.availability === 'Restricted') reasons.push(`Partner is restricted${partner.restrictedReason ? `: ${partner.restrictedReason}` : ''}`)
   if (partner.availability === 'Suspended') reasons.push(`Partner is suspended${partner.suspendedReason ? `: ${partner.suspendedReason}` : ''}`)
+  if (liveRecord && liveApplicationStatus && !liveApplicationApproved) {
+    reasons.push(`delivery_app application is ${liveApplicationStatus}`)
+  }
+  if ((liveRecord?.status ?? '').trim().toLowerCase() === 'paused') reasons.push('delivery_app account is paused')
   // The live presence heartbeat is the source of truth for online state. A
-  // stale local Offline value must not block an actually online partner.
-  if (partner.availability === 'Offline' && !liveOnline) reasons.push('Partner is offline')
-  if (partner.availability === 'On Delivery') reasons.push('Partner is already on an active delivery')
+  // stale local Offline value must not block an actually online partner, and
+  // a stale local On Delivery value must not block a partner with no active
+  // assignment. A live "On Delivery" signal still blocks if another system
+  // has the partner busy outside this console.
+  if ((partner.availability === 'Offline' && !liveOnline) || liveOffline) reasons.push('Partner is offline')
+  if (liveBusy && !activeAssignment) reasons.push('Partner is already on an active delivery')
 
   if (state.settings.requireVerifiedDocuments && !liveApplicationApproved) {
     for (const type of required) {
@@ -68,7 +96,6 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
     if (!serves) reasons.push('Service area does not include pickup or drop area')
   }
 
-  const activeAssignment = state.assignments.find((assignment) => assignment.partnerId === partner.id && assignment.status === 'Active')
   if (activeAssignment && activeAssignment.deliveryId !== delivery.id) {
     const otherDelivery = state.deliveries.find((item) => item.id === activeAssignment.deliveryId)
     reasons.push(`Already assigned to ${otherDelivery?.id ?? activeAssignment.deliveryId}`)
@@ -92,7 +119,13 @@ export function vehicleCanCarry(vehicle: Partner['vehicle'], packageSize: Delive
 }
 
 export function getActiveAssignment(state: OperationsState, partnerId: string) {
-  return state.assignments.find((assignment) => assignment.partnerId === partnerId && assignment.status === 'Active') ?? null
+  return state.assignments.find((assignment) => {
+    if (assignment.partnerId !== partnerId || assignment.status !== 'Active') return false
+    // A completed or cancelled delivery must not keep a partner blocked when
+    // an older assignment release was missed.
+    const delivery = state.deliveries.find((item) => item.id === assignment.deliveryId)
+    return !delivery || (delivery.status !== 'Completed' && delivery.status !== 'Cancelled')
+  }) ?? null
 }
 
 export function getDeliveryStatus(delivery: Delivery): DeliveryStatus {

@@ -1240,6 +1240,75 @@ test('an online live partner is assignable even when local availability is stale
   assert.ok(ineligible.reasons.some((reason) => /Service area/.test(reason)))
 })
 
+test('a stale On Delivery flag is reconciled from live presence and does not block assignment', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.availability = 'On Delivery'
+  partner.partnerAppUid = 'live-stale-busy'
+  partner.serviceAreas = ['New Town']
+  // No real active assignment remains for this partner.
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.partnerId !== partner.id || assignment.status !== 'Active')
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  delivery.vehicleRequirement = 'Any'
+  delivery.pickup = 'New Town, Kolkata'
+  delivery.drop = 'Salt Lake, Kolkata'
+  delivery.pickupAddress = 'New Town, Kolkata'
+  delivery.dropAddress = 'Salt Lake, Kolkata'
+  const record = {
+    id: 'live-stale-busy', partnerId: null, name: 'Sayan M.', phone: '+91 90000 04748',
+    email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved', isOnline: true,
+    serviceAreas: ['New Town'], updatedAt: '2026-11-22T10:00:00.000Z',
+    fields: { isOnline: 'true', availability: 'Available' }, syncedAt: '2026-11-22T10:00:00.000Z',
+  }
+  frame.data.partnerAppRecords = [record]
+
+  // The stale local flag alone must not make the partner ineligible.
+  const before = getPartnerEligibility(frame.data, partner, delivery)
+  assert.equal(before.eligible, true, before.reasons.join('; '))
+
+  const auditCount = frame.data.auditLogs.length
+  const synced = apply(frame, { type: 'partnerApp.sync-result', records: [record], at: '2026-11-22T10:01:00.000Z', silent: true })
+  assert.equal(synced.feedback, null)
+  assert.equal(synced.data.auditLogs.length, auditCount)
+  assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Available')
+  const after = getPartnerEligibility(synced.data, synced.data.partners.find((item) => item.id === partner.id)!, delivery)
+  assert.equal(after.eligible, true, after.reasons.join('; '))
+})
+
+test('an online live partner with only status active is treated as approved', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.availability = 'Offline'
+  partner.partnerAppUid = 'live-legacy-active'
+  partner.serviceAreas = ['New Town']
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.partnerId !== partner.id || assignment.status !== 'Active')
+  frame.data.documents = frame.data.documents.filter((document) => document.partnerId !== partner.id)
+  frame.data.settings = { ...frame.data.settings, requireVerifiedDocuments: true }
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  delivery.vehicleRequirement = 'Any'
+  delivery.pickup = 'New Town, Kolkata'
+  delivery.drop = 'Salt Lake, Kolkata'
+  delivery.pickupAddress = 'New Town, Kolkata'
+  delivery.dropAddress = 'Salt Lake, Kolkata'
+  const record = {
+    id: 'live-legacy-active', partnerId: null, name: 'Sayan M.', phone: '+91 90000 04748',
+    email: null, vehicle: 'Scooter', status: 'active', applicationStatus: null, isOnline: true,
+    serviceAreas: ['New Town'], updatedAt: '2026-11-22T10:00:00.000Z',
+    fields: { isOnline: 'true', availability: 'Available' }, syncedAt: '2026-11-22T10:00:00.000Z',
+  }
+  frame.data.partnerAppRecords = [record]
+
+  // Missing local KYC files are bypassed for a live-approved account. Legacy
+  // records often have `status: active` but no explicit applicationStatus.
+  const before = getPartnerEligibility(frame.data, partner, delivery)
+  assert.equal(before.eligible, true, before.reasons.join('; '))
+
+  const synced = apply(frame, { type: 'partnerApp.sync-result', records: [record], at: '2026-11-22T10:01:00.000Z', silent: true })
+  assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Available')
+  const after = getPartnerEligibility(synced.data, synced.data.partners.find((item) => item.id === partner.id)!, delivery)
+  assert.equal(after.eligible, true, after.reasons.join('; '))
+})
+
 test('live orders are imported into the admin queue, block reassignment after acceptance, and release on rejection', () => {
   let frame = identifyMainAdmin(frameWithDemo())
   frame = apply(frame, {
@@ -1258,7 +1327,7 @@ test('live orders are imported into the admin queue, block reassignment after ac
 
   const order = {
     id: 'live-order-1', displayId: '#LIVE-1', partnerUid: 'live-rider-1', partnerName: 'Live Rider',
-    nativeStatus: 'assigned', category: 'Grocery' as const,
+    nativeStatus: 'assigned', withdrawn: false, category: 'Grocery' as const,
     pickup: { name: 'New Town', address: 'New Town', latitude: 22.58, longitude: 88.46 },
     destination: { name: 'Salt Lake', address: 'Salt Lake', latitude: 22.57, longitude: 88.41 },
     distanceKm: 4.2, etaMinutes: 22, earnings: 85, itemCount: 2, paymentMode: 'Prepaid' as const,
@@ -1322,6 +1391,152 @@ test('unassigning a published offer withdraws it from delivery_app before accept
     assert.equal(intent.partnerAppUid, 'live-withdraw-uid')
     assert.equal(intent.reason, 'Rider requested removal')
   }
+})
+
+test('a withdrawn offer is normalized separately from a real cancellation', () => {
+  const [withdrawal, cancellation] = normalizeLiveDeliveries({
+    documents: [
+      {
+        name: 'projects/delivery-231a0/databases/(default)/documents/deliveries/DLV-1046',
+        fields: {
+          displayId: { stringValue: '#DLV-1046' },
+          partnerUid: { stringValue: '' },
+          status: { stringValue: 'cancelled' },
+          adminStatus: { stringValue: 'Pending' },
+          pickup: { mapValue: { fields: { name: { stringValue: 'New Town' }, latitude: { doubleValue: 22.58 }, longitude: { doubleValue: 88.46 } } } },
+          destination: { mapValue: { fields: { name: { stringValue: 'Salt Lake' }, latitude: { doubleValue: 22.57 }, longitude: { doubleValue: 88.41 } } } },
+        },
+      },
+      {
+        name: 'projects/delivery-231a0/databases/(default)/documents/deliveries/DLV-1047',
+        fields: {
+          displayId: { stringValue: '#DLV-1047' },
+          partnerUid: { stringValue: 'rider-1' },
+          status: { stringValue: 'cancelled' },
+          adminStatus: { stringValue: 'Cancelled' },
+          pickup: { mapValue: { fields: { name: { stringValue: 'New Town' }, latitude: { doubleValue: 22.58 }, longitude: { doubleValue: 88.46 } } } },
+          destination: { mapValue: { fields: { name: { stringValue: 'Salt Lake' }, latitude: { doubleValue: 22.57 }, longitude: { doubleValue: 88.41 } } } },
+        },
+      },
+    ],
+  })
+
+  assert.equal(withdrawal.withdrawn, true)
+  assert.equal(withdrawal.partnerUid, '')
+  assert.equal(cancellation.withdrawn, false)
+  assert.equal(cancellation.nativeStatus, 'cancelled')
+})
+
+test('withdrawing a partner offer keeps the delivery Unassigned after the next live sync', () => {
+  let frame = identifyMainAdmin(frameWithDemo())
+  frame = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-11-22T10:00:00.000Z',
+    records: [{
+      id: 'live-withdraw-sync-uid', partnerId: null, name: 'Sayan M.', phone: '+91 90000 04748',
+      email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved', isOnline: true,
+      serviceAreas: ['New Town', 'Bidhannagar', 'Rajarhat'], updatedAt: '2026-11-22T09:55:00.000Z',
+      fields: {}, syncedAt: '2026-11-22T10:00:00.000Z',
+    }],
+  })
+  expectSuccess(frame)
+  const approved = apply(frame, { type: 'partnerApp.review', recordId: 'live-withdraw-sync-uid', decision: 'Approved', note: 'Approved for withdrawal sync test' })
+  expectSuccess(approved)
+  const partnerId = approved.data.applications.find((item) => item.partnerAppUid === 'live-withdraw-sync-uid')!.partnerId!
+  const assigned = apply(approved, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId })
+  expectSuccess(assigned)
+  const unassigned = apply(assigned, { type: 'delivery.unassign', deliveryId: 'DLV-1046', reason: 'Rider requested removal' })
+  expectSuccess(unassigned)
+  assert.equal(unassigned.data.deliveries.find((item) => item.id === 'DLV-1046')?.status, 'Unassigned')
+
+  // This is the document Remove partner writes. The next poll must not turn
+  // the delivery itself into Cancelled.
+  const synced = apply(unassigned, {
+    type: 'delivery.sync-live-orders',
+    at: '2026-11-22T10:01:00.000Z',
+    orders: [{
+      id: 'DLV-1046', displayId: '#DLV-1046', partnerUid: '', partnerName: 'Delivery partner',
+      nativeStatus: 'cancelled', withdrawn: true, category: 'Grocery' as const,
+      pickup: { name: 'New Town', address: 'New Town, Kolkata', latitude: 22.58, longitude: 88.46 },
+      destination: { name: 'Salt Lake', address: 'Salt Lake, Kolkata', latitude: 22.57, longitude: 88.41 },
+      distanceKm: 4.2, etaMinutes: 22, earnings: 85, itemCount: 2, paymentMode: 'Prepaid' as const,
+      note: null, dropOtp: null, requestedAt: '2026-11-22T10:00:00.000Z', acceptedAt: null,
+      completedAt: null, updatedAt: '2026-11-22T10:00:30.000Z',
+      cancellationReason: 'Rider requested removal', events: [], rejected: false,
+    }],
+  })
+  expectSuccess(synced)
+  const delivery = synced.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  assert.equal(delivery.status, 'Unassigned')
+  assert.equal(delivery.assignmentId, null)
+  assert.equal(synced.data.assignments.some((item) => item.deliveryId === 'DLV-1046' && item.status === 'Active'), false)
+  assert.equal(synced.data.partners.find((item) => item.id === partnerId)?.availability, 'Available')
+
+  // The delivery stays in the dispatch queue and can take a new partner.
+  const reassigned = apply(synced, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId })
+  expectSuccess(reassigned)
+})
+
+test('a failed withdrawal is not overwritten by a stale live poll', () => {
+  let frame = identifyMainAdmin(frameWithDemo())
+  frame = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-11-22T11:00:00.000Z',
+    records: [{
+      id: 'live-withdraw-failure-uid', partnerId: null, name: 'Sayan M.', phone: '+91 90000 04748',
+      email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved', isOnline: true,
+      serviceAreas: ['New Town', 'Bidhannagar', 'Rajarhat'], updatedAt: '2026-11-22T10:55:00.000Z',
+      fields: {}, syncedAt: '2026-11-22T11:00:00.000Z',
+    }],
+  })
+  expectSuccess(frame)
+  const approved = apply(frame, { type: 'partnerApp.review', recordId: 'live-withdraw-failure-uid', decision: 'Approved', note: 'Approved for withdrawal failure test' })
+  expectSuccess(approved)
+  const partnerId = approved.data.applications.find((item) => item.partnerAppUid === 'live-withdraw-failure-uid')!.partnerId!
+  const assigned = apply(approved, { type: 'delivery.assign', deliveryId: 'DLV-1046', partnerId })
+  expectSuccess(assigned)
+  const unassigned = apply(assigned, { type: 'delivery.unassign', deliveryId: 'DLV-1046', reason: 'Rider requested removal' })
+  expectSuccess(unassigned)
+  assert.equal(unassigned.data.deliveries.find((item) => item.id === 'DLV-1046')?.publicationStatus, 'Pending')
+
+  const failed = apply(unassigned, {
+    type: 'partnerApp.write-result',
+    targetType: 'Delivery',
+    targetId: 'DLV-1046',
+    recordId: 'live-withdraw-failure-uid',
+    ok: false,
+    message: 'delivery_app delivery write failed (HTTP 503).',
+    at: '2026-11-22T11:01:00.000Z',
+    applicationStatus: null,
+    accountStatus: null,
+  })
+  assert.equal(failed.feedback?.kind, 'error')
+  assert.match(failed.feedback?.message ?? '', /update failed/)
+  assert.equal(failed.data.deliveries.find((item) => item.id === 'DLV-1046')?.publicationStatus, 'Failed')
+
+  // A poll that was already in flight can still return the old accepted-offer
+  // document. It must not re-create the assignment or clear the failure.
+  const stale = apply(failed, {
+    type: 'delivery.sync-live-orders',
+    at: '2026-11-22T11:01:30.000Z',
+    orders: [{
+      id: 'DLV-1046', displayId: '#DLV-1046', partnerUid: 'live-withdraw-failure-uid', partnerName: 'Sayan M.',
+      nativeStatus: 'assigned', withdrawn: false, category: 'Grocery' as const,
+      pickup: { name: 'New Town', address: 'New Town, Kolkata', latitude: 22.58, longitude: 88.46 },
+      destination: { name: 'Salt Lake', address: 'Salt Lake, Kolkata', latitude: 22.57, longitude: 88.41 },
+      distanceKm: 4.2, etaMinutes: 22, earnings: 85, itemCount: 2, paymentMode: 'Prepaid' as const,
+      note: null, dropOtp: '4321', requestedAt: '2026-11-22T11:00:00.000Z', acceptedAt: null,
+      completedAt: null, updatedAt: '2026-11-22T11:00:00.000Z',
+      cancellationReason: null, events: [], rejected: false,
+    }],
+  })
+  // Nothing changed, so the reducer intentionally returns the same frame; do
+  // not assert on the previous action's feedback here.
+  const delivery = stale.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  assert.equal(delivery.status, 'Unassigned')
+  assert.equal(delivery.publicationStatus, 'Failed')
+  assert.equal(delivery.assignmentId, null)
+  assert.equal(stale.data.assignments.some((item) => item.deliveryId === 'DLV-1046' && item.status === 'Active'), false)
 })
 
 test('support ticket and live document reviews update the synced admin records', () => {

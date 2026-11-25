@@ -196,6 +196,8 @@ export function OverviewPage({ data, open }: Props) {
         <MapPreview
           points={mapRoute?.points ?? []}
           ariaLabel={mapRoute ? `OpenStreetMap preview of ${mapRoute.summary}` : 'OpenStreetMap delivery area preview'}
+          recenterKey={mapRoute?.id ?? 'none'}
+          followPointId={liveDelivery?.currentLocation ? `${liveDelivery.id}-partner` : undefined}
         />
         <p className="osm-map-footnote"><Icon name="info" size={13} />{mapRoute?.source === 'live'
           ? <>Live delivery from delivery_app · {mapRoute.locationUpdatedAt ? `Partner position updated ${relativeTime(mapRoute.locationUpdatedAt)}. ` : "Waiting for the partner's GPS position. "}Routing and ETAs are approximate.</>

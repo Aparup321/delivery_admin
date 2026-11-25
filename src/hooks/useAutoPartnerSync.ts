@@ -135,7 +135,7 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
         if (!active) return
         clearQuotaBlock(config.projectId)
         if (!recordsChanged(recordsRef.current, records) && !ticketsChanged(ticketsRef.current, tickets) && !documentsChanged(documentsRef.current, documents)) return
-        dispatch({ type: 'partnerApp.sync-result', records, tickets, documents, at: new Date().toISOString() })
+        dispatch({ type: 'partnerApp.sync-result', records, tickets, documents, at: new Date().toISOString(), silent: true })
       } catch (error) {
         if (!active) return
         // A quota-exhausted project keeps answering 429 until the daily reset;
@@ -151,7 +151,11 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
     const lastSync = config.lastSyncAt
       ? new Date(config.lastSyncAt).getTime()
       : 0
-    if (!lastSync || Date.now() - lastSync >= POLL_INTERVAL_MS) {
+    // Partner records are not part of the shared workflow document. A new
+    // browser profile can inherit a recent lastSyncAt while its own cache is
+    // empty, so load once instead of leaving every partner unlinked for a
+    // full poll interval.
+    if (!lastSync || Date.now() - lastSync >= POLL_INTERVAL_MS || recordsRef.current.length === 0) {
       void refresh(true)
     }
 

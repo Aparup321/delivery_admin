@@ -29,7 +29,7 @@ interface LiveDeliveriesOptions {
 /**
  * Polls the delivery collection written by delivery_app. Firestore REST has no
  * live subscription, so pages refresh on the configured interval (one minute by
- * default; the Tracking page uses 15 seconds), on tab focus and after an
+ * default; the Tracking page uses 10 seconds), on tab focus and after an
  * explicit retry. Reads are shared with the provider and
  * other open pages, and stop entirely until the daily reset when Firestore
  * answers 429 Quota exceeded.

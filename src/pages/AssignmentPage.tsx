@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { userCan } from '../domain/admin'
 import type { Delivery, OperationsState, Partner } from '../domain/model'
-import { getPartnerEligibility } from '../domain/operations'
+import { getPartnerEligibility, isLivePartnerApproved } from '../domain/operations'
 import { Button, Dialog, EmptyState, Icon, PageHeading, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
@@ -15,6 +15,11 @@ interface Props {
 
 type AvailabilityFilter = 'All' | 'Available' | 'On Delivery' | 'Offline' | 'Restricted' | 'Suspended'
 
+/** The stored partner link is authoritative; the record cache is only a cache. */
+function linkedToApp(partner: Partner) {
+  return Boolean(partner.partnerAppUid)
+}
+
 export function AssignmentPage({ data, delivery, open }: Props) {
   const { frame, dispatch } = useOperations()
   const [tab, setTab] = useState<'Eligible' | 'Ineligible'>('Eligible')
@@ -24,15 +29,16 @@ export function AssignmentPage({ data, delivery, open }: Props) {
   const [confirm, setConfirm] = useState(false)
   const [refreshingPartners, setRefreshingPartners] = useState(false)
   const [refreshError, setRefreshError] = useState('')
+  const autoSyncRef = useRef(false)
   const now = Date.now()
   // In a live partner-app connection an unlinked admin record cannot receive
-  // the order, so it must not look assignable in the candidate list.
+  // the order, so it must not look assignable in the candidate list. This is
+  // based on the connection, not the cache: an empty or failed first sync must
+  // not fall back to simulated offers in a real Firebase session.
   const liveAppConnected = hasFirebaseAdminSession()
     && data.partnerApp.mode === 'firestore'
     && Boolean(data.partnerApp.projectId.trim())
-    && data.partnerAppRecords.length > 0
-  const linkedToApp = (partner: Partner) => Boolean(partner.partnerAppUid
-    && data.partnerAppRecords.some((record) => record.id === partner.partnerAppUid))
+  const liveRecordsLoaded = data.partnerAppRecords.length > 0
   const evaluations = useMemo(() => data.partners.map((partner) => {
     const evaluation = getPartnerEligibility(data, partner, delivery, now)
     if (!liveAppConnected || linkedToApp(partner)) return { partner, ...evaluation }
@@ -81,7 +87,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     setRefreshError('')
     try {
       const records = await syncPartnerAppRecords(data.partnerApp, readPartnerAppToken())
-      dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString() })
+      dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString(), silent: true })
     } catch (error) {
       setRefreshError(error instanceof Error ? error.message : 'Partner availability could not be refreshed.')
     } finally {
@@ -89,11 +95,37 @@ export function AssignmentPage({ data, delivery, open }: Props) {
     }
   }
 
+  // Opening the assignment screen should use current online presence instead
+  // of waiting for the next background poll. Skip it when a sync just ran.
+  useEffect(() => {
+    if (autoSyncRef.current) return
+    if (!hasFirebaseAdminSession() || data.partnerApp.mode !== 'firestore' || !data.partnerApp.projectId.trim()) return
+    const lastSync = data.partnerApp.lastSyncAt ? new Date(data.partnerApp.lastSyncAt).getTime() : 0
+    if (lastSync && Date.now() - lastSync < 10_000) return
+    autoSyncRef.current = true
+    let active = true
+    setRefreshingPartners(true)
+    setRefreshError('')
+    syncPartnerAppRecords(data.partnerApp, readPartnerAppToken())
+      .then((records) => {
+        if (!active) return
+        dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString(), silent: true })
+      })
+      .catch((error) => {
+        if (!active) return
+        setRefreshError(error instanceof Error ? error.message : 'Partner availability could not be refreshed.')
+      })
+      .finally(() => {
+        if (active) setRefreshingPartners(false)
+      })
+    return () => { active = false }
+  }, [delivery.id, data.partnerApp.mode, data.partnerApp.projectId, data.partnerApp.apiKey, data.partnerApp.lastSyncAt, dispatch])
+
   return <div className="page-stack assignment-page">
-    <PageHeading title={`Assign partner · ${delivery.id}`} subtitle="Eligibility uses approval, account status, vehicle compatibility, and active assignments. Live onboarding document and area gaps do not block approved Partner App accounts." breadcrumbs={[{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: delivery.id, path: `/admin/deliveries/${delivery.id}` }, { label: 'Assignment' }]} onNavigate={open} />
+    <PageHeading title={`Assign partner · ${delivery.id}`} subtitle="Eligibility uses live presence, approval, account status, vehicle compatibility, service areas, and active assignments. Approved live Partner App accounts bypass local KYC document checks." breadcrumbs={[{ label: 'Overview', path: '/admin' }, { label: 'Deliveries', path: '/admin/deliveries' }, { label: delivery.id, path: `/admin/deliveries/${delivery.id}` }, { label: 'Assignment' }]} onNavigate={open} />
     <div className="assignment-summary-strip"><span><Icon name="pin" size={15} /><b>{delivery.pickup}</b><Icon name="arrow" size={13} /><b>{delivery.drop}</b></span><i /><span><Icon name="deliveries" size={15} />{delivery.packageSize} · {delivery.estimatedWeightKg.toFixed(1)} kg</span><i /><span><Icon name="calendar" size={15} />{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledStart))} – {new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(delivery.scheduledEnd))}</span><i /><span>Vehicle: <b>{delivery.vehicleRequirement}</b></span>{assigned && <><i /><span className="reassign-label">Reassigning from {data.partners.find((item) => item.id === assigned.partnerId)?.name}</span></>}</div>
 
-    {liveAppConnected && <div className="notification-history-note"><Icon name="info" size={14} />Live partner-app data is connected. Only partners linked to a delivery_app account can receive app orders. Link an unlinked partner from <button className="text-link" onClick={() => open('/admin/partners?view=app')}>Partner app data</button> before assigning.</div>}
+    {liveAppConnected && <div className="notification-history-note"><Icon name="info" size={14} />Live partner-app data is connected. Only partners linked to a delivery_app account can receive app orders.{!liveRecordsLoaded && ' No live partner records are loaded yet; use Refresh availability or open Partner app data.'}{liveRecordsLoaded && <> Link an unlinked partner from <button className="text-link" onClick={() => open('/admin/partners?view=app')}>Partner app data</button> before assigning.</>}</div>}
     {reassignmentBlocked && <div className="exception-banner"><Icon name="shield" size={17} /><div><strong>Reassignment blocked after acceptance</strong><span>The partner has accepted or started this delivery. Cancel the order if it must be removed; otherwise the current assignment stays with the partner.</span></div></div>}
     {delivery.status === 'Delayed' && <div className="exception-banner"><Icon name="alert" size={17} /><div><strong>This delivery is delayed</strong><span>Assignment changes are allowed, but the delay and current milestone remain unchanged.</span></div></div>}
     {['Completed', 'Cancelled'].includes(delivery.status) && <EmptyState title={`This delivery is ${delivery.status.toLowerCase()}`} detail="Completed or cancelled deliveries cannot be assigned. Return to the delivery record to review its history." action={<Button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>Back to delivery</Button>} />}
@@ -107,7 +139,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
           {entries.map(({ partner, reasons, eligible: canTake, validDocuments, requiredDocuments, currentAssignment }) => {
             const active = currentAssignment ? data.deliveries.find((item) => item.id === currentAssignment) : null
             const liveRecord = partner.partnerAppUid ? data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid) : undefined
-            const liveApproved = liveRecord?.applicationStatus?.trim().toLowerCase() === 'approved'
+            const liveApproved = isLivePartnerApproved(liveRecord)
             const verified = liveApproved || validDocuments === requiredDocuments
             return <tr key={partner.id} onClick={() => canTake && setSelectedId(partner.id)} className={`${canTake && selectedId === partner.id ? 'candidate-selected' : ''} ${!canTake ? 'candidate-ineligible' : ''}`}>
               <td><input type="radio" name="partner" checked={canTake && selectedId === partner.id} disabled={!canTake} onChange={() => setSelectedId(partner.id)} aria-label={`Select ${partner.name}`} /></td>
@@ -121,7 +153,7 @@ export function AssignmentPage({ data, delivery, open }: Props) {
               <td>{canTake ? <StatusBadge status="Eligible" /> : <span className="eligibility-reasons" title={reasons.join('\n')}>{reasons.slice(0, 2).join(' · ')}{reasons.length > 2 && <small>+{reasons.length - 2} reasons</small>}</span>}</td>
             </tr>
           })}
-        </tbody></table>{entries.length === 0 && <EmptyState title={tab === 'Eligible' ? 'No eligible partners found' : 'No ineligible partners match'} detail={tab === 'Eligible' ? 'Change the search or review vehicle and area requirements. Ineligibility reasons are available on the other tab.' : 'Try a broader search.'} />}</div>
+        </tbody></table>{entries.length === 0 && <EmptyState title={tab === 'Eligible' ? 'No eligible partners found' : 'No ineligible partners match'} detail={tab === 'Eligible' ? 'Check live presence, service area, vehicle requirement, documents, and active assignments. The exact reason is shown on the Ineligible tab.' : 'Try a broader search.'} action={tab === 'Eligible' && ineligible.length > 0 ? <Button onClick={() => setTab('Ineligible')}>Review reasons</Button> : undefined} />}</div>
         <div className="candidate-footnote"><Icon name="info" size={14} />Approved live Partner App accounts can be assigned while document and service-area details are completed. Suspended accounts, incompatible vehicles, and duplicate active assignments remain blocked.</div>
       </Panel>
 

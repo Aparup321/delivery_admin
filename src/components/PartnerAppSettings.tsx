@@ -39,7 +39,7 @@ export function PartnerAppSettings() {
         syncPartnerAppDocuments(saved, token).catch(() => []),
       ])
       clearQuotaBlock(saved.projectId)
-      dispatch({ type: 'partnerApp.sync-result', records, tickets, documents, at: new Date().toISOString() })
+      dispatch({ type: 'partnerApp.sync-result', records, tickets, documents, at: new Date().toISOString(), silent: true })
       setNotice(records.length > 0
         ? { kind: 'success', message: `${records.length} partner record${records.length === 1 ? '' : 's'} loaded from delivery_app.` }
         : { kind: 'info', message: 'The connection worked, but the collection returned 0 records. Check the collection name and Firestore rules.' })

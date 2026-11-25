@@ -2,7 +2,7 @@ import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCa
 import { createDropOtp } from '../domain/estimates.ts'
 import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type Assignment, type AuditEventType, type AuditLogEntry, type Delivery, type DeliveryMilestoneName, type DeliveryStatus, type DocumentStatus, type LiveOrderSnapshot, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppDocument, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type PartnerDocumentReview, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
-import { getPartnerEligibility, getActiveAssignment, nextPartnerId } from '../domain/operations.ts'
+import { getPartnerEligibility, getActiveAssignment, isLivePartnerApproved, nextPartnerId } from '../domain/operations.ts'
 import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
 
 export interface AppFrame {
@@ -37,7 +37,7 @@ export type OperationAction =
   | { type: 'application.reject'; applicationId: string; reason: string }
   | { type: 'partnerApp.save'; config: Pick<PartnerAppConfig, 'mode' | 'projectId' | 'apiKey' | 'databaseId' | 'partnersCollection' | 'endpointUrl'> }
   | { type: 'partnerApp.connected'; at: string }
-  | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; tickets?: PartnerAppTicket[]; documents?: PartnerAppDocument[]; at: string }
+  | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; tickets?: PartnerAppTicket[]; documents?: PartnerAppDocument[]; at: string; silent?: boolean }
   | { type: 'partnerApp.ticket-status'; ticketId: string; status: string; at: string }
   | { type: 'partnerApp.document-review'; uid: string; documentKey: string; review: PartnerDocumentReview; at: string }
   | { type: 'partnerApp.failed'; message: string }
@@ -178,24 +178,32 @@ function syncLinkedPartnerAvailability(data: OperationsState) {
   for (const partner of data.partners) {
     if (!partner.partnerAppUid || partner.availability === 'Restricted' || partner.availability === 'Suspended') continue
     const record = data.partnerAppRecords.find((item) => item.id === partner.partnerAppUid)
+    const activeAssignment = getActiveAssignment(data, partner.id)
+    // A real assignment is authoritative and keeps the partner busy. When no
+    // assignment is active, a stale local On Delivery value must be replaced
+    // by the live presence heartbeat instead of blocking every new delivery.
+    if (activeAssignment) {
+      partner.availability = 'On Delivery'
+      continue
+    }
     if (!record) continue
-    const approved = record.applicationStatus?.toLowerCase() === 'approved'
+    const approved = isLivePartnerApproved(record)
       || data.applications.some((application) => application.partnerAppUid === record.id && application.status === 'Approved')
     if (!approved || record.status?.toLowerCase() === 'paused') {
       partner.availability = 'Offline'
       continue
     }
-    if (partner.availability !== 'On Delivery') {
-      const availabilityValue = [
-        record.isOnline === true ? 'online' : record.isOnline === false ? 'offline' : '',
-        record.fields.isOnline,
-        record.fields.isAvailable,
-        record.fields.availability,
-        record.fields.onlineStatus,
-      ].find((value) => typeof value === 'string' && value.trim())?.trim().toLowerCase()
-      const online = availabilityValue === 'true' || availabilityValue === 'online' || availabilityValue === 'available'
-      partner.availability = online ? 'Available' : 'Offline'
-    }
+    const availabilityValue = [
+      record.isOnline === true ? 'online' : record.isOnline === false ? 'offline' : '',
+      record.fields.isOnline,
+      record.fields.isAvailable,
+      record.fields.availability,
+      record.fields.onlineStatus,
+    ].find((value) => typeof value === 'string' && value.trim())?.trim().toLowerCase()
+    const online = availabilityValue === 'true' || availabilityValue === 'online' || availabilityValue === 'available'
+    const liveAvailability = String(record.fields.availability ?? '').trim().toLowerCase()
+    const busy = liveAvailability === 'on delivery' || liveAvailability === 'busy'
+    partner.availability = busy ? 'On Delivery' : online ? 'Available' : 'Offline'
   }
 }
 
@@ -245,8 +253,7 @@ function autoLinkPartnerAppRecords(data: OperationsState) {
 function importApprovedPartnerAppRecords(data: OperationsState, at: string) {
   let changed = 0
   for (const record of data.partnerAppRecords) {
-    const approved = record.applicationStatus?.trim().toLowerCase() === 'approved'
-      || record.status?.trim().toLowerCase() === 'active'
+    const approved = isLivePartnerApproved(record)
     if (!approved) continue
     if (data.partners.some((partner) => partner.partnerAppUid === record.id)) continue
 
@@ -334,12 +341,23 @@ function syncLiveOrders(data: OperationsState, orders: LiveOrderSnapshot[], at: 
       ? data.partners.find((partner) => partner.partnerAppUid === order.partnerUid)
       : undefined
     let delivery = data.deliveries.find((item) => item.id === order.id)
+    // A local assignment, removal, or cancellation that has not reached
+    // delivery_app yet is authoritative until its write succeeds. A stale poll
+    // must not restore the previous offer or hide the Retry publish failure.
+    if (delivery && (delivery.publicationStatus === 'Pending' || delivery.publicationStatus === 'Failed')) {
+      continue
+    }
     let previousLiveStatus: string | null | undefined = null
     let previousStatus: DeliveryStatus | null = delivery?.status ?? null
     const isNew = !delivery
     const requestedAt = order.requestedAt ?? order.acceptedAt ?? at
     const milestones = liveMilestones(order)
-    const nextStatus = localStatusFromLive(order)
+    // A withdrawn offer is written as a cancelled document with no partner.
+    // That must not cancel the delivery itself: it is waiting for reassignment.
+    const withdrawn = order.withdrawn
+      && delivery?.status !== 'Completed'
+      && delivery?.status !== 'Cancelled'
+    const nextStatus: DeliveryStatus = withdrawn ? 'Unassigned' : localStatusFromLive(order)
     let localChanged = false
 
     if (!delivery) {
@@ -383,7 +401,8 @@ function syncLiveOrders(data: OperationsState, orders: LiveOrderSnapshot[], at: 
     } else {
       previousStatus = delivery.status
       previousLiveStatus = delivery.liveStatus
-      const shouldKeepDelay = delivery.status === 'Delayed' && !['delivered', 'cancelled'].includes(order.nativeStatus)
+      const shouldKeepDelay = delivery.status === 'Delayed'
+        && (order.withdrawn || !['delivered', 'cancelled'].includes(order.nativeStatus))
       delivery.liveStatus = order.rejected ? 'rejected' : order.nativeStatus
       delivery.publicationStatus = 'Published'
       delivery.publishError = null
@@ -463,6 +482,19 @@ function syncLiveOrders(data: OperationsState, orders: LiveOrderSnapshot[], at: 
       }
       if (delivery.milestones.some((milestone) => !milestone.completedAt)) {
         delivery.milestones = milestones.every((milestone) => milestone.completedAt) ? milestones : delivery.milestones.map((milestone) => ({ ...milestone, completedAt: milestone.completedAt ?? order.completedAt ?? at, completedBy: milestone.completedBy ?? 'Partner app' }))
+        localChanged = true
+      }
+    } else if (withdrawn) {
+      // The document is a withdrawal tombstone, not a customer cancellation.
+      // Keep the delivery assignable and clear any assignment a stale poll
+      // recreated before the withdrawal write landed.
+      if (activeAssignment) {
+        releaseAssignment(data, activeAssignment.id, 'Offer withdrawn by the administrator', at)
+        delivery.assignmentId = null
+        localChanged = true
+      }
+      if (delivery.status !== 'Delayed' && delivery.status !== nextStatus) {
+        delivery.status = nextStatus
         localChanged = true
       }
     } else if (order.nativeStatus === 'cancelled') {
@@ -1294,7 +1326,11 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
         notify(data, 'Partner Support Ticket', `New support ticket: ${ticket.subject}`, `${partner?.name ?? ticket.partnerUid}: ${ticket.message}`, path, ticket.id, at)
       }
       const linkedCount = data.partners.filter((partner) => partner.partnerAppUid).length
-      audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records · ${linkedCount} linked partners`, 'Partner records synced from delivery_app.', at)
+      // Background presence polls should update data without writing an audit
+      // entry or raising a toast on every online/offline change.
+      if (!action.silent) {
+        audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records · ${linkedCount} linked partners`, 'Partner records synced from delivery_app.', at)
+      }
       return { message: `${data.partnerAppRecords.length} partner app record${data.partnerAppRecords.length === 1 ? '' : 's'} synced.${linkedCount ? ` ${linkedCount} partner${linkedCount === 1 ? '' : 's'} linked by name.` : ' Link records to admin partners before using live account actions.'}` }
     }
     case 'partnerApp.failed': {
@@ -1659,6 +1695,7 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
       data,
       sequence,
       feedback: action.type === 'user.identify'
+        || (action.type === 'partnerApp.sync-result' && action.silent)
         ? null
         : { id: sequence, kind: result.kind ?? 'success', message: result.message },
     }

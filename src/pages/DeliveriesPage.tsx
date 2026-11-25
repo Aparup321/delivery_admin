@@ -12,6 +12,12 @@ import { serviceAreaCoordinate } from '../domain/serviceAreas'
 
 const statusFilters = ['All', 'Pending', 'Unassigned', 'Assigned', 'In Transit', 'Delayed', 'Completed', 'Cancelled']
 type SortKey = 'priority' | 'scheduledStart' | 'id' | 'status' | 'pickup'
+type LocationLookup = 'idle' | 'searching' | 'choose' | 'found' | 'invalid' | 'error'
+interface LocationSuggestion {
+  display_name: string
+  lat: string
+  lon: string
+}
 
 interface Props {
   data: OperationsState
@@ -32,10 +38,19 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   const [locationMode, setLocationMode] = useState<'pickup' | 'drop'>('pickup')
   const [pickupLocation, setPickupLocation] = useState<DeliveryLocation | null>(null)
   const [dropLocation, setDropLocation] = useState<DeliveryLocation | null>(null)
-  const [pickupLookup, setPickupLookup] = useState<'idle' | 'searching' | 'found' | 'invalid' | 'error'>('idle')
-  const [dropLookup, setDropLookup] = useState<'idle' | 'searching' | 'found' | 'invalid' | 'error'>('idle')
-  const [pickupSuggestions, setPickupSuggestions] = useState<Array<{ display_name: string; lat: string; lon: string }>>([])
-  const [dropSuggestions, setDropSuggestions] = useState<Array<{ display_name: string; lat: string; lon: string }>>([])
+  const [pickupLookup, setPickupLookup] = useState<LocationLookup>('idle')
+  const [dropLookup, setDropLookup] = useState<LocationLookup>('idle')
+  const [pickupSuggestions, setPickupSuggestions] = useState<LocationSuggestion[]>([])
+  const [dropSuggestions, setDropSuggestions] = useState<LocationSuggestion[]>([])
+  const [mapFocusKey, setMapFocusKey] = useState(0)
+  const pickupFieldRef = useRef<HTMLDivElement>(null)
+  const dropFieldRef = useRef<HTMLDivElement>(null)
+  const pickupSkipLookup = useRef('')
+  const dropSkipLookup = useRef('')
+  const pickupResultsRef = useRef<LocationSuggestion[]>([])
+  const dropResultsRef = useRef<LocationSuggestion[]>([])
+  const pickupRequestRef = useRef(0)
+  const dropRequestRef = useRef(0)
   const [category, setCategory] = useState<Delivery['category']>('Grocery')
   const [packageSize, setPackageSize] = useState<PackageSize>('Small')
   const [weight, setWeight] = useState('2')
@@ -52,20 +67,30 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const query = pickup.trim()
+    // Selecting a suggestion or reverse-geocoding a map click fills the input
+    // programmatically. Do not immediately erase that choice or refetch it.
+    if (query && query === pickupSkipLookup.current) {
+      pickupSkipLookup.current = ''
+      setPickupSuggestions([])
+      return
+    }
     setPickupLocation(null)
-    if (query.length < 3) { setPickupSuggestions([]); setPickupLookup(query ? 'invalid' : 'idle'); return }
+    pickupResultsRef.current = []
+    setPickupSuggestions([])
+    if (query.length < 3) { setPickupLookup(query ? 'invalid' : 'idle'); return }
     setPickupLookup('searching')
     const controller = new AbortController()
     const timer = window.setTimeout(async () => {
       try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q=${encodeURIComponent(query)}`, { signal: controller.signal, headers: { Accept: 'application/json' } })
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&viewbox=88.0,22.9,88.7,22.3&q=${encodeURIComponent(query)}`, { signal: controller.signal, headers: { Accept: 'application/json' } })
         if (!response.ok) throw new Error('Location search failed')
-        const results: Array<{ display_name: string; lat: string; lon: string }> = await response.json()
-        setPickupSuggestions(results.slice(0, 5))
-        const result = results[0]
-        if (!result) { setPickupLookup('invalid'); return }
-        setPickupLocation({ latitude: Number(result.lat), longitude: Number(result.lon) })
-        setPickupLookup('found')
+        const results: LocationSuggestion[] = await response.json()
+        const next = results.slice(0, 5)
+        pickupResultsRef.current = next
+        setPickupSuggestions(next)
+        // The operator must pick a result; auto-taking the first match can
+        // silently choose a same-named place in another city.
+        setPickupLookup(next.length ? 'choose' : 'invalid')
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         setPickupLookup('error')
@@ -76,20 +101,26 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     const query = drop.trim()
+    if (query && query === dropSkipLookup.current) {
+      dropSkipLookup.current = ''
+      setDropSuggestions([])
+      return
+    }
     setDropLocation(null)
-    if (query.length < 3) { setDropSuggestions([]); setDropLookup(query ? 'invalid' : 'idle'); return }
+    dropResultsRef.current = []
+    setDropSuggestions([])
+    if (query.length < 3) { setDropLookup(query ? 'invalid' : 'idle'); return }
     setDropLookup('searching')
     const controller = new AbortController()
     const timer = window.setTimeout(async () => {
       try {
-        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&q=${encodeURIComponent(query)}`, { signal: controller.signal, headers: { Accept: 'application/json' } })
+        const response = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&viewbox=88.0,22.9,88.7,22.3&q=${encodeURIComponent(query)}`, { signal: controller.signal, headers: { Accept: 'application/json' } })
         if (!response.ok) throw new Error('Location search failed')
-        const results: Array<{ display_name: string; lat: string; lon: string }> = await response.json()
-        setDropSuggestions(results.slice(0, 5))
-        const result = results[0]
-        if (!result) { setDropLookup('invalid'); return }
-        setDropLocation({ latitude: Number(result.lat), longitude: Number(result.lon) })
-        setDropLookup('found')
+        const results: LocationSuggestion[] = await response.json()
+        const next = results.slice(0, 5)
+        dropResultsRef.current = next
+        setDropSuggestions(next)
+        setDropLookup(next.length ? 'choose' : 'invalid')
       } catch (error) {
         if (error instanceof DOMException && error.name === 'AbortError') return
         setDropLookup('error')
@@ -97,6 +128,102 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
     }, 650)
     return () => { controller.abort(); window.clearTimeout(timer) }
   }, [drop])
+
+  useEffect(() => {
+    const closeSuggestions = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (pickupFieldRef.current && !pickupFieldRef.current.contains(target)) setPickupSuggestions([])
+      if (dropFieldRef.current && !dropFieldRef.current.contains(target)) setDropSuggestions([])
+    }
+    document.addEventListener('mousedown', closeSuggestions)
+    return () => document.removeEventListener('mousedown', closeSuggestions)
+  }, [])
+
+  async function reverseLabel(location: DeliveryLocation) {
+    try {
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${location.latitude}&lon=${location.longitude}`,
+        { headers: { Accept: 'application/json' } },
+      )
+      if (!response.ok) return null
+      const payload: unknown = await response.json()
+      if (payload && typeof payload === 'object' && 'display_name' in payload) {
+        const displayName = (payload as { display_name?: unknown }).display_name
+        if (typeof displayName === 'string' && displayName.trim()) return displayName.trim().slice(0, 120)
+      }
+      return null
+    } catch {
+      return null
+    }
+  }
+
+  async function placeFromMap(mode: 'pickup' | 'drop', location: DeliveryLocation) {
+    const requestRef = mode === 'pickup' ? pickupRequestRef : dropRequestRef
+    const request = requestRef.current + 1
+    requestRef.current = request
+    if (mode === 'pickup') {
+      setPickupLocation(location)
+      setPickupSuggestions([])
+      pickupResultsRef.current = []
+      setPickupLookup('searching')
+    } else {
+      setDropLocation(location)
+      setDropSuggestions([])
+      dropResultsRef.current = []
+      setDropLookup('searching')
+    }
+
+    const label = (await reverseLabel(location))
+      ?? `Map pin ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}`
+    // A second click or typing while the address resolves wins.
+    if (request !== requestRef.current) return
+
+    if (mode === 'pickup') {
+      pickupSkipLookup.current = label
+      setPickup(label)
+      setPickupLookup('found')
+    } else {
+      dropSkipLookup.current = label
+      setDrop(label)
+      setDropLookup('found')
+    }
+  }
+
+  function selectSuggestion(mode: 'pickup' | 'drop', suggestion: LocationSuggestion) {
+    const latitude = Number(suggestion.lat)
+    const longitude = Number(suggestion.lon)
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return
+    const label = suggestion.display_name.trim().slice(0, 120)
+    if (mode === 'pickup') {
+      pickupSkipLookup.current = label
+      pickupRequestRef.current += 1
+      setPickup(label)
+      setPickupLocation({ latitude, longitude })
+      pickupResultsRef.current = []
+      setPickupSuggestions([])
+      setPickupLookup('found')
+    } else {
+      dropSkipLookup.current = label
+      dropRequestRef.current += 1
+      setDrop(label)
+      setDropLocation({ latitude, longitude })
+      dropResultsRef.current = []
+      setDropSuggestions([])
+      setDropLookup('found')
+    }
+    setLocationMode(mode)
+    setMapFocusKey((value) => value + 1)
+  }
+
+  function changeLocationText(mode: 'pickup' | 'drop', value: string) {
+    if (mode === 'pickup') {
+      pickupRequestRef.current += 1
+      setPickup(value)
+    } else {
+      dropRequestRef.current += 1
+      setDrop(value)
+    }
+  }
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -111,23 +238,101 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   }
 
   const locationsReady = Boolean(pickupLocation && dropLocation)
-  const lookupMessage = (label: string, state: typeof pickupLookup) => state === 'searching' ? `Finding ${label.toLowerCase()}…` : state === 'invalid' ? `Enter a valid ${label.toLowerCase()} location.` : state === 'error' ? `Could not verify the ${label.toLowerCase()} location. Try again.` : state === 'found' ? `${label} verified` : `Select a ${label.toLowerCase()} location.`
+  const activeLocation = locationMode === 'pickup' ? pickupLocation : dropLocation
+  const activeAddress = locationMode === 'pickup' ? pickup : drop
+  const lookupMessage = (label: string, state: LocationLookup) => state === 'searching' ? `Finding ${label.toLowerCase()}…` : state === 'choose' ? `Select a matching ${label.toLowerCase()} location.` : state === 'invalid' ? `Enter a valid ${label.toLowerCase()} location.` : state === 'error' ? `Could not verify the ${label.toLowerCase()} location. Try again.` : state === 'found' ? `${label} verified` : `Select a ${label.toLowerCase()} location.`
 
   return <Dialog title="Create a delivery" onClose={onClose}>
     <form className="dialog-form" onSubmit={submit}>
       <p className="dialog-description">Creates the job in the console. Assigning it publishes an offer to the linked partner app in Firestore; no customer is contacted.</p>
       <div className="form-grid two-columns">
-        <label className="field-label location-field">Pickup area<input autoFocus value={pickup} onChange={(event) => setPickup(event.target.value)} required maxLength={64} placeholder="e.g. Barasat" /><small className={`location-validation location-${pickupLookup}`}>{lookupMessage('Pickup', pickupLookup)}</small>{pickupSuggestions.length > 0 && <div className="location-suggestions">{pickupSuggestions.map((suggestion) => <button type="button" key={`${suggestion.lat}-${suggestion.lon}`} onClick={() => { setPickup(suggestion.display_name); setPickupLocation({ latitude: Number(suggestion.lat), longitude: Number(suggestion.lon) }); setPickupSuggestions([]); setPickupLookup('found') }}>{suggestion.display_name}</button>)}</div>}</label>
-        <label className="field-label location-field">Drop area<input value={drop} onChange={(event) => setDrop(event.target.value)} required maxLength={64} placeholder="e.g. New Town" /><small className={`location-validation location-${dropLookup}`}>{lookupMessage('Drop', dropLookup)}</small>{dropSuggestions.length > 0 && <div className="location-suggestions">{dropSuggestions.map((suggestion) => <button type="button" key={`${suggestion.lat}-${suggestion.lon}`} onClick={() => { setDrop(suggestion.display_name); setDropLocation({ latitude: Number(suggestion.lat), longitude: Number(suggestion.lon) }); setDropSuggestions([]); setDropLookup('found') }}>{suggestion.display_name}</button>)}</div>}</label>
+        <div className="field-label location-field" ref={pickupFieldRef}>
+          <label htmlFor="delivery-pickup-area">Pickup area</label>
+          <div className="location-input-wrap">
+            <input
+              id="delivery-pickup-area"
+              autoFocus
+              value={pickup}
+              onChange={(event) => changeLocationText('pickup', event.target.value)}
+              onFocus={() => { if (pickupLookup === 'choose' && pickupResultsRef.current.length) setPickupSuggestions(pickupResultsRef.current) }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && pickupSuggestions.length) {
+                  event.stopPropagation()
+                  setPickupSuggestions([])
+                } else if (event.key === 'Enter' && pickupSuggestions.length) {
+                  event.preventDefault()
+                  selectSuggestion('pickup', pickupSuggestions[0])
+                }
+              }}
+              required
+              maxLength={120}
+              placeholder="e.g. Barasat"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={pickupSuggestions.length > 0}
+              aria-controls="delivery-pickup-suggestions"
+            />
+            {pickupSuggestions.length > 0 && <div className="location-suggestions" id="delivery-pickup-suggestions" role="listbox" aria-label="Pickup location suggestions" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setPickupSuggestions([]) } }}>
+              {pickupSuggestions.map((suggestion, index) => <button type="button" role="option" aria-selected={false} key={`${suggestion.lat}-${suggestion.lon}-${index}`} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSuggestion('pickup', suggestion)}>{suggestion.display_name}</button>)}
+            </div>}
+          </div>
+          <small className={`location-validation location-${pickupLookup}`}>{lookupMessage('Pickup', pickupLookup)}</small>
+        </div>
+        <div className="field-label location-field" ref={dropFieldRef}>
+          <label htmlFor="delivery-drop-area">Drop area</label>
+          <div className="location-input-wrap">
+            <input
+              id="delivery-drop-area"
+              value={drop}
+              onChange={(event) => changeLocationText('drop', event.target.value)}
+              onFocus={() => { if (dropLookup === 'choose' && dropResultsRef.current.length) setDropSuggestions(dropResultsRef.current) }}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && dropSuggestions.length) {
+                  event.stopPropagation()
+                  setDropSuggestions([])
+                } else if (event.key === 'Enter' && dropSuggestions.length) {
+                  event.preventDefault()
+                  selectSuggestion('drop', dropSuggestions[0])
+                }
+              }}
+              required
+              maxLength={120}
+              placeholder="e.g. New Town"
+              role="combobox"
+              aria-autocomplete="list"
+              aria-expanded={dropSuggestions.length > 0}
+              aria-controls="delivery-drop-suggestions"
+            />
+            {dropSuggestions.length > 0 && <div className="location-suggestions" id="delivery-drop-suggestions" role="listbox" aria-label="Drop location suggestions" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setDropSuggestions([]) } }}>
+              {dropSuggestions.map((suggestion, index) => <button type="button" role="option" aria-selected={false} key={`${suggestion.lat}-${suggestion.lon}-${index}`} onMouseDown={(event) => event.preventDefault()} onClick={() => selectSuggestion('drop', suggestion)}>{suggestion.display_name}</button>)}
+            </div>}
+          </div>
+          <small className={`location-validation location-${dropLookup}`}>{lookupMessage('Drop', dropLookup)}</small>
+        </div>
         <div className="delivery-location-picker span-two">
-          <div className="location-picker-header"><strong>Select stop locations on the map</strong><span>Choose a stop, then click its exact position.</span></div>
-          <div className="location-picker-tabs"><button type="button" className={locationMode === 'pickup' ? 'active' : ''} onClick={() => setLocationMode('pickup')}>Pickup {pickupLocation ? '✓' : ''}</button><button type="button" className={locationMode === 'drop' ? 'active' : ''} onClick={() => setLocationMode('drop')}>Drop {dropLocation ? '✓' : ''}</button></div>
-          <MapPreview
-            ariaLabel="Select pickup or drop location"
-            className="delivery-location-map"
-            points={[{ id: 'location-center', label: locationMode === 'pickup' ? (pickupLocation ? 'Pickup' : 'Click to set pickup') : (dropLocation ? 'Drop' : 'Click to set drop'), ...(locationMode === 'pickup' ? pickupLocation ?? serviceAreaCoordinate('Kolkata') : dropLocation ?? serviceAreaCoordinate('Kolkata')), kind: locationMode === 'pickup' ? 'pickup' : 'drop' }]}
-            onMapClick={(location) => locationMode === 'pickup' ? setPickupLocation(location) : setDropLocation(location)}
-          />
+          <div className="location-picker-header"><div><strong>Stop locations</strong><span>Choose a stop, then drag the map, scroll to zoom, and click to place the pin. You can also drag the pin.</span></div></div>
+          <div className="location-picker-tabs"><button type="button" className={locationMode === 'pickup' ? 'active' : ''} onClick={() => { setLocationMode('pickup'); setMapFocusKey((value) => value + 1) }}>Pickup {pickupLocation ? '✓' : ''}</button><button type="button" className={locationMode === 'drop' ? 'active' : ''} onClick={() => { setLocationMode('drop'); setMapFocusKey((value) => value + 1) }}>Drop {dropLocation ? '✓' : ''}</button></div>
+          <section className="location-current-section" aria-label="Current location">
+            <div className="location-current-heading">
+              <div>
+                <strong>Current location</strong>
+                <span>{locationMode === 'pickup' ? 'Pickup' : 'Drop'}{activeLocation ? ` · ${activeAddress || 'Selected on map'}` : ' · Not selected'}</span>
+              </div>
+              {activeLocation && <span className="location-current-coordinates">{activeLocation.latitude.toFixed(5)}, {activeLocation.longitude.toFixed(5)}</span>}
+            </div>
+            <MapPreview
+              ariaLabel={`Current ${locationMode} location map`}
+              className="delivery-location-map"
+              recenterKey={mapFocusKey}
+              points={[{
+                id: 'location-center',
+                label: locationMode === 'pickup' ? (pickupLocation ? 'Pickup' : 'Click to set pickup') : (dropLocation ? 'Drop' : 'Click to set drop'),
+                ...(locationMode === 'pickup' ? pickupLocation ?? serviceAreaCoordinate(pickup || 'Kolkata') : dropLocation ?? serviceAreaCoordinate(drop || 'Kolkata')),
+                kind: locationMode === 'pickup' ? 'pickup' : 'drop',
+              }]}
+              onMapClick={(location) => { void placeFromMap(locationMode, location) }}
+            />
+          </section>
           <small className="field-help">{pickupLocation ? `Pickup: ${pickupLocation.latitude.toFixed(5)}, ${pickupLocation.longitude.toFixed(5)}` : 'Pickup location not selected.'} · {dropLocation ? `Drop: ${dropLocation.latitude.toFixed(5)}, ${dropLocation.longitude.toFixed(5)}` : 'Drop location not selected.'}</small>
         </div>
         <label className="field-label">Category<select value={category} onChange={(event) => setCategory(event.target.value as Delivery['category'])}><option>Grocery</option><option>Restaurant</option></select></label>
@@ -311,7 +516,17 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
             const assigned = partnerFor(data, delivery)
             const isAssigned = Boolean(delivery.assignmentId && delivery.status !== 'Cancelled')
             const liveDelivery = live.deliveries.find((item) => item.id === delivery.id || item.displayId.replace(/^#/, '') === delivery.id)
-            const partnerAccepted = liveDelivery ? liveDelivery.nativeStatus !== 'assigned' && liveDelivery.nativeStatus !== 'rejected' : delivery.status !== 'Assigned'
+            // With no live document, only an active local assignment can be
+            // "accepted". An unassigned delivery must keep its menu actions
+            // enabled; the old fallback treated it as accepted.
+            const liveAccepted = liveDelivery
+              ? !['assigned', 'rejected', 'cancelled'].includes(liveDelivery.nativeStatus)
+              : null
+            const partnerAccepted = liveAccepted ?? Boolean(isAssigned && (
+              delivery.liveStatus
+                ? !['assigned', 'rejected', 'cancelled'].includes(delivery.liveStatus)
+                : delivery.status === 'In Transit' || delivery.status === 'Completed'
+            ))
             const canRemoveAssignment = Boolean(assigned && isAssigned && !partnerAccepted && canAssign)
             return <tr key={delivery.id}>
               <td className="select-cell"><input type="checkbox" checked={selected.includes(delivery.id)} onChange={() => setSelected((value) => value.includes(delivery.id) ? value.filter((id) => id !== delivery.id) : [...value, delivery.id])} aria-label={`Select ${delivery.id}`} /></td>

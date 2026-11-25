@@ -85,7 +85,7 @@ export function DeliveryDetailPage({ data, delivery, open }: Props) {
 
         <Panel>
           <PanelHeading title="Route map" detail={liveDelivery ? 'Live delivery_app location' : 'OpenStreetMap preview · no live GPS'} />
-          <MapPreview points={mapRoute.points} ariaLabel={`OpenStreetMap preview from ${delivery.pickup} to ${delivery.drop}`} />
+          <MapPreview points={mapRoute.points} ariaLabel={`OpenStreetMap preview from ${delivery.pickup} to ${delivery.drop}`} followPointId={liveDelivery?.currentLocation ? `${delivery.id}-partner` : undefined} />
           <p className="osm-map-footnote"><Icon name="info" size={13} />Tiles are shared with delivery_app. {liveDelivery?.currentLocation?.updatedAt ? `Partner location updated ${formatDate(liveDelivery.currentLocation.updatedAt)}. ` : liveDelivery ? 'Partner location is not currently available. ' : ''}{mapRoute.approximate ? 'Some area coordinates are approximate. ' : ''}Routing and ETAs are not connected.</p>
         </Panel>
 

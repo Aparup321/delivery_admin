@@ -247,7 +247,7 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
     try {
       const records = await syncPartnerAppRecords(config, readPartnerAppToken())
       clearQuotaBlock(config.projectId)
-      dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString() })
+      dispatch({ type: 'partnerApp.sync-result', records, at: new Date().toISOString(), silent: true })
     } catch (error) {
       dispatch({ type: 'partnerApp.failed', message: describeSyncError(error, 'Partner data refresh failed.', config.projectId) })
     } finally {

@@ -1,7 +1,7 @@
 import { useEffect, useRef, type FormEvent, type ReactNode } from 'react'
 import type { DeliveryStatus, DocumentStatus, OfferStatus, PartnerAvailability } from '../domain/model'
 
-export type IconName = 'overview' | 'deliveries' | 'partners' | 'applications' | 'kyc' | 'notifications' | 'audit' | 'settings' | 'search' | 'plus' | 'chevron' | 'arrow' | 'clock' | 'pin' | 'filter' | 'sort' | 'more' | 'close' | 'check' | 'alert' | 'calendar' | 'bike' | 'scooter' | 'van' | 'menu' | 'refresh' | 'file' | 'user' | 'shield' | 'route' | 'truck' | 'check-circle' | 'external' | 'lock' | 'home' | 'download' | 'eye' | 'edit' | 'logout' | 'sparkle' | 'info'
+export type IconName = 'overview' | 'deliveries' | 'partners' | 'applications' | 'kyc' | 'notifications' | 'audit' | 'settings' | 'search' | 'plus' | 'chevron' | 'arrow' | 'clock' | 'pin' | 'filter' | 'sort' | 'more' | 'close' | 'check' | 'alert' | 'calendar' | 'bike' | 'scooter' | 'van' | 'menu' | 'refresh' | 'file' | 'user' | 'shield' | 'route' | 'truck' | 'check-circle' | 'external' | 'lock' | 'home' | 'download' | 'eye' | 'edit' | 'logout' | 'sparkle' | 'info' | 'locate'
 
 const iconPaths: Record<IconName, ReactNode> = {
   overview: <><rect x="3" y="3" width="7" height="7" rx="1.3"/><rect x="14" y="3" width="7" height="7" rx="1.3"/><rect x="3" y="14" width="7" height="7" rx="1.3"/><rect x="14" y="14" width="7" height="7" rx="1.3"/></>,
@@ -45,6 +45,7 @@ const iconPaths: Record<IconName, ReactNode> = {
   logout: <><path d="M10 17l5-5-5-5M15 12H3"/><path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/></>,
   sparkle: <><path d="m12 3 1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3Z"/><path d="m19 16 .8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8L19 16Z"/></>,
   info: <><circle cx="12" cy="12" r="9"/><path d="M12 11v5m0-8h.01"/></>,
+  locate: <><circle cx="12" cy="12" r="6.5"/><circle cx="12" cy="12" r="2.5"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></>,
 }
 
 export function Icon({ name, size = 18, className = '' }: { name: IconName; size?: number; className?: string }) {

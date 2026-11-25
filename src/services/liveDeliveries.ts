@@ -46,6 +46,12 @@ export interface LiveDelivery {
   vehicleType: string
   status: string
   nativeStatus: string
+  /**
+   * The Administrator withdrew an unaccepted offer. delivery_app marks these
+   * documents cancelled with no partner so the offer disappears from the
+   * rider's list, but the delivery itself is still waiting for a new partner.
+   */
+  withdrawn: boolean
   source: string
   category: 'Grocery' | 'Restaurant'
   pickup: LiveDeliveryStop
@@ -131,6 +137,14 @@ function normalizeLiveDelivery(document: unknown): LiveDelivery | null {
   if (!id || !pickup || !destination) return null
 
   const nativeStatus = asText(fields.status) || 'accepted'
+  const adminStatus = asText(fields.adminStatus)
+  const partnerUid = asText(fields.partnerUid)
+  // Removing a partner writes `status: cancelled` with an empty partnerUid so
+  // the offer leaves the rider's query. A real cancellation keeps partnerUid
+  // and sets adminStatus to Cancelled, so this stays distinguishable.
+  const withdrawn = nativeStatus === 'cancelled'
+    && !partnerUid
+    && adminStatus === 'Pending'
   const proofRecord = isRecord(fields.proof) ? fields.proof : null
   const proof: LiveDeliveryProof | null =
     proofRecord && asText(proofRecord.verifiedAt)
@@ -157,11 +171,12 @@ function normalizeLiveDelivery(document: unknown): LiveDelivery | null {
   return {
     id,
     displayId: asText(fields.displayId) || `#${id}`,
-    partnerUid: asText(fields.partnerUid),
+    partnerUid,
     partnerName: asText(fields.partnerName) || 'Delivery partner',
     vehicleType: asText(fields.vehicleType) || 'Vehicle unavailable',
-    status: asText(fields.adminStatus) || nativeStatus,
+    status: adminStatus || nativeStatus,
     nativeStatus,
+    withdrawn,
     source: asText(fields.source) || 'live',
     category: asText(fields.category) === 'Restaurant' ? 'Restaurant' : 'Grocery',
     pickup,
