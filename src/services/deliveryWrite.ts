@@ -11,7 +11,7 @@
  */
 
 import type { PartnerAppConfig } from '../domain/model.ts'
-import { isRecord, PartnerAppRequestError, partnerAppCollectionDocumentEndpoint } from './partnerApp.ts'
+import { decodeFirestoreFields, isRecord, PartnerAppRequestError, partnerAppCollectionDocumentEndpoint } from './partnerApp.ts'
 import { encodeValue } from './partnerAppWrite.ts'
 import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
@@ -168,6 +168,147 @@ export async function writeDeliveryAssignment(write: DeliveryAssignmentWrite): P
       updatedAt: write.at,
     },
     null,
+  )
+}
+
+export interface DeliveryDetailsWrite {
+  config: PartnerAppConfig
+  token: string
+  deliveryId: string
+  partnerAppUid: string
+  category: 'Grocery' | 'Restaurant'
+  pickupName: string
+  pickupAddress: string
+  pickupLatitude: number
+  pickupLongitude: number
+  dropName: string
+  dropAddress: string
+  dropLatitude: number
+  dropLongitude: number
+  distanceKm: number
+  etaMinutes: number
+  earnings: number
+  itemCount: number
+  paymentMode: 'Prepaid' | 'Cash on delivery'
+  customerName: string | null
+  customerPhone: string | null
+  orderValue: number | null
+  collectAmount: number | null
+  note: string | null
+  at: string
+}
+
+interface DeliveryDocumentSnapshot {
+  fields: Record<string, unknown>
+  partnerUid: string
+  status: string
+}
+
+async function readDeliveryDocument(
+  config: PartnerAppConfig,
+  token: string,
+  documentId: string,
+): Promise<DeliveryDocumentSnapshot | null> {
+  const url = partnerAppCollectionDocumentEndpoint(config, 'deliveries', documentId)
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  const accessToken = await resolvePartnerAppToken(token, config.apiKey)
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`
+
+  let response: Response
+  try {
+    response = await fetch(url, { headers, cache: 'no-store' })
+  } catch (error) {
+    throw new PartnerAppRequestError(
+      `Could not reach delivery_app's delivery record.${error instanceof Error ? ` (${error.message})` : ''}`,
+      url,
+    )
+  }
+  if (response.status === 404) return null
+  if (!response.ok) {
+    throw new PartnerAppRequestError(
+      `Could not read the live delivery before editing (HTTP ${response.status}).`,
+      url,
+    )
+  }
+  const body: unknown = await response.json()
+  if (!isRecord(body) || !isRecord(body.fields)) {
+    throw new PartnerAppRequestError('The live delivery record was not valid.', url)
+  }
+  const fields = decodeFirestoreFields(body.fields)
+  return {
+    fields,
+    partnerUid: typeof fields.partnerUid === 'string' ? fields.partnerUid.trim() : '',
+    status: typeof fields.status === 'string' ? fields.status.trim() : '',
+  }
+}
+
+/**
+ * Updates the route, customer, package, and payout details of an existing
+ * offer without touching its status, acceptance, events, proof, location, or
+ * drop code. Refuses to write after the partner has accepted or declined.
+ */
+export async function writeDeliveryDetails(write: DeliveryDetailsWrite): Promise<void> {
+  const current = await readDeliveryDocument(write.config, write.token, write.deliveryId)
+  if (!current) {
+    throw new PartnerAppRequestError(
+      'The live delivery offer no longer exists. Refresh and reassign before editing.',
+      partnerAppCollectionDocumentEndpoint(write.config, 'deliveries', write.deliveryId),
+    )
+  }
+  if (current.partnerUid !== write.partnerAppUid) {
+    throw new PartnerAppRequestError(
+      'The live delivery is assigned to a different partner. Refresh before editing.',
+      partnerAppCollectionDocumentEndpoint(write.config, 'deliveries', write.deliveryId),
+    )
+  }
+  if (current.status !== 'assigned') {
+    throw new PartnerAppRequestError(
+      'The partner has already accepted or started this delivery. Details are locked after acceptance.',
+      partnerAppCollectionDocumentEndpoint(write.config, 'deliveries', write.deliveryId),
+    )
+  }
+  const partnerResponse = isRecord(current.fields.partnerResponse) ? current.fields.partnerResponse : null
+  if (partnerResponse?.decision === 'rejected') {
+    throw new PartnerAppRequestError(
+      'The partner declined this offer. Reassign the delivery before editing it.',
+      partnerAppCollectionDocumentEndpoint(write.config, 'deliveries', write.deliveryId),
+    )
+  }
+
+  const customerPhone = write.customerPhone?.replace(/\D/g, '') ?? ''
+  const fields = {
+    category: write.category,
+    pickup: {
+      name: write.pickupName,
+      address: write.pickupAddress,
+      latitude: write.pickupLatitude,
+      longitude: write.pickupLongitude,
+    },
+    destination: {
+      name: write.dropName,
+      address: write.dropAddress,
+      latitude: write.dropLatitude,
+      longitude: write.dropLongitude,
+    },
+    distanceKm: write.distanceKm,
+    etaMinutes: write.etaMinutes,
+    earnings: write.earnings,
+    itemCount: write.itemCount,
+    paymentMode: write.paymentMode,
+    customerName: write.customerName,
+    customerPhone: customerPhone || null,
+    customerPhoneMasked: customerPhone ? `+91 ••••• ${customerPhone.slice(-4)}` : null,
+    orderValue: write.orderValue,
+    collectAmount: write.collectAmount,
+    note: write.note,
+    updatedAt: write.at,
+  }
+  await requestDeliveryDocument(
+    write.config,
+    write.token,
+    write.deliveryId,
+    fields,
+    Object.keys(fields),
   )
 }
 

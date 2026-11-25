@@ -5,7 +5,7 @@ import { readPartnerAppToken } from '../services/partnerApp'
 import { fetchLiveDeliveriesCached } from '../services/liveDeliveries'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { activeQuotaMessage, blockQuotaUntilReset, clearQuotaBlock } from '../services/firestoreQuota'
-import { writeDeliveryAssignment, writeDeliveryCancellation, writeDeliveryUnassign } from '../services/deliveryWrite'
+import { writeDeliveryAssignment, writeDeliveryCancellation, writeDeliveryDetails, writeDeliveryUnassign } from '../services/deliveryWrite'
 import { buildPartnerAppWriteIntent, type PartnerAppWriteIntent } from '../services/partnerAppIntent'
 import { writeApplicationDecision, writePartnerAccountStatus } from '../services/partnerAppWrite'
 import { hashSharedPayload, loadSharedWorkflow, mergeSharedPayload, readSharedWorkflowMeta, saveSharedWorkflow, toSharedPayload, writeSharedWorkflowMeta } from '../services/sharedState'
@@ -353,6 +353,33 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
           reason: intent.reason,
           at: intent.at,
         })
+      } else if (intent.kind === 'delivery-details') {
+        await writeDeliveryDetails({
+          config,
+          token: readPartnerAppToken(),
+          deliveryId: intent.deliveryId,
+          partnerAppUid: intent.partnerAppUid,
+          category: intent.category,
+          pickupName: intent.pickupName,
+          pickupAddress: intent.pickupAddress,
+          pickupLatitude: intent.pickupLatitude,
+          pickupLongitude: intent.pickupLongitude,
+          dropName: intent.dropName,
+          dropAddress: intent.dropAddress,
+          dropLatitude: intent.dropLatitude,
+          dropLongitude: intent.dropLongitude,
+          distanceKm: intent.distanceKm,
+          etaMinutes: intent.etaMinutes,
+          earnings: intent.earnings,
+          itemCount: intent.itemCount,
+          paymentMode: intent.paymentMode,
+          customerName: intent.customerName,
+          customerPhone: intent.customerPhone,
+          orderValue: intent.orderValue,
+          collectAmount: intent.collectAmount,
+          note: intent.note,
+          at: intent.at,
+        })
       } else {
         await writePartnerAccountStatus({
           config,
@@ -377,11 +404,13 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
         ok: true,
         message: intent.kind === 'delivery-assignment'
           ? 'Offer published to the partner app.'
-          : intent.kind === 'delivery-cancel'
-            ? 'Cancellation published to the partner app.'
-            : intent.kind === 'delivery-unassign'
-              ? 'Unassigned offer withdrawn from the partner app.'
-              : `${intent.targetType === 'Application' ? intent.decision.toLowerCase() : intent.active ? 'reinstated' : 'suspended'} in delivery_app.`,
+          : intent.kind === 'delivery-details'
+            ? 'Delivery details published to the partner app.'
+            : intent.kind === 'delivery-cancel'
+              ? 'Cancellation published to the partner app.'
+              : intent.kind === 'delivery-unassign'
+                ? 'Unassigned offer withdrawn from the partner app.'
+                : `${intent.targetType === 'Application' ? intent.decision.toLowerCase() : intent.active ? 'reinstated' : 'suspended'} in delivery_app.`,
         at: new Date().toISOString(),
         applicationStatus,
         accountStatus,

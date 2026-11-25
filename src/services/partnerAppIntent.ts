@@ -79,6 +79,33 @@ export type PartnerAppWriteIntent =
     at: string
   }
   | {
+    kind: 'delivery-details'
+    targetType: 'Delivery'
+    targetId: string
+    deliveryId: string
+    partnerAppUid: string
+    category: 'Grocery' | 'Restaurant'
+    pickupName: string
+    pickupAddress: string
+    pickupLatitude: number
+    pickupLongitude: number
+    dropName: string
+    dropAddress: string
+    dropLatitude: number
+    dropLongitude: number
+    distanceKm: number
+    etaMinutes: number
+    earnings: number
+    itemCount: number
+    paymentMode: 'Prepaid' | 'Cash on delivery'
+    customerName: string | null
+    customerPhone: string | null
+    orderValue: number | null
+    collectAmount: number | null
+    note: string | null
+    at: string
+  }
+  | {
     kind: 'delivery-cancel'
     targetType: 'Delivery'
     targetId: string
@@ -237,6 +264,55 @@ export function buildPartnerAppWriteIntent(data: OperationsState, log: AuditLogE
       dropOtp: assignment.dropOtp,
       expiresAt,
       requestedAt: log.timestamp,
+      at: log.timestamp,
+    }
+  }
+
+  // Editing the pickup, drop, customer, package, or payout of an already
+  // published offer updates the live Firestore document without touching its
+  // assignment status, events, proof, or current location.
+  if (log.eventType === 'Delivery updated') {
+    const delivery = data.deliveries.find((item) => item.id === log.targetId)
+    const assignment = data.assignments.find(
+      (item) => item.deliveryId === log.targetId && item.status === 'Active',
+    )
+    if (!delivery || !assignment) return null
+    const partner = data.partners.find((item) => item.id === assignment.partnerId)
+    if (!partner?.partnerAppUid) return null
+    // The reducer only marks a linked, active offer as Pending when it needs a
+    // live detail update. Local-only edits do not create a Firestore write.
+    if (delivery.publicationStatus !== 'Pending') return null
+
+    const pickupCoordinate = delivery.pickupLocation ?? serviceAreaCoordinate(delivery.pickup)
+    const dropCoordinate = delivery.dropLocation ?? serviceAreaCoordinate(delivery.drop)
+    const distanceKm = coordinateDistanceKm(pickupCoordinate, dropCoordinate)
+    const instructions = delivery.specialInstructions.trim()
+
+    return {
+      kind: 'delivery-details',
+      targetType: 'Delivery',
+      targetId: delivery.id,
+      deliveryId: delivery.id,
+      partnerAppUid: partner.partnerAppUid,
+      category: delivery.category ?? 'Grocery',
+      pickupName: delivery.pickup,
+      pickupAddress: delivery.pickupAddress,
+      pickupLatitude: pickupCoordinate.latitude,
+      pickupLongitude: pickupCoordinate.longitude,
+      dropName: delivery.drop,
+      dropAddress: delivery.dropAddress,
+      dropLatitude: dropCoordinate.latitude,
+      dropLongitude: dropCoordinate.longitude,
+      distanceKm,
+      etaMinutes: estimateEtaMinutes(distanceKm),
+      earnings: delivery.partnerEarnings ?? estimatePartnerEarnings(distanceKm),
+      itemCount: delivery.itemCount ?? 1,
+      paymentMode: delivery.paymentMode ?? 'Prepaid',
+      customerName: delivery.customerName?.trim() || null,
+      customerPhone: delivery.customerPhone?.trim() || null,
+      orderValue: delivery.orderValue ?? null,
+      collectAmount: delivery.collectAmount ?? null,
+      note: instructions && instructions !== 'No special instructions' ? instructions : null,
       at: log.timestamp,
     }
   }

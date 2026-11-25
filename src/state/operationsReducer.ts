@@ -2,7 +2,7 @@ import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCa
 import { createDropOtp } from '../domain/estimates.ts'
 import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type Assignment, type AuditEventType, type AuditLogEntry, type Delivery, type DeliveryMilestoneName, type DeliveryStatus, type DocumentStatus, type LiveOrderSnapshot, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppDocument, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type PartnerDocumentReview, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
-import { getPartnerEligibility, getActiveAssignment, isLivePartnerApproved, nextPartnerId } from '../domain/operations.ts'
+import { getPartnerEligibility, getActiveAssignment, hasPartnerAccepted, isLivePartnerApproved, nextPartnerId } from '../domain/operations.ts'
 import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
 
 export interface AppFrame {
@@ -13,6 +13,7 @@ export interface AppFrame {
 
 export type OperationAction =
   | { type: 'delivery.create'; pickup: string; drop: string; pickupLocation?: Delivery['pickupLocation']; dropLocation?: Delivery['dropLocation']; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string; category?: Delivery['category']; itemCount?: number; paymentMode?: Delivery['paymentMode']; earnings?: number | null; customerName?: string; customerPhone?: string; orderValue?: number | null; collectAmount?: number | null }
+  | { type: 'delivery.update'; deliveryId: string; pickup: string; drop: string; pickupLocation?: Delivery['pickupLocation']; dropLocation?: Delivery['dropLocation']; packageSize: Delivery['packageSize']; weight: number; vehicle: Delivery['vehicleRequirement']; scheduledStart: string; scheduledEnd: string; instructions: string; category?: Delivery['category']; itemCount?: number; paymentMode?: Delivery['paymentMode']; earnings?: number | null; customerName?: string; customerPhone?: string; orderValue?: number | null; collectAmount?: number | null }
   | { type: 'delivery.assign'; deliveryId: string; partnerId: string }
   | { type: 'delivery.unassign'; deliveryId: string; reason: string }
   | { type: 'delivery.advance'; deliveryId: string }
@@ -57,6 +58,7 @@ export type OperationAction =
 
 const permissionByAction: Partial<Record<OperationAction['type'], Permission>> = {
   'delivery.create': 'delivery-management',
+  'delivery.update': 'delivery-management',
   'delivery.assign': 'assignment',
   'delivery.unassign': 'assignment',
   'delivery.advance': 'assignment',
@@ -950,6 +952,87 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       audit(data, 'Delivery created', 'Delivery', id, '—', 'Unassigned', 'Created as a local delivery record.', at)
       notify(data, 'Unassigned Delivery', 'New unassigned delivery', `${id} is waiting for an eligible delivery partner.`, `/admin/deliveries/${id}/assign`, id, at)
       return { message: `${id} created in local data.` }
+    }
+    case 'delivery.update': {
+      const delivery = findDelivery(data, action.deliveryId)
+      if (delivery.status === 'Completed' || delivery.status === 'Cancelled') {
+        throw new Error('Completed or cancelled deliveries cannot be edited.')
+      }
+      const activeAssignment = delivery.assignmentId
+        ? data.assignments.find((item) => item.id === delivery.assignmentId && item.status === 'Active')
+        : undefined
+      const assignedPartner = activeAssignment
+        ? data.partners.find((partner) => partner.id === activeAssignment.partnerId)
+        : undefined
+      const partnerAccepted = Boolean(
+        (activeAssignment && hasPartnerAccepted(delivery, undefined, true))
+        || (delivery.liveStatus && !['assigned', 'rejected', 'cancelled'].includes(delivery.liveStatus))
+        || delivery.status === 'In Transit',
+      )
+      if (partnerAccepted) {
+        throw new Error('The partner has accepted or started this delivery. Delivery details are locked after acceptance.')
+      }
+      if (activeAssignment && delivery.publicationStatus === 'Pending') {
+        throw new Error('This delivery is still publishing to delivery_app. Wait for the publish to finish or retry before editing.')
+      }
+      if (activeAssignment && delivery.publicationStatus === 'Failed') {
+        throw new Error('The last delivery_app update failed. Retry publishing or remove the partner before editing.')
+      }
+
+      requireValue(action.pickup, 'Pickup area')
+      requireValue(action.drop, 'Drop area')
+      if (action.pickup.trim().toLowerCase() === action.drop.trim().toLowerCase()) throw new Error('Pickup and drop areas must be different.')
+      if (!Number.isFinite(action.weight) || action.weight <= 0 || action.weight > 100) throw new Error('Estimated weight must be between 0.1 and 100 kg.')
+      if (action.earnings != null && (!Number.isFinite(action.earnings) || action.earnings < 0)) throw new Error('Partner payout must be a positive amount.')
+      if (action.itemCount != null && (!Number.isInteger(action.itemCount) || action.itemCount < 1 || action.itemCount > 99)) throw new Error('Item count must be between 1 and 99.')
+      const customerPhone = (action.customerPhone ?? '').replace(/\D/g, '')
+      if (customerPhone && customerPhone.length < 10) throw new Error('Customer phone must have at least 10 digits.')
+      if (action.orderValue != null && (!Number.isFinite(action.orderValue) || action.orderValue < 0)) throw new Error('Order value must be a positive amount.')
+      if (action.collectAmount != null && (!Number.isFinite(action.collectAmount) || action.collectAmount < 0)) throw new Error('COD amount must be a positive amount.')
+      const starts = new Date(action.scheduledStart)
+      const ends = new Date(action.scheduledEnd)
+      if (!Number.isFinite(starts.getTime()) || !Number.isFinite(ends.getTime()) || ends <= starts) throw new Error('Choose a valid delivery window.')
+
+      const previous = `${delivery.pickup} → ${delivery.drop} · ${delivery.packageSize} · ${delivery.scheduledStart}`
+      const pickup = action.pickup.trim()
+      const drop = action.drop.trim()
+      const pickupChanged = delivery.pickup !== pickup
+      const dropChanged = delivery.drop !== drop
+      delivery.pickup = pickup
+      delivery.drop = drop
+      if (pickupChanged) delivery.pickupAddress = pickup
+      if (dropChanged) delivery.dropAddress = drop
+      delivery.pickupLocation = action.pickupLocation ?? delivery.pickupLocation
+      delivery.dropLocation = action.dropLocation ?? delivery.dropLocation
+      delivery.packageSize = action.packageSize
+      delivery.estimatedWeightKg = action.weight
+      delivery.vehicleRequirement = action.vehicle
+      delivery.scheduledStart = starts.toISOString()
+      delivery.scheduledEnd = ends.toISOString()
+      delivery.specialInstructions = action.instructions.trim() || 'No special instructions'
+      delivery.category = action.category ?? 'Grocery'
+      delivery.itemCount = action.itemCount ?? 1
+      delivery.paymentMode = action.paymentMode ?? 'Prepaid'
+      delivery.partnerEarnings = action.earnings ?? null
+      delivery.customerName = action.customerName?.trim() || undefined
+      delivery.customerPhone = customerPhone || undefined
+      delivery.orderValue = action.orderValue ?? null
+      delivery.collectAmount =
+        action.collectAmount ??
+        (action.paymentMode === 'Cash on delivery' ? action.orderValue ?? null : null)
+
+      if (activeAssignment && assignedPartner?.partnerAppUid) {
+        // The audit entry below triggers a targeted Firestore update; keep the
+        // delivery visibly pending until that write succeeds.
+        delivery.publicationStatus = 'Pending'
+        delivery.publishError = null
+      }
+      const next = `${delivery.pickup} → ${delivery.drop} · ${delivery.packageSize} · ${delivery.scheduledStart}`
+      audit(data, 'Delivery updated', 'Delivery', delivery.id, previous, next, 'Delivery details updated from the admin console.', at)
+      if (assignedPartner) {
+        partnerHistory(data, assignedPartner.id, 'Delivery updated', `${delivery.id} details updated by ${data.user.name}.`, delivery.id, at)
+      }
+      return { message: `${delivery.id} updated.` }
     }
     case 'delivery.assign': {
       const delivery = findDelivery(data, action.deliveryId)

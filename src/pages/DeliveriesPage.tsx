@@ -9,7 +9,7 @@ import { useOperations } from '../state/OperationsProvider'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useLiveDeliveries } from '../hooks/useLiveDeliveries'
 import { MapPreview } from '../components/MapPreview'
-import { serviceAreaCoordinate } from '../domain/serviceAreas'
+import { hasServiceAreaCoordinate, serviceAreaCoordinate } from '../domain/serviceAreas'
 
 const statusFilters = ['All', 'Pending', 'Unassigned', 'Assigned', 'In Transit', 'Delayed', 'Completed', 'Cancelled']
 type SortKey = 'priority' | 'scheduledStart' | 'id' | 'status' | 'pickup'
@@ -32,40 +32,54 @@ function localInputValue(date: Date) {
   return shifted.toISOString().slice(0, 16)
 }
 
-function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
+function DeliveryFormDialog({ delivery, onClose }: { delivery?: Delivery; onClose: () => void }) {
   const { dispatch } = useOperations()
-  const [pickup, setPickup] = useState('')
-  const [drop, setDrop] = useState('')
+  const editing = Boolean(delivery)
+  // Legacy console deliveries may only have an area name. Reuse the same
+  // service-area coordinate fallback as the assignment/map logic so editing
+  // them does not require re-selecting a location.
+  const initialPickupLocation = delivery
+    ? delivery.pickupLocation ?? (delivery.pickup && hasServiceAreaCoordinate(delivery.pickup) ? serviceAreaCoordinate(delivery.pickup) : null)
+    : null
+  const initialDropLocation = delivery
+    ? delivery.dropLocation ?? (delivery.drop && hasServiceAreaCoordinate(delivery.drop) ? serviceAreaCoordinate(delivery.drop) : null)
+    : null
+  const [pickup, setPickup] = useState(delivery?.pickup ?? '')
+  const [drop, setDrop] = useState(delivery?.drop ?? '')
   const [locationMode, setLocationMode] = useState<'pickup' | 'drop'>('pickup')
-  const [pickupLocation, setPickupLocation] = useState<DeliveryLocation | null>(null)
-  const [dropLocation, setDropLocation] = useState<DeliveryLocation | null>(null)
-  const [pickupLookup, setPickupLookup] = useState<LocationLookup>('idle')
-  const [dropLookup, setDropLookup] = useState<LocationLookup>('idle')
+  const [pickupLocation, setPickupLocation] = useState<DeliveryLocation | null>(initialPickupLocation)
+  const [dropLocation, setDropLocation] = useState<DeliveryLocation | null>(initialDropLocation)
+  const [pickupLookup, setPickupLookup] = useState<LocationLookup>(initialPickupLocation ? 'found' : delivery ? 'invalid' : 'idle')
+  const [dropLookup, setDropLookup] = useState<LocationLookup>(initialDropLocation ? 'found' : delivery ? 'invalid' : 'idle')
   const [pickupSuggestions, setPickupSuggestions] = useState<LocationSuggestion[]>([])
   const [dropSuggestions, setDropSuggestions] = useState<LocationSuggestion[]>([])
   const [mapFocusKey, setMapFocusKey] = useState(0)
   const pickupFieldRef = useRef<HTMLDivElement>(null)
   const dropFieldRef = useRef<HTMLDivElement>(null)
-  const pickupSkipLookup = useRef('')
-  const dropSkipLookup = useRef('')
+  const pickupSkipLookup = useRef(initialPickupLocation ? delivery?.pickup ?? '' : '')
+  const dropSkipLookup = useRef(initialDropLocation ? delivery?.drop ?? '' : '')
   const pickupResultsRef = useRef<LocationSuggestion[]>([])
   const dropResultsRef = useRef<LocationSuggestion[]>([])
   const pickupRequestRef = useRef(0)
   const dropRequestRef = useRef(0)
-  const [category, setCategory] = useState<Delivery['category']>('Grocery')
-  const [packageSize, setPackageSize] = useState<PackageSize>('Small')
-  const [weight, setWeight] = useState('2')
-  const [itemCount, setItemCount] = useState('1')
-  const [paymentMode, setPaymentMode] = useState<Delivery['paymentMode']>('Prepaid')
-  const [customerName, setCustomerName] = useState('')
-  const [customerPhone, setCustomerPhone] = useState('')
-  const [orderValue, setOrderValue] = useState('')
-  const [collectAmount, setCollectAmount] = useState('')
-  const [earnings, setEarnings] = useState('')
-  const [vehicle, setVehicle] = useState<VehicleType | 'Any'>('Any')
-  const [start, setStart] = useState(() => localInputValue(new Date(Date.now() + 60 * 60_000)))
-  const [end, setEnd] = useState(() => localInputValue(new Date(Date.now() + 3 * 60 * 60_000)))
-  const [instructions, setInstructions] = useState('')
+  const [category, setCategory] = useState<Delivery['category']>(delivery?.category ?? 'Grocery')
+  const [packageSize, setPackageSize] = useState<PackageSize>(delivery?.packageSize ?? 'Small')
+  const [weight, setWeight] = useState(delivery ? String(delivery.estimatedWeightKg) : '2')
+  const [itemCount, setItemCount] = useState(delivery?.itemCount != null ? String(delivery.itemCount) : '1')
+  const [paymentMode, setPaymentMode] = useState<Delivery['paymentMode']>(delivery?.paymentMode ?? 'Prepaid')
+  const [customerName, setCustomerName] = useState(delivery?.customerName ?? '')
+  const [customerPhone, setCustomerPhone] = useState(delivery?.customerPhone ?? '')
+  const [orderValue, setOrderValue] = useState(delivery?.orderValue != null ? String(delivery.orderValue) : '')
+  const [collectAmount, setCollectAmount] = useState(delivery?.collectAmount != null ? String(delivery.collectAmount) : '')
+  const [earnings, setEarnings] = useState(delivery?.partnerEarnings != null ? String(delivery.partnerEarnings) : '')
+  const [vehicle, setVehicle] = useState<VehicleType | 'Any'>(delivery?.vehicleRequirement ?? 'Any')
+  const [start, setStart] = useState(() => localInputValue(delivery ? new Date(delivery.scheduledStart) : new Date(Date.now() + 60 * 60_000)))
+  const [end, setEnd] = useState(() => localInputValue(delivery ? new Date(delivery.scheduledEnd) : new Date(Date.now() + 3 * 60 * 60_000)))
+  const [instructions, setInstructions] = useState(
+    delivery?.specialInstructions && delivery.specialInstructions !== 'No special instructions'
+      ? delivery.specialInstructions
+      : '',
+  )
   const suggestedEarnings = pickupLocation && dropLocation
     ? estimatePartnerEarnings(coordinateDistanceKm(pickupLocation, dropLocation))
     : null
@@ -75,7 +89,8 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
     // Selecting a suggestion or reverse-geocoding a map click fills the input
     // programmatically. Do not immediately erase that choice or refetch it.
     if (query && query === pickupSkipLookup.current) {
-      pickupSkipLookup.current = ''
+      // Keep the guard until the operator edits the text. Clearing it here
+      // would make StrictMode's second effect run wipe the loaded location.
       setPickupSuggestions([])
       return
     }
@@ -107,7 +122,6 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     const query = drop.trim()
     if (query && query === dropSkipLookup.current) {
-      dropSkipLookup.current = ''
       setDropSuggestions([])
       return
     }
@@ -223,9 +237,11 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   function changeLocationText(mode: 'pickup' | 'drop', value: string) {
     if (mode === 'pickup') {
       pickupRequestRef.current += 1
+      pickupSkipLookup.current = ''
       setPickup(value)
     } else {
       dropRequestRef.current += 1
+      dropSkipLookup.current = ''
       setDrop(value)
     }
   }
@@ -233,16 +249,31 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!pickupLocation || !dropLocation) return
-    dispatch({
-      type: 'delivery.create', pickup, drop, pickupLocation: pickupLocation ?? undefined, dropLocation: dropLocation ?? undefined, packageSize, weight: Number(weight), vehicle,
-      scheduledStart: new Date(start).toISOString(), scheduledEnd: new Date(end).toISOString(),
-      instructions, category, itemCount: Number(itemCount), paymentMode,
+    const details = {
+      pickup,
+      drop,
+      pickupLocation: pickupLocation ?? undefined,
+      dropLocation: dropLocation ?? undefined,
+      packageSize,
+      weight: Number(weight),
+      vehicle,
+      scheduledStart: new Date(start).toISOString(),
+      scheduledEnd: new Date(end).toISOString(),
+      instructions,
+      category,
+      itemCount: Number(itemCount),
+      paymentMode,
       earnings: earnings.trim() ? Number(earnings) : null,
       customerName: customerName.trim() || undefined,
       customerPhone: customerPhone.trim() || undefined,
       orderValue: orderValue.trim() ? Number(orderValue) : null,
       collectAmount: collectAmount.trim() ? Number(collectAmount) : null,
-    })
+    }
+    if (delivery) {
+      dispatch({ type: 'delivery.update', deliveryId: delivery.id, ...details })
+    } else {
+      dispatch({ type: 'delivery.create', ...details })
+    }
     onClose()
   }
 
@@ -251,9 +282,11 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
   const activeAddress = locationMode === 'pickup' ? pickup : drop
   const lookupMessage = (label: string, state: LocationLookup) => state === 'searching' ? `Finding ${label.toLowerCase()}…` : state === 'choose' ? `Select a matching ${label.toLowerCase()} location.` : state === 'invalid' ? `Enter a valid ${label.toLowerCase()} location.` : state === 'error' ? `Could not verify the ${label.toLowerCase()} location. Try again.` : state === 'found' ? `${label} verified` : `Select a ${label.toLowerCase()} location.`
 
-  return <Dialog title="Create a delivery" onClose={onClose}>
+  return <Dialog title={editing ? `Edit delivery ${delivery?.id}` : 'Create a delivery'} onClose={onClose}>
     <form className="dialog-form" onSubmit={submit}>
-      <p className="dialog-description">Creates the job in the console. Assigning it publishes an offer to the linked partner app in Firestore; no customer is contacted.</p>
+      <p className="dialog-description">{editing
+        ? 'Updates the shared delivery details. If an offer is already published, the pickup, drop, customer, package, schedule, and payout are updated in delivery_app before partner acceptance.'
+        : 'Creates the job in the console. Assigning it publishes an offer to the linked partner app in Firestore; no customer is contacted.'}</p>
       <div className="form-grid two-columns">
         <div className="field-label location-field" ref={pickupFieldRef}>
           <label htmlFor="delivery-pickup-area">Pickup area</label>
@@ -359,7 +392,7 @@ function CreateDeliveryDialog({ onClose }: { onClose: () => void }) {
         <label className="field-label">Delivery window end<input type="datetime-local" value={end} onChange={(event) => setEnd(event.target.value)} required /></label>
         <label className="field-label span-two">Special instructions<textarea rows={2} maxLength={180} value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="Optional handling note" /></label>
       </div>
-  <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!locationsReady}><Icon name="plus" size={15} />Create delivery</Button></div>
+  <div className="dialog-actions"><Button onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={!locationsReady}><Icon name={editing ? 'edit' : 'plus'} size={15} />{editing ? 'Save changes' : 'Create delivery'}</Button></div>
     </form>
   </Dialog>
 }
@@ -437,6 +470,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
   const [page, setPage] = useState(1)
   const [selected, setSelected] = useState<string[]>([])
   const [createOpen, setCreateOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<Delivery | null>(null)
   const [removeTarget, setRemoveTarget] = useState<Delivery | null>(null)
   const pageSize = 8
   const areas = [...new Set(data.deliveries.flatMap((delivery) => [delivery.pickup, delivery.drop]))].sort()
@@ -534,6 +568,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
             // must keep its menu actions enabled.
             const partnerAccepted = hasPartnerAccepted(delivery, liveDelivery?.nativeStatus, isAssigned)
             const canRemoveAssignment = Boolean(assigned && isAssigned && !partnerAccepted && canAssign)
+            const editBlockedByPublication = Boolean(isAssigned && (delivery.publicationStatus === 'Pending' || delivery.publicationStatus === 'Failed'))
             return <tr key={delivery.id}>
               <td className="select-cell"><input type="checkbox" checked={selected.includes(delivery.id)} onChange={() => setSelected((value) => value.includes(delivery.id) ? value.filter((id) => id !== delivery.id) : [...value, delivery.id])} aria-label={`Select ${delivery.id}`} /></td>
               <td><button className="record-id" onClick={() => open(`/admin/deliveries/${delivery.id}`)}>{delivery.id}</button><small className="cell-subtext">{formatDate(delivery.createdAt, { month: 'short', day: 'numeric' })}</small></td>
@@ -544,7 +579,7 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
               <td><StatusBadge status={delivery.status} />{delivery.publicationStatus && delivery.publicationStatus !== 'Published' && <small className={`publish-state publish-${delivery.publicationStatus.toLowerCase().replace(/\s+/g, '-')}`}>{delivery.publicationStatus}</small>}</td>
               <td><span className={`assignment-chip ${isAssigned ? 'assignment-active' : ''}`}><i />{isAssigned ? delivery.status === 'Completed' ? 'Completed' : 'Assigned' : 'Unassigned'}</span></td>
               <td>{delivery.status === 'Delayed' ? <span className="exception-text" title={delivery.delayReason ?? 'Review needed'}><Icon name="alert" size={14} />Delayed</span> : delivery.status === 'Cancelled' ? <span className="muted-text">—</span> : <span className="muted-text">—</span>}</td>
-              <td><DeliveryRowMenu deliveryId={delivery.id}><button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>View details</button>{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canAssign || partnerAccepted} title={partnerAccepted ? 'The partner has accepted this delivery; reassignment is blocked.' : undefined} onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}>{isAssigned ? 'Reassign partner' : 'Assign partner'}</button>}{isAssigned && <button disabled={!canRemoveAssignment} title={partnerAccepted ? 'The partner has accepted or started this delivery.' : !canAssign ? 'Assignment management access required.' : 'Remove the partner before acceptance'} onClick={() => setRemoveTarget(delivery)}>Remove partner</button>}{partnerAccepted && <span className="row-menu-note">Accepted by partner · actions locked</span>}</DeliveryRowMenu></td>
+              <td><DeliveryRowMenu deliveryId={delivery.id}><button onClick={() => open(`/admin/deliveries/${delivery.id}`)}>View details</button>{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canCreate || partnerAccepted || editBlockedByPublication} title={partnerAccepted ? 'The partner has accepted this delivery; details are locked.' : !canCreate ? 'Delivery management access required.' : editBlockedByPublication ? 'Wait for the partner app publish to finish, or retry/remove the failed offer, before editing.' : 'Edit pickup, drop, customer, package, schedule, and payout details'} onClick={() => setEditTarget(delivery)}>Edit delivery</button>}{delivery.status !== 'Completed' && delivery.status !== 'Cancelled' && <button disabled={!canAssign || partnerAccepted} title={partnerAccepted ? 'The partner has accepted this delivery; reassignment is blocked.' : undefined} onClick={() => open(`/admin/deliveries/${delivery.id}/assign`)}>{isAssigned ? 'Reassign partner' : 'Assign partner'}</button>}{isAssigned && <button disabled={!canRemoveAssignment} title={partnerAccepted ? 'The partner has accepted or started this delivery.' : !canAssign ? 'Assignment management access required.' : 'Remove the partner before acceptance'} onClick={() => setRemoveTarget(delivery)}>Remove partner</button>}{partnerAccepted && <span className="row-menu-note">Accepted by partner · actions locked</span>}</DeliveryRowMenu></td>
             </tr>
           })}</tbody>
         </table>
@@ -552,7 +587,8 @@ export function DeliveriesPage({ data, open, statusFromUrl, initialSearch = '' }
       </div>
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}>Next</Button></div></div>
     </Panel>
-    {createOpen && <CreateDeliveryDialog onClose={() => setCreateOpen(false)} />}
+    {createOpen && <DeliveryFormDialog key="create" onClose={() => setCreateOpen(false)} />}
+    {editTarget && <DeliveryFormDialog key={editTarget.id} delivery={editTarget} onClose={() => setEditTarget(null)} />}
     {removeTarget && <ConfirmDialog
       title={`Remove ${partnerFor(data, removeTarget)?.name ?? 'the partner'} from ${removeTarget.id}?`}
       detail="The partner is removed before acceptance, the delivery returns to Unassigned, and the offer is withdrawn from delivery_app. The assignment remains in history."

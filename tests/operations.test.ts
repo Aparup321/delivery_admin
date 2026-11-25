@@ -922,6 +922,144 @@ test('assigning a linked partner builds a delivery offer write for delivery_app'
   }
 })
 
+test('editing an unassigned delivery updates shared details without a live write', () => {
+  const frame = identifyMainAdmin(frameWithDemo())
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.deliveryId !== delivery.id || assignment.status !== 'Active')
+  delivery.assignmentId = null
+  delivery.status = 'Unassigned'
+  delivery.publicationStatus = 'Not linked'
+
+  const result = apply(frame, {
+    type: 'delivery.update',
+    deliveryId: delivery.id,
+    pickup: 'Barasat',
+    drop: 'New Town',
+    pickupLocation: { latitude: 22.72, longitude: 88.48 },
+    dropLocation: { latitude: 22.58, longitude: 88.46 },
+    packageSize: 'Medium',
+    weight: 3.5,
+    vehicle: 'Bike',
+    scheduledStart: '2026-11-27T10:00:00.000Z',
+    scheduledEnd: '2026-11-27T12:00:00.000Z',
+    instructions: 'Call the customer',
+    category: 'Grocery',
+    itemCount: 4,
+    paymentMode: 'Cash on delivery',
+    earnings: 120,
+    customerName: 'Test Customer',
+    customerPhone: '9876543210',
+    orderValue: 500,
+    collectAmount: 500,
+  })
+  expectSuccess(result)
+  const updated = result.data.deliveries.find((item) => item.id === delivery.id)!
+  assert.equal(updated.pickup, 'Barasat')
+  assert.equal(updated.drop, 'New Town')
+  assert.equal(updated.packageSize, 'Medium')
+  assert.equal(updated.estimatedWeightKg, 3.5)
+  assert.equal(updated.itemCount, 4)
+  assert.equal(updated.customerName, 'Test Customer')
+  assert.equal(updated.collectAmount, 500)
+  assert.equal(updated.publicationStatus, 'Not linked')
+  const log = result.data.auditLogs.find((item) => item.eventType === 'Delivery updated' && item.targetId === delivery.id)!
+  assert.ok(log)
+  assert.equal(buildPartnerAppWriteIntent(result.data, log), null)
+})
+
+test('editing a published offer builds a targeted delivery_app detail update', () => {
+  const frame = identifyMainAdmin(frameWithDemo())
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.partnerAppUid = 'live-edit-uid'
+  delivery.assignmentId = 'ASN-EDIT-TEST'
+  delivery.status = 'Assigned'
+  delivery.liveStatus = 'assigned'
+  delivery.publicationStatus = 'Published'
+  frame.data.assignments.unshift({
+    id: 'ASN-EDIT-TEST', deliveryId: delivery.id, partnerId: partner.id,
+    assignedAt: '2026-11-22T09:00:00.000Z', assignedBy: 'Operations Administrator',
+    status: 'Active', releasedAt: null, releaseReason: null, attempt: 1, dropOtp: '1234',
+  })
+
+  const result = apply(frame, {
+    type: 'delivery.update',
+    deliveryId: delivery.id,
+    pickup: 'Barasat',
+    drop: 'New Town',
+    pickupLocation: { latitude: 22.72, longitude: 88.48 },
+    dropLocation: { latitude: 22.58, longitude: 88.46 },
+    packageSize: 'Medium',
+    weight: 3.5,
+    vehicle: 'Bike',
+    scheduledStart: '2026-11-27T10:00:00.000Z',
+    scheduledEnd: '2026-11-27T12:00:00.000Z',
+    instructions: 'Call the customer',
+    category: 'Grocery',
+    itemCount: 4,
+    paymentMode: 'Cash on delivery',
+    earnings: 120,
+    customerName: 'Test Customer',
+    customerPhone: '9876543210',
+    orderValue: 500,
+    collectAmount: 500,
+  })
+  expectSuccess(result)
+  const updated = result.data.deliveries.find((item) => item.id === delivery.id)!
+  assert.equal(updated.publicationStatus, 'Pending')
+  const log = result.data.auditLogs.find((item) => item.eventType === 'Delivery updated' && item.targetId === delivery.id)!
+  const intent = buildPartnerAppWriteIntent(result.data, log)
+  assert.equal(intent?.kind, 'delivery-details')
+  if (intent?.kind === 'delivery-details') {
+    assert.equal(intent.partnerAppUid, 'live-edit-uid')
+    assert.equal(intent.pickupName, 'Barasat')
+    assert.equal(intent.dropName, 'New Town')
+    assert.equal(intent.itemCount, 4)
+    assert.equal(intent.earnings, 120)
+    assert.equal(intent.customerName, 'Test Customer')
+    assert.equal(intent.customerPhone, '9876543210')
+    assert.equal(intent.orderValue, 500)
+    assert.equal(intent.collectAmount, 500)
+    assert.ok(intent.distanceKm > 0)
+  }
+})
+
+test('editing a delivery is blocked after partner acceptance', () => {
+  const frame = identifyMainAdmin(frameWithDemo())
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  delivery.assignmentId = 'ASN-ACCEPTED-TEST'
+  delivery.status = 'In Transit'
+  delivery.liveStatus = 'in_transit'
+  frame.data.assignments.unshift({
+    id: 'ASN-ACCEPTED-TEST', deliveryId: delivery.id, partnerId: partner.id,
+    assignedAt: '2026-11-22T09:00:00.000Z', assignedBy: 'Operations Administrator',
+    status: 'Active', releasedAt: null, releaseReason: null, attempt: 1, dropOtp: '1234',
+  })
+  const before = delivery.pickup
+  const result = apply(frame, {
+    type: 'delivery.update',
+    deliveryId: delivery.id,
+    pickup: 'Barasat',
+    drop: 'New Town',
+    pickupLocation: { latitude: 22.72, longitude: 88.48 },
+    dropLocation: { latitude: 22.58, longitude: 88.46 },
+    packageSize: 'Medium',
+    weight: 3.5,
+    vehicle: 'Bike',
+    scheduledStart: '2026-11-27T10:00:00.000Z',
+    scheduledEnd: '2026-11-27T12:00:00.000Z',
+    instructions: '',
+    category: 'Grocery',
+    itemCount: 1,
+    paymentMode: 'Prepaid',
+    earnings: 100,
+  })
+  assert.equal(result.feedback?.kind, 'error')
+  assert.match(result.feedback?.message ?? '', /locked after acceptance/)
+  assert.equal(result.data.deliveries.find((item) => item.id === delivery.id)?.pickup, before)
+})
+
 test('delivery writes target deliveries while partner actions stay on partners', () => {
   const config: PartnerAppConfig = {
     mode: 'firestore',

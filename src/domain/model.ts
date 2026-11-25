@@ -33,6 +33,7 @@ export type NotificationCategory =
 
 export type AuditEventType =
   | 'Delivery created'
+  | 'Delivery updated'
   | 'Delivery assigned'
   | 'Delivery reassigned'
   | 'Delivery unassigned'
