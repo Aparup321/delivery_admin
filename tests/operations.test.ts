@@ -1591,6 +1591,69 @@ test('an online live partner is assignable even when local availability is stale
   const ineligible = getPartnerEligibility(frame.data, partner, delivery)
   assert.equal(ineligible.eligible, false)
   assert.ok(ineligible.reasons.some((reason) => /Service area/.test(reason)))
+
+  // City-level onboarding ("kolkata") covers a nearby delivery pincode even
+  // when the short locality name is not part of the delivery address.
+  partner.serviceAreas = ['kolkata']
+  frame.data.partnerAppRecords[0].fields.pincode = '700125'
+  delivery.pickup = 'Brainware University'
+  delivery.drop = 'Champadali'
+  delivery.pickupAddress = 'Brainware University, Barasat, 700124, India'
+  delivery.dropAddress = 'Champadali, Barasat, 700124, India'
+  const nearby = getPartnerEligibility(frame.data, partner, delivery)
+  assert.equal(nearby.eligible, true, nearby.reasons.join('; '))
+})
+
+test('a partner can take a nearby next delivery after completing one outside their service area', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.partnerAppUid = 'live-current-area'
+  partner.serviceAreas = ['Barasat']
+  partner.availability = 'Available'
+  frame.data.settings.requireServiceAreaMatch = true
+  frame.data.settings.enforceVehicleCompatibility = false
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.partnerId !== partner.id || assignment.status !== 'Active')
+  frame.data.partnerAppRecords = [{
+    id: 'live-current-area', partnerId: null, name: partner.name, phone: '+91 90000 04748',
+    email: null, vehicle: partner.vehicle, status: 'online', applicationStatus: 'approved', isOnline: true,
+    serviceAreas: ['Barasat'], updatedAt: '2026-11-22T10:00:00.000Z',
+    fields: { isOnline: 'true', pincode: '700125' }, syncedAt: '2026-11-22T10:00:00.000Z',
+  }]
+
+  const completed = frame.data.deliveries.find((item) => item.status === 'Completed')!
+  completed.drop = 'Kolkata'
+  completed.dropAddress = 'Kolkata, West Bengal, 700001, India'
+  completed.dropLocation = { latitude: 22.5726, longitude: 88.3639 }
+  frame.data.assignments.push({
+    id: 'ASN-CURRENT-AREA', deliveryId: completed.id, partnerId: partner.id,
+    assignedAt: '2026-11-22T09:00:00.000Z', assignedBy: 'Operations Administrator',
+    status: 'Completed', releasedAt: '2026-11-22T09:30:00.000Z', releaseReason: 'Delivery completed', attempt: 1, dropOtp: null,
+  })
+
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  delivery.status = 'Unassigned'
+  delivery.vehicleRequirement = 'Any'
+  delivery.pickup = 'Salt Lake'
+  delivery.drop = 'Kolkata'
+  delivery.pickupAddress = 'Salt Lake, Kolkata, 700091, India'
+  delivery.dropAddress = 'Park Street, Kolkata, 700016, India'
+  delivery.pickupLocation = { latitude: 22.5867, longitude: 88.4171 }
+  delivery.dropLocation = { latitude: 22.5535, longitude: 88.3520 }
+  const now = Date.parse('2026-11-22T10:00:00.000Z')
+
+  // The home service area is Barasat, but the latest drop-off is in Kolkata.
+  const nearby = getPartnerEligibility(frame.data, partner, delivery, now)
+  assert.equal(nearby.eligible, true, nearby.reasons.join('; '))
+
+  // With no completed drop and a stale/remote live position, the Kolkata
+  // pickup remains outside the Barasat service area.
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.id !== 'ASN-CURRENT-AREA')
+  frame.data.partnerAppRecords[0].fields['lastLocation.latitude'] = '22.72'
+  frame.data.partnerAppRecords[0].fields['lastLocation.longitude'] = '88.48'
+  frame.data.partnerAppRecords[0].fields['lastLocationUpdatedAt'] = '2026-11-22T10:00:00.000Z'
+  const far = getPartnerEligibility(frame.data, partner, delivery, now)
+  assert.equal(far.eligible, false)
+  assert.ok(far.reasons.some((reason) => /Service area/.test(reason)))
 })
 
 test('a stale On Delivery flag is reconciled from live presence and does not block assignment', () => {

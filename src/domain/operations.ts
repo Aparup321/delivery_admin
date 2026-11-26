@@ -1,4 +1,4 @@
-import type { Delivery, DeliveryStatus, OperationsState, Partner, PartnerAppRecord, PartnerDocument } from './model.ts'
+import type { Delivery, DeliveryLocation, DeliveryStatus, OperationsState, Partner, PartnerAppRecord, PartnerDocument } from './model.ts'
 
 /**
  * Older delivery_app accounts may only have `status: active` and no
@@ -22,6 +22,33 @@ export function liveServiceAreas(record: PartnerAppRecord | undefined) {
   if (record.serviceAreas.length) return [...record.serviceAreas]
   const city = typeof record.fields.city === 'string' ? record.fields.city.trim() : ''
   return city ? [city] : []
+}
+
+/** A partner can accept nearby work after delivering outside their home area. */
+const CURRENT_AREA_RADIUS_KM = 12
+const CURRENT_LOCATION_MAX_AGE_MS = 2 * 60 * 60_000
+
+function coordinatesFromRecord(record: PartnerAppRecord | undefined, now: number): DeliveryLocation | null {
+  if (!record) return null
+  const latitude = Number(record.fields['lastLocation.latitude'])
+  const longitude = Number(record.fields['lastLocation.longitude'])
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null
+  const stamp = record.fields['lastLocation.updatedAt'] ?? record.fields.lastLocationUpdatedAt
+  if (stamp) {
+    const updatedAt = Date.parse(stamp)
+    if (Number.isFinite(updatedAt) && now - updatedAt > CURRENT_LOCATION_MAX_AGE_MS) return null
+  }
+  return { latitude, longitude }
+}
+
+function distanceKmBetween(left: DeliveryLocation, right: DeliveryLocation) {
+  const toRadians = (value: number) => value * Math.PI / 180
+  const earthRadiusKm = 6371
+  const deltaLatitude = toRadians(right.latitude - left.latitude)
+  const deltaLongitude = toRadians(right.longitude - left.longitude)
+  const a = Math.sin(deltaLatitude / 2) ** 2
+    + Math.cos(toRadians(left.latitude)) * Math.cos(toRadians(right.latitude)) * Math.sin(deltaLongitude / 2) ** 2
+  return 2 * earthRadiusKm * Math.asin(Math.sqrt(a))
 }
 
 export interface EligibilityResult {
@@ -102,16 +129,42 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   }
   if (state.settings.requireServiceAreaMatch && partner.serviceAreas.length > 0) {
     const areaKey = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+    const deliveryText = [delivery.pickup, delivery.drop, delivery.pickupAddress, delivery.dropAddress].filter(Boolean).join(' ')
     const deliveryAreas = [delivery.pickup, delivery.drop, delivery.pickupAddress, delivery.dropAddress]
       .map(areaKey)
       .filter(Boolean)
     // Delivery pickup/drop can be a full geocoded address while partner areas
     // are short locality names. Use containment rather than exact equality.
-    const serves = partner.serviceAreas.some((area) => {
+    const areaMatch = partner.serviceAreas.some((area) => {
       const key = areaKey(area)
       return Boolean(key) && deliveryAreas.some((text) => text.includes(key))
     })
-    if (!serves) reasons.push('Service area does not include pickup or drop area')
+    // Onboarding stores a city-level service area (for example "kolkata").
+    // When the partner's submitted pincode and the delivery pincode share the
+    // same 5-digit district prefix, the partner covers that nearby locality.
+    const partnerPincode = String(liveRecord?.fields.pincode ?? '').replace(/\D/g, '').slice(0, 6)
+    const deliveryPincodes = deliveryText.match(/\b\d{6}\b/g) ?? []
+    const pincodeMatch = partnerPincode.length === 6
+      && deliveryPincodes.some((pincode) => pincode === partnerPincode || pincode.slice(0, 5) === partnerPincode.slice(0, 5))
+    // The home service area is not a tether. Once a partner has delivered to
+    // another locality, a recent live position or that drop-off point becomes
+    // their current operating area for the next pickup.
+    const lastCompletedDelivery = state.assignments
+      .filter((assignment) => assignment.partnerId === partner.id && assignment.status === 'Completed')
+      .sort((left, right) => (right.releasedAt ?? '').localeCompare(left.releasedAt ?? ''))
+      .map((assignment) => state.deliveries.find((item) => item.id === assignment.deliveryId))
+      .find((item): item is Delivery => Boolean(item))
+    const livePosition = coordinatesFromRecord(liveRecord, now)
+    const currentPosition = livePosition ?? lastCompletedDelivery?.dropLocation ?? null
+    const locationMatch = Boolean(currentPosition)
+      && [delivery.pickupLocation, delivery.dropLocation]
+        .some((location) => location && distanceKmBetween(currentPosition!, location) <= CURRENT_AREA_RADIUS_KM)
+    const currentPincodes = lastCompletedDelivery
+      ? [lastCompletedDelivery.drop, lastCompletedDelivery.dropAddress].join(' ').match(/\b\d{6}\b/g) ?? []
+      : []
+    const currentPincodeMatch = !livePosition
+      && currentPincodes.some((current) => deliveryPincodes.some((pincode) => pincode === current || pincode.slice(0, 5) === current.slice(0, 5)))
+    if (!areaMatch && !pincodeMatch && !locationMatch && !currentPincodeMatch) reasons.push('Service area or current location does not include pickup or drop area')
   }
 
   if (activeAssignment && activeAssignment.deliveryId !== delivery.id) {
