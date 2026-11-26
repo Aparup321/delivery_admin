@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDemoState } from '../src/domain/seed.ts'
-import { getPartnerEligibility, hasPartnerAccepted, nextPartnerId, vehicleCanCarry } from '../src/domain/operations.ts'
+import { getPartnerEligibility, hasPartnerAccepted, liveServiceAreas, nextPartnerId, vehicleCanCarry } from '../src/domain/operations.ts'
 import { buildKycQueue, liveApplicationStatus, liveDocumentsBlocked, partnerVerification } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
@@ -796,6 +796,69 @@ test('directory verification follows the linked KYC decision instead of local do
   frame.data.partnerAppDocuments = []
   frame.data.partnerAppRecords = [{ ...base, applicationStatus: 'rejected', status: 'pending' }]
   assert.equal(partnerVerification(frame.data, partner), 'Attention Required')
+})
+
+test('KYC review uses the submitted city as the service area before approval', () => {
+  const frame = identifyMainAdmin(frameWithDemo())
+  const record: PartnerAppRecord = {
+    id: 'live-city-uid', partnerId: null, name: 'Aparup nomad', phone: '+91 98329 79099',
+    email: 'aparup@example.com', vehicle: 'bike', status: 'pending', applicationStatus: 'submitted',
+    isOnline: false, serviceAreas: [], updatedAt: '2026-11-26T07:30:00.000Z',
+    fields: { fullName: 'Aparup nomad', applicationStatus: 'submitted', city: 'Barasat', addressLine: 'Murgi Tower', pincode: '700125' },
+    syncedAt: '2026-11-26T08:00:00.000Z',
+  }
+  assert.deepEqual(liveServiceAreas(record), ['Barasat'])
+  const synced = apply(frame, { type: 'partnerApp.sync-result', records: [record], at: '2026-11-26T08:00:00.000Z' })
+  expectSuccess(synced)
+  const item = buildKycQueue(synced.data).find((entry) => entry.recordId === record.id)!
+  assert.deepEqual(item.serviceAreas, ['Barasat'])
+  const approved = apply(synced, { type: 'partnerApp.review', recordId: record.id, decision: 'Approved', note: 'Details match delivery_app.' })
+  expectSuccess(approved)
+  const application = approved.data.applications.find((entry) => entry.partnerAppUid === record.id)!
+  const partner = approved.data.partners.find((entry) => entry.id === application.partnerId)!
+  assert.deepEqual(partner.serviceAreas, ['Barasat'])
+  assert.equal(partner.name, 'Aparup nomad')
+})
+
+test('approved live records import the submitted city and RC into the partner directory', () => {
+  const synced = apply(frameWithDemo(), {
+    type: 'partnerApp.sync-result',
+    at: '2026-11-26T09:00:00.000Z',
+    records: [{
+      id: 'live-auto-uid', partnerId: null, name: 'Auto Import Partner', phone: '+91 90000 55555',
+      email: 'auto@example.com', vehicle: 'Bike', status: 'active', applicationStatus: 'approved',
+      isOnline: false, serviceAreas: [], updatedAt: '2026-11-26T08:55:00.000Z',
+      fields: { fullName: 'Auto Import Partner', city: 'Barasat', vehicleRegistrationNumber: 'WB02AB9999' },
+      syncedAt: '2026-11-26T09:00:00.000Z',
+    }],
+  })
+  expectSuccess(synced)
+  const partner = synced.data.partners.find((entry) => entry.partnerAppUid === 'live-auto-uid')!
+  assert.deepEqual(partner.serviceAreas, ['Barasat'])
+  assert.equal(partner.maskedRegistration, 'WB-••-9999')
+})
+
+test('a linked live partner backfills missing service area and registration from a sync', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners[0]
+  partner.partnerAppUid = 'live-backfill-uid'
+  partner.serviceAreas = []
+  partner.maskedRegistration = 'Not provided'
+  const synced = apply(frame, {
+    type: 'partnerApp.sync-result',
+    at: '2026-11-26T09:00:00.000Z',
+    records: [{
+      id: 'live-backfill-uid', partnerId: partner.id, name: partner.name, phone: null, email: null,
+      vehicle: partner.vehicle, status: 'pending', applicationStatus: 'submitted', isOnline: false,
+      serviceAreas: [], updatedAt: '2026-11-26T08:55:00.000Z',
+      fields: { fullName: partner.name, city: 'New Town', vehicleRegistrationNumber: 'WB02AB1234' },
+      syncedAt: '2026-11-26T09:00:00.000Z',
+    }],
+  })
+  expectSuccess(synced)
+  const updated = synced.data.partners.find((entry) => entry.id === partner.id)!
+  assert.deepEqual(updated.serviceAreas, ['New Town'])
+  assert.equal(updated.maskedRegistration, 'WB-••-1234')
 })
 
 test('partner sync merges vehicle numbers without overwriting partner fields', () => {

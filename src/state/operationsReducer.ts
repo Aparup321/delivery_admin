@@ -2,7 +2,7 @@ import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCa
 import { createDropOtp } from '../domain/estimates.ts'
 import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type Assignment, type AuditEventType, type AuditLogEntry, type Delivery, type DeliveryMilestoneName, type DeliveryStatus, type DocumentStatus, type LiveOrderSnapshot, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppDocument, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type PartnerDocumentReview, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
-import { getPartnerEligibility, getActiveAssignment, hasPartnerAccepted, isLivePartnerApproved, nextPartnerId } from '../domain/operations.ts'
+import { getPartnerEligibility, getActiveAssignment, hasPartnerAccepted, isLivePartnerApproved, nextPartnerId, liveServiceAreas } from '../domain/operations.ts'
 import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
 
 export interface AppFrame {
@@ -209,6 +209,29 @@ function syncLinkedPartnerAvailability(data: OperationsState) {
   }
 }
 
+function syncLinkedPartnerProfile(data: OperationsState) {
+  for (const partner of data.partners) {
+    if (!partner.partnerAppUid) continue
+    const record = data.partnerAppRecords.find((item) => item.id === partner.partnerAppUid)
+    if (!record) continue
+    // Fill only values the live record can supply and the admin record is
+    // missing. Never overwrite a service area or registration edit made here.
+    if (!partner.serviceAreas.length) {
+      const liveAreas = liveServiceAreas(record)
+      if (liveAreas.length) partner.serviceAreas = liveAreas
+    }
+    if (partner.maskedRegistration === 'Not provided') {
+      const registration = String(
+        record.fields.vehicleRegistrationNumber
+        ?? record.fields['vehicle.registrationNumber']
+        ?? record.fields.registrationNumber
+        ?? '',
+      ).replace(/\D/g, '')
+      if (registration.length >= 4) partner.maskedRegistration = `WB-••-${registration.slice(-4)}`
+    }
+  }
+}
+
 function autoLinkPartnerAppRecords(data: OperationsState) {
   const recordsByName = new Map<string, PartnerAppRecord[]>()
   const recordsByPhone = new Map<string, PartnerAppRecord[]>()
@@ -270,7 +293,12 @@ function importApprovedPartnerAppRecords(data: OperationsState, at: string) {
     }
 
     const partnerId = nextPartnerId(data)
-    const registration = String(record.fields.registrationNumber ?? '').replace(/\D/g, '')
+    const registration = String(
+      record.fields.vehicleRegistrationNumber
+      ?? record.fields['vehicle.registrationNumber']
+      ?? record.fields.registrationNumber
+      ?? '',
+    ).replace(/\D/g, '')
     const online = record.isOnline === true
       || record.status?.trim().toLowerCase() === 'online'
       || record.status?.trim().toLowerCase() === 'available'
@@ -283,7 +311,7 @@ function importApprovedPartnerAppRecords(data: OperationsState, at: string) {
       registeredAt: record.updatedAt ?? at,
       vehicle: adminVehicleFor(record.vehicle),
       maskedRegistration: registration.length >= 4 ? `WB-••-${registration.slice(-4)}` : 'Not provided',
-      serviceAreas: [...record.serviceAreas],
+      serviceAreas: liveServiceAreas(record),
       availability: online ? 'Available' : 'Offline',
       restrictedReason: null,
       suspendedReason: null,
@@ -589,6 +617,7 @@ function applicationFromPartnerRecord(data: OperationsState, record: PartnerAppR
   if (!record.name.trim() || record.name === record.id) {
     throw new Error('This delivery_app account has not completed onboarding, so there is no application to review.')
   }
+  const serviceAreas = liveServiceAreas(record)
   return {
     id: nextApplicationId(data),
     applicantName: record.name,
@@ -596,7 +625,7 @@ function applicationFromPartnerRecord(data: OperationsState, record: PartnerAppR
     maskedPhone: maskPhoneNumber(record.phone),
     maskedEmail: maskEmailAddress(record.email),
     vehicle: adminVehicleFor(record.vehicle),
-    serviceAreas: record.serviceAreas.length ? [...record.serviceAreas] : ['Kolkata'],
+    serviceAreas: serviceAreas.length ? serviceAreas : ['Kolkata'],
     submittedAt: record.updatedAt ?? record.syncedAt,
     // Document files remain in delivery_app; do not claim every required file
     // is attached when the admin sync has not imported document metadata.
@@ -1413,6 +1442,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       data.partnerApp.lastError = null
       autoLinkPartnerAppRecords(data)
       importApprovedPartnerAppRecords(data, at)
+      syncLinkedPartnerProfile(data)
       syncLinkedPartnerAvailability(data)
       for (const ticket of data.partnerAppTickets) {
         if (previousTicketIds.has(ticket.id)) continue
@@ -1448,6 +1478,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       const related = data.applications.filter((application) => application.partnerId === partner.id
         || normalizeLinkName(application.applicantName) === normalizeLinkName(partner.name))
       for (const application of related) application.partnerAppUid = record.id
+      syncLinkedPartnerProfile(data)
       audit(data, 'Partner app account updated', 'Partner', partner.id, previous, `${record.id} · ${record.name}`, `Linked manually from the partner app data view.${related.length ? ` ${related.length} application record${related.length === 1 ? '' : 's'} linked too.` : ''}`, at)
       return { message: `${partner.name} linked to delivery_app account ${record.id}.` }
     }

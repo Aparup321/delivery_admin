@@ -1,5 +1,5 @@
 import { demoModeEnabled } from '../config/firebase.ts'
-import { isDocumentCurrent, isLivePartnerApproved } from './operations.ts'
+import { isDocumentCurrent, isLivePartnerApproved, liveServiceAreas } from './operations.ts'
 import type {
   DocumentStatus,
   DocumentType,
@@ -235,7 +235,7 @@ function recordItem(data: OperationsState, record: PartnerAppRecord, status: Kyc
       : 'Onboarding in progress',
     contact: record.phone ?? record.email ?? 'Not provided',
     vehicle: record.vehicle ?? (hasApplication ? '—' : 'Not selected'),
-    serviceAreas: [...record.serviceAreas],
+    serviceAreas: liveServiceAreas(record),
     submittedAt: record.updatedAt ?? record.syncedAt,
     documents: [],
     documentsKnown: false,

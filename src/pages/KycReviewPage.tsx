@@ -12,8 +12,11 @@ import {
   type KycQueueItem,
 } from '../domain/kyc'
 import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
-import { readPartnerAppToken, writePartnerDocumentReview } from '../services/partnerApp'
+import { beginFirebaseDataConnection } from '../auth/adminSession'
+import { liveServiceAreas } from '../domain/operations'
+import { readPartnerAppToken, syncPartnerAppDocuments, syncPartnerAppRecords, writePartnerDocumentReview } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
+import { clearQuotaBlock, describeSyncError } from '../services/firestoreQuota'
 import { useOperations } from '../state/OperationsProvider'
 
 type StatusFilter = 'Needs review' | 'KYC pending' | 'All' | 'Approved' | 'Rejected'
@@ -25,6 +28,55 @@ function vehicleIcon(vehicle: string): 'bike' | 'scooter' | 'van' | 'route' {
   if (normalized.includes('bicycle') || normalized.includes('bike') || normalized.includes('foot') || normalized.includes('walk')) return 'bike'
   return 'route'
 }
+
+/**
+ * Human-readable partner details for the review dialogs. Identity numbers are
+ * kept as text so an administrator can read and copy them without opening a
+ * document file.
+ */
+function partnerTextDetails(record: PartnerAppRecord | undefined, documents: PartnerAppDocument | undefined): Array<[string, string]> {
+  if (!record) return []
+  const field = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = record.fields[key]
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+    return null
+  }
+  const number = (key: string) => {
+    const file = documents?.files.find((item) => item.key === key)
+      ?? { key, fileName: null, documentNumber: null, downloadUrl: null, uploadedAt: null, review: null }
+    return partnerDocumentNumber(file, record)
+  }
+  const dateOfBirth = field('dateOfBirth')
+  const aadhaar = number('aadhaar')
+  const pan = number('pan')
+  const licence = number('licence')
+  const registration = number('registration')
+  const rows: Array<[string, string | null]> = [
+    ['Address', [field('addressLine', 'address', 'fullAddress'), field('city'), field('pincode', 'postalCode')].filter(Boolean).join(', ') || null],
+    ['Date of birth', dateOfBirth ? formatDate(dateOfBirth, { month: 'short', day: 'numeric', year: 'numeric' }) : null],
+    ['Aadhaar number', aadhaar ? formatDocumentNumber('aadhaar', aadhaar) : null],
+    ['PAN number', pan ? formatDocumentNumber('pan', pan) : null],
+    ['Driving licence number', licence ? formatDocumentNumber('licence', licence) : null],
+    ['Vehicle registration number', registration ? formatDocumentNumber('registration', registration) : null],
+    ['Bank passbook number', number('passbook')],
+    ['Vehicle model', field('vehicleModel', 'vehicle.model', 'model')],
+    ['Vehicle colour', field('vehicleColour', 'vehicle.color', 'colour', 'color')],
+    ['Bank account holder', field('bank.accountHolder', 'accountHolder')],
+    ['Bank account number', field('bank.accountNumber', 'accountNumber')],
+    ['IFSC code', field('bank.ifsc', 'ifsc')],
+  ]
+  return rows.filter((row): row is [string, string] => Boolean(row[1]))
+}
+
+const structuredDetailKeys = new Set([
+  'dateOfBirth', 'addressLine', 'address', 'fullAddress', 'city', 'pincode', 'postalCode',
+  'vehicleModel', 'vehicle.model', 'model', 'vehicleColour', 'vehicle.color', 'colour', 'color',
+  'vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber',
+  'vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber',
+  'bank.accountHolder', 'accountHolder', 'bank.accountNumber', 'accountNumber', 'bank.ifsc', 'ifsc',
+])
 
 export function ApplicationReviewDialog({ application, initialDecision, documentsBlockedReason, onClose }: { application: PartnerApplication; initialDecision: 'Approved' | 'Rejected'; documentsBlockedReason?: string | null; onClose: () => void }) {
   const { frame, dispatch } = useOperations()
@@ -67,12 +119,13 @@ export function ApplicationReviewDialog({ application, initialDecision, document
   </Dialog>
 }
 
-export function LiveApplicationReviewDialog({ record, application, linkedPartner, initialDecision = 'Approved', documentsBlockedReason, onClose }: { record: PartnerAppRecord; application: PartnerApplication | undefined; linkedPartner: Partner | undefined; initialDecision?: 'Approved' | 'Rejected'; documentsBlockedReason?: string | null; onClose: () => void }) {
+export function LiveApplicationReviewDialog({ record, application, linkedPartner, documents, initialDecision = 'Approved', documentsBlockedReason, onClose }: { record: PartnerAppRecord; application: PartnerApplication | undefined; linkedPartner: Partner | undefined; documents?: PartnerAppDocument; initialDecision?: 'Approved' | 'Rejected'; documentsBlockedReason?: string | null; onClose: () => void }) {
   const { frame, dispatch } = useOperations()
   const [decision, setDecision] = useState<'Approved' | 'Rejected'>(initialDecision)
   const [note, setNote] = useState('')
   const isRejected = decision === 'Rejected'
   const isAdmin = userCan(frame.data.user, 'application-review')
+  const partnerDetails = partnerTextDetails(record, documents)
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -92,12 +145,16 @@ export function LiveApplicationReviewDialog({ record, application, linkedPartner
       </p>
       <div className="application-review-summary">
         <div><span>Applicant</span><strong>{record.name}</strong></div>
-        <div><span>Contact</span><strong>{record.phone ?? record.email ?? '—'}</strong></div>
+        <div><span>Contact</span><strong>{record.phone ?? '—'}</strong></div>
+        <div><span>Email</span><strong>{record.email ?? '—'}</strong></div>
         <div><span>Vehicle</span><strong>{record.vehicle ?? '—'}</strong></div>
-        <div><span>Service areas</span><strong>{record.serviceAreas.join(', ') || '—'}</strong></div>
+        <div><span>Service areas</span><strong>{liveServiceAreas(record).join(', ') || '—'}</strong></div>
         <div><span>Submitted</span><strong>{formatDate(record.updatedAt ?? record.syncedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong></div>
         <div><span>delivery_app UID</span><strong>{record.id}</strong></div>
       </div>
+      {partnerDetails.length > 0 && <div className="application-review-summary">
+        {partnerDetails.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+      </div>}
       <label className="field-label">Decision<select value={decision} onChange={(event) => setDecision(event.target.value as 'Approved' | 'Rejected')} disabled={!isAdmin}><option value="Approved">Approve application</option><option value="Rejected">Reject application</option></select></label>
       <label className="field-label">{isRejected ? 'Rejection reason (required)' : 'Approval note (optional)'}<textarea rows={3} maxLength={240} required={isRejected} value={note} disabled={!isAdmin} onChange={(event) => setNote(event.target.value)} placeholder={isRejected ? 'Explain why this application cannot be approved' : 'Optional note for the audit record'} /></label>
       <p className="dialog-description">{isRejected ? 'The reason appears in delivery_app on the partner’s application status screen.' : 'Approval activates the delivery_app account so the partner can go online.'}</p>
@@ -185,9 +242,10 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
   const [reviewing, setReviewing] = useState<{ key: string; status: 'Verified' | 'Rejected'; expiresAt: string; note: string } | null>(null)
   const [reviewBusy, setReviewBusy] = useState(false)
   const [reviewError, setReviewError] = useState('')
+  const partnerDetails = partnerTextDetails(record, documentRecord)
   const detailFields = record
     ? Object.entries(record.fields)
-        .filter(([key, value]) => value.trim() && !detailSummaryKeys.has(key) && !detailHiddenKeys.has(key))
+        .filter(([key, value]) => value.trim() && !detailSummaryKeys.has(key) && !detailHiddenKeys.has(key) && !structuredDetailKeys.has(key))
         .sort(([left], [right]) => left.localeCompare(right))
     : []
 
@@ -243,6 +301,16 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
         {item.reviewedBy && <div><span>Reviewed by</span><strong>{item.reviewedBy}</strong></div>}
         {item.decisionReason && <div><span>Decision note</span><strong>{item.decisionReason}</strong></div>}
       </div>
+      {partnerDetails.length > 0 && <section className="details-section">
+        <div className="details-section-head">
+          <span className="details-section-icon"><Icon name="user" size={14} /></span>
+          <div><strong>Partner details</strong><small>Submitted during onboarding</small></div>
+          <span className="details-section-count">{partnerDetails.length} fields</span>
+        </div>
+        <div className="details-field-grid">
+          {partnerDetails.map(([label, value]) => <div key={label} className="details-tile"><span>{label}</span><strong>{value}</strong></div>)}
+        </div>
+      </section>}
       <section className="details-section">
         <div className="details-section-head">
           <span className="details-section-icon"><Icon name="file" size={14} /></span>
@@ -302,15 +370,44 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
 }
 
 export function KycReviewPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
-  const { frame } = useOperations()
+  const { frame, dispatch } = useOperations()
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState<StatusFilter>('Needs review')
   const [vehicle, setVehicle] = useState('All')
   const [page, setPage] = useState(1)
   const [review, setReview] = useState<{ key: string; decision: 'Approved' | 'Rejected' } | null>(null)
   const [details, setDetails] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
   const pageSize = 10
   const canReview = userCan(frame.data.user, 'application-review')
+  const config = data.partnerApp
+  const configured = config.mode === 'firestore' ? Boolean(config.projectId.trim() && config.partnersCollection.trim()) : Boolean(config.endpointUrl.trim())
+  const firebaseSignedIn = hasFirebaseAdminSession()
+
+  async function refreshLive() {
+    if (!firebaseSignedIn) {
+      beginFirebaseDataConnection()
+      return
+    }
+    if (!configured) {
+      open('/admin/settings?tab=partner-app')
+      return
+    }
+    setRefreshing(true)
+    try {
+      const token = readPartnerAppToken()
+      const [records, documents] = await Promise.all([
+        syncPartnerAppRecords(config, token),
+        syncPartnerAppDocuments(config, token).catch(() => []),
+      ])
+      clearQuotaBlock(config.projectId)
+      dispatch({ type: 'partnerApp.sync-result', records, documents, at: new Date().toISOString(), silent: true })
+    } catch (error) {
+      dispatch({ type: 'partnerApp.failed', message: describeSyncError(error, 'KYC refresh failed.', config.projectId) })
+    } finally {
+      setRefreshing(false)
+    }
+  }
   const queue = useMemo(() => buildKycQueue(data), [data])
   const pending = queue.filter((item) => item.status === 'Submitted').length
   const onboardingPending = queue.filter((item) => item.status === 'KYC pending').length
@@ -353,7 +450,10 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
 
   return <>
     <Panel className="records-panel kyc-queue-panel">
-      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>KYC applications</span><span className="dot-separator" />{pending} awaiting review · {onboardingPending} KYC pending · {liveCount} from delivery_app</div><span className="demo-caption">Main administrator approval only</span></div>
+      <div className="records-topline"><div className="records-count"><strong>{filtered.length}</strong><span>KYC applications</span><span className="dot-separator" />{pending} awaiting review · {onboardingPending} KYC pending · {liveCount} from delivery_app</div><div className="row-action-group"><span className="demo-caption">Main administrator approval only</span>{firebaseSignedIn
+        ? <Button size="small" onClick={refreshLive} disabled={refreshing || !configured}><Icon name="refresh" size={14} />{refreshing ? 'Refreshing…' : 'Refresh live data'}</Button>
+        : <Button size="small" variant="primary" onClick={beginFirebaseDataConnection} disabled={!configured}><Icon name="lock" size={14} />Sign in to load live applications</Button>}</div></div>
+      {data.partnerApp.lastError && <div className="soft-notice"><Icon name="alert" size={15} /><span>{data.partnerApp.lastError}</span><Button size="small" variant="primary" onClick={refreshLive} disabled={refreshing || !configured}>Retry</Button></div>}
       <div className="filter-toolbar kyc-filter-toolbar">
         <label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search applicant, business, ID, contact, or area" aria-label="Search KYC applications" /></label>
         <label className="filter-control"><span>Status</span><select value={status} onChange={(event) => { setStatus(event.target.value as StatusFilter); setPage(1) }}><option>Needs review</option><option>KYC pending</option><option>All</option><option>Approved</option><option>Rejected</option></select></label>
@@ -396,7 +496,7 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
       <div className="table-footer"><span>Showing {filtered.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, filtered.length)} of {filtered.length}</span><div className="pagination"><Button size="small" variant="quiet" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>Previous</Button><span>Page {page} of {pageCount}</span><Button size="small" variant="quiet" disabled={page >= pageCount} onClick={() => setPage((value) => value + 1)}>Next</Button></div></div>
       <div className="notification-history-note"><Icon name="shield" size={14} />Only a main administrator can approve or reject a KYC application. Rejections require a reason, and every decision is written to the audit log. Sign-in-only partner accounts stay out of this queue until onboarding is submitted; delivery_app records sync automatically after Firebase sign-in and periodically refresh.</div>
     </Panel>
-    {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} documentsBlockedReason={reviewBlockedReason} initialDecision={review.decision} onClose={() => setReview(null)} />}
+    {review && reviewLive && reviewRecord && <LiveApplicationReviewDialog key={`${reviewRecord.id}-${review.decision}`} record={reviewRecord} application={reviewApplication} linkedPartner={reviewLinkedPartner} documents={reviewDocuments} documentsBlockedReason={reviewBlockedReason} initialDecision={review.decision} onClose={() => setReview(null)} />}
     {review && !reviewLive && reviewApplication && <ApplicationReviewDialog key={`${reviewApplication.id}-${review.decision}`} application={reviewApplication} documentsBlockedReason={reviewBlockedReason} initialDecision={review.decision} onClose={() => setReview(null)} />}
     {detailsItem && <KycApplicationDetailsDialog item={detailsItem} application={detailsApplication} record={detailsRecord} documentRecord={detailsDocuments} onClose={() => setDetails(null)} onReview={detailsItem.status === 'Submitted' && canReview ? () => { setDetails(null); setReview({ key: detailsItem.key, decision: 'Approved' }) } : undefined} onOpenPartner={detailsItem.partnerId ? () => { setDetails(null); open(`/admin/partners/${detailsItem.partnerId}`) } : undefined} />}
   </>

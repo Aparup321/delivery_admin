@@ -12,6 +12,18 @@ export function isLivePartnerApproved(record: PartnerAppRecord | undefined) {
   return ['active', 'approved'].includes((record.status ?? '').trim().toLowerCase())
 }
 
+/**
+ * delivery_app onboarding collects a city but no separate service-area list.
+ * Use the submitted city as the service area so KYC Review shows the same
+ * value before approval that the new partner record uses after approval.
+ */
+export function liveServiceAreas(record: PartnerAppRecord | undefined) {
+  if (!record) return []
+  if (record.serviceAreas.length) return [...record.serviceAreas]
+  const city = typeof record.fields.city === 'string' ? record.fields.city.trim() : ''
+  return city ? [city] : []
+}
+
 export interface EligibilityResult {
   eligible: boolean
   reasons: string[]
