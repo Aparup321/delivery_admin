@@ -2,16 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDemoState } from '../src/domain/seed.ts'
 import { getPartnerEligibility, hasPartnerAccepted, nextPartnerId, vehicleCanCarry } from '../src/domain/operations.ts'
-import { buildKycQueue, liveApplicationStatus } from '../src/domain/kyc.ts'
+import { buildKycQueue, liveApplicationStatus, liveDocumentsBlocked, partnerVerification } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
-import { normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
+import { normalizePartnerAppDocuments, normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { clearDemoLocalWorkflow, hasDemoLocalWorkflow, markDemoLocalWorkflow, mergeSharedPayload, toSharedPayload } from '../src/services/sharedState.ts'
 import { isQuotaError, nextQuotaResetAt, quotaMessage } from '../src/services/firestoreQuota.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
-import type { AdminSection, PartnerAppConfig, Permission } from '../src/domain/model.ts'
+import type { AdminSection, PartnerAppConfig, PartnerAppDocument, PartnerAppRecord, PartnerDocumentReview, Permission } from '../src/domain/model.ts'
 import { DEFAULT_ADMIN_EMAIL, DEMO_RESTRICTED_ADMIN_EMAIL } from '../src/domain/admin.ts'
 import { clearAdminSession, createAdminSession, createDemoAdminSession, DEMO_OTP_CODE, isDemoOtpValid, readAdminSession, readDemoAdminSession, storeDemoAdminSession } from '../src/auth/adminSession.ts'
 import { clearFirebaseAdminSession, readFirebaseAdminSession, storeFirebaseAdminSession, type FirebaseAdminSession } from '../src/services/firebaseAuth.ts'
@@ -674,6 +674,158 @@ test('the KYC queue unifies local applications with synced delivery_app onboardi
   assert.equal(approvedMatches.length, 1)
   assert.equal(approvedMatches[0].source, 'admin')
   assert.equal(approvedMatches[0].status, 'Approved')
+})
+
+test('delivery_app document numbers are visible even when no file was uploaded', () => {
+  const syncedAt = '2026-11-26T08:00:00.000Z'
+  const documents = normalizePartnerAppDocuments({
+    documents: [{
+      name: 'projects/delivery-app/databases/(default)/documents/partner_documents/live-kyc-uid',
+      fields: {
+        documentNumbers: {
+          mapValue: {
+            fields: {
+              aadhaar: { stringValue: '123412341234' },
+              pan: { stringValue: 'ABCDE1234F' },
+              licence: { stringValue: 'WB-1234567890' },
+            },
+          },
+        },
+        documents: {
+          mapValue: {
+            fields: {
+              aadhaar: { nullValue: null },
+              pan: { mapValue: { fields: { fileName: { stringValue: 'pan.png' } } } },
+            },
+          },
+        },
+        adminDocuments: {
+          mapValue: {
+            fields: {
+              aadhaar: { mapValue: { fields: { status: { stringValue: 'Verified' }, reviewedBy: { stringValue: 'Operations Administrator' } } } },
+            },
+          },
+        },
+      },
+    }],
+  }, syncedAt)
+  assert.equal(documents.length, 1)
+  const aadhaar = documents[0].files.find((file) => file.key === 'aadhaar')!
+  assert.equal(aadhaar.fileName, null)
+  assert.equal(aadhaar.documentNumber, '123412341234')
+  assert.equal(aadhaar.review?.status, 'Verified')
+  assert.equal(aadhaar.review?.reviewedBy, 'Operations Administrator')
+  const pan = documents[0].files.find((file) => file.key === 'pan')!
+  assert.equal(pan.fileName, 'pan.png')
+  assert.equal(pan.documentNumber, 'ABCDE1234F')
+  // The full checklist is present even when delivery_app omitted a key.
+  assert.ok(documents[0].files.some((file) => file.key === 'registration'))
+  assert.ok(documents[0].files.some((file) => file.key === 'passbook'))
+})
+
+test('live KYC approval is gated by submitted numbers, not only file uploads', () => {
+  const reviewed = (status: 'Verified' | 'Rejected' = 'Verified'): PartnerDocumentReview => ({
+    status,
+    expiresAt: null,
+    note: null,
+    reviewedBy: 'Operations Administrator',
+    reviewedAt: '2026-11-26T08:00:00.000Z',
+  })
+  const record: PartnerAppRecord = {
+    id: 'live-kyc-uid', partnerId: null, name: 'Aparup nomad', phone: null, email: null,
+    vehicle: 'Bicycle', status: 'pending', applicationStatus: 'submitted', isOnline: false,
+    serviceAreas: [], updatedAt: '2026-11-26T07:30:00.000Z', fields: {},
+    syncedAt: '2026-11-26T08:00:00.000Z',
+  }
+  const documents = (review: PartnerDocumentReview | null, aadhaarNumber = '123412341234'): PartnerAppDocument => ({
+    id: record.id,
+    updatedAt: '2026-11-26T07:30:00.000Z',
+    syncedAt: '2026-11-26T08:00:00.000Z',
+    files: [
+      { key: 'aadhaar', fileName: null, documentNumber: aadhaarNumber, downloadUrl: null, uploadedAt: null, review },
+      { key: 'pan', fileName: null, documentNumber: 'ABCDE1234F', downloadUrl: null, uploadedAt: null, review: null },
+    ],
+  })
+
+  assert.equal(liveDocumentsBlocked(record, documents(reviewed())), null)
+  // A typed number is enough to approve; individual review can follow later.
+  assert.equal(liveDocumentsBlocked(record, documents(null)), null)
+  assert.match(liveDocumentsBlocked(record, documents(reviewed(), '')) ?? '', /has not been submitted/)
+  assert.match(liveDocumentsBlocked(record, documents(reviewed('Rejected'))) ?? '', /was rejected/)
+  assert.equal(liveDocumentsBlocked(record, undefined), 'No partner_documents record has been synced. Sync partner data before approving.')
+
+  // The RC and licence numbers live on the delivery_app vehicles document.
+  const bikeRecord: PartnerAppRecord = {
+    ...record,
+    vehicle: 'Bike',
+    fields: { vehicleRegistrationNumber: 'WB02AB1234', vehicleLicenceNumber: 'WB-9999999' },
+  }
+  const bikeDocuments: PartnerAppDocument = {
+    ...documents(reviewed()),
+    files: [
+      { key: 'aadhaar', fileName: null, documentNumber: '123412341234', downloadUrl: null, uploadedAt: null, review: reviewed() },
+      { key: 'licence', fileName: null, documentNumber: null, downloadUrl: null, uploadedAt: null, review: reviewed() },
+      { key: 'registration', fileName: null, documentNumber: null, downloadUrl: null, uploadedAt: null, review: reviewed() },
+    ],
+  }
+  assert.equal(liveDocumentsBlocked(bikeRecord, bikeDocuments), null)
+})
+
+test('directory verification follows the linked KYC decision instead of local document rows', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners[0]
+  partner.partnerAppUid = 'live-verify-uid'
+  frame.data.documents = frame.data.documents.filter((document) => document.partnerId !== partner.id)
+  const base: PartnerAppRecord = {
+    id: 'live-verify-uid', partnerId: null, name: 'Live Partner', phone: null, email: null,
+    vehicle: 'Bike', status: 'active', applicationStatus: 'approved', isOnline: false,
+    serviceAreas: [], updatedAt: '2026-11-26T08:00:00.000Z', fields: {},
+    syncedAt: '2026-11-26T08:00:00.000Z',
+  }
+  frame.data.partnerAppRecords = [base]
+  assert.equal(partnerVerification(frame.data, partner), 'Verified')
+  frame.data.partnerAppRecords = [{ ...base, applicationStatus: 'submitted', status: 'pending' }]
+  assert.equal(partnerVerification(frame.data, partner), 'Under Review')
+  frame.data.partnerAppDocuments = [{ id: base.id, updatedAt: null, syncedAt: base.syncedAt, files: [] }]
+  assert.equal(partnerVerification(frame.data, partner), 'Incomplete')
+  frame.data.partnerAppDocuments = [{
+    id: base.id, updatedAt: null, syncedAt: base.syncedAt,
+    files: [{ key: 'aadhaar', fileName: null, documentNumber: '123412341234', downloadUrl: null, uploadedAt: null, review: { status: 'Rejected', expiresAt: null, note: null, reviewedBy: 'Operations Administrator', reviewedAt: '2026-11-26T08:00:00.000Z' } }],
+  }]
+  assert.equal(partnerVerification(frame.data, partner), 'Attention Required')
+  frame.data.partnerAppDocuments = []
+  frame.data.partnerAppRecords = [{ ...base, applicationStatus: 'rejected', status: 'pending' }]
+  assert.equal(partnerVerification(frame.data, partner), 'Attention Required')
+})
+
+test('partner sync merges vehicle numbers without overwriting partner fields', () => {
+  const records = normalizePartnerAppRecords({
+    documents: [{
+      name: 'projects/delivery-app/databases/(default)/documents/partners/p-1',
+      fields: {
+        fullName: { stringValue: 'Rahul Test' },
+        partnerId: { stringValue: 'p-1' },
+        vehicleType: { stringValue: 'bike' },
+      },
+    }],
+  }, '2026-11-26T08:00:00.000Z', {
+    documents: [{
+      name: 'projects/delivery-app/databases/(default)/documents/vehicles/p-1',
+      fields: {
+        model: { stringValue: 'Hero Lectro' },
+        colour: { stringValue: 'Black' },
+        registrationNumber: { stringValue: 'WB02AB1234' },
+        licenceNumber: { stringValue: 'WB-9999999' },
+        type: { stringValue: 'bike' },
+      },
+    }],
+  })
+  assert.equal(records.length, 1)
+  assert.equal(records[0].fields.vehicleRegistrationNumber, 'WB02AB1234')
+  assert.equal(records[0].fields.vehicleLicenceNumber, 'WB-9999999')
+  assert.equal(records[0].fields['vehicle.model'], 'Hero Lectro')
+  assert.equal(records[0].fields.vehicleType, 'bike')
+  assert.equal(records[0].vehicle, 'bike')
 })
 
 test('a rejected live application becomes reviewable again after delivery_app resubmits', () => {
@@ -1709,7 +1861,10 @@ test('support ticket and live document reviews update the synced admin records',
     }],
     documents: [{
       id: 'live-rider-2', updatedAt: '2026-11-22T08:30:00.000Z', syncedAt: '2026-11-22T09:00:00.000Z',
-      files: [{ key: 'licence', fileName: 'licence.jpg', downloadUrl: 'https://example.test/licence.jpg', uploadedAt: '2026-11-22T08:30:00.000Z', review: null }],
+      files: [
+        { key: 'licence', fileName: 'licence.jpg', documentNumber: null, downloadUrl: 'https://example.test/licence.jpg', uploadedAt: '2026-11-22T08:30:00.000Z', review: null },
+        { key: 'registration', fileName: null, documentNumber: 'WB02AB1234', downloadUrl: null, uploadedAt: null, review: null },
+      ],
     }],
   })
   expectSuccess(frame)
@@ -1722,6 +1877,13 @@ test('support ticket and live document reviews update the synced admin records',
   })
   expectSuccess(reviewed)
   assert.equal(reviewed.data.partnerAppDocuments[0].files[0].review?.status, 'Verified')
+
+  const numberReviewed = apply(reviewed, {
+    type: 'partnerApp.document-review', uid: 'live-rider-2', documentKey: 'registration', at: '2026-11-22T09:05:30.000Z',
+    review: { status: 'Verified', expiresAt: null, note: 'RC number checked', reviewedBy: 'Operations Administrator', reviewedAt: '2026-11-22T09:05:30.000Z' },
+  })
+  expectSuccess(numberReviewed)
+  assert.equal(numberReviewed.data.partnerAppDocuments[0].files.find((file) => file.key === 'registration')?.review?.status, 'Verified')
 
   const resolved = apply(reviewed, { type: 'partnerApp.ticket-status', ticketId: 'ticket-live-1', status: 'Resolved', at: '2026-11-22T09:06:00.000Z' })
   expectSuccess(resolved)

@@ -236,6 +236,8 @@ export interface PartnerDocumentReview {
 export interface PartnerAppDocumentFile {
   key: string
   fileName: string | null
+  /** Number typed during onboarding (Aadhaar, PAN, licence, registration, or any newer key). */
+  documentNumber: string | null
   downloadUrl: string | null
   uploadedAt: string | null
   review: PartnerDocumentReview | null

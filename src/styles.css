@@ -620,6 +620,7 @@ a { color: inherit; }
 .document-panel { overflow: hidden; }
 .inline-filter select { height: 28px; padding: 0 7px; color: #625d6b; background: #fff; border: 1px solid #e6e2ed; border-radius: 4px; font-size: 8px; }
 .document-list { padding: 0 13px; }
+.document-source-label { padding: 10px 14px 2px; color: #8b8494; font-size: 8px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase; }
 .document-row { display: grid; grid-template-columns: 29px minmax(130px, 1.2fr) minmax(90px, .9fr) minmax(85px, .75fr) auto; align-items: center; gap: 9px; min-height: 68px; border-bottom: 1px solid #f0eef3; }
 .document-row:last-child { border-bottom: 0; }
 .document-icon { display: grid; place-items: center; width: 28px; height: 28px; color: #817892; background: #f2f0f5; border-radius: 6px; }
@@ -1404,6 +1405,7 @@ a { color: inherit; }
 .live-document-main > span { display: grid; gap: 3px; min-width: 0; }
 .live-document-main strong { color: #4c4655; font-size: 9px; }
 .live-document-main small { overflow: hidden; color: #6b6573; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.live-document-main small.document-number { color: #4f4960; font-weight: 600; white-space: normal; }
 .live-document-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; }
 .live-document-meta a { color: #6341a4; font-size: 8px; font-weight: 650; }
 .live-document-meta small { font-size: 8px; }

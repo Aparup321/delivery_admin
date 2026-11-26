@@ -121,7 +121,14 @@ function normalizeSavedState(parsed: OperationsState): OperationsState {
             : null,
     })),
     partnerAppTickets: Array.isArray(parsed.partnerAppTickets) ? parsed.partnerAppTickets : [],
-    partnerAppDocuments: Array.isArray(parsed.partnerAppDocuments) ? parsed.partnerAppDocuments : [],
+    partnerAppDocuments: Array.isArray(parsed.partnerAppDocuments)
+      ? parsed.partnerAppDocuments.map((document) => ({
+          ...document,
+          files: Array.isArray(document.files)
+            ? document.files.map((file) => ({ ...file, documentNumber: file.documentNumber ?? null }))
+            : [],
+        }))
+      : [],
   }
 }
 

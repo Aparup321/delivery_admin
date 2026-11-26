@@ -1,13 +1,131 @@
 import { demoModeEnabled } from '../config/firebase.ts'
+import { isDocumentCurrent, isLivePartnerApproved } from './operations.ts'
 import type {
+  DocumentStatus,
   DocumentType,
   OperationsState,
   Partner,
-  PartnerApplication,
+  PartnerAppDocument,
+  PartnerAppDocumentFile,
   PartnerAppRecord,
+  PartnerApplication,
+  PartnerDocument,
 } from './model.ts'
 
 export type KycDecisionStatus = 'KYC pending' | 'Submitted' | 'Approved' | 'Rejected'
+export type PartnerVerificationStatus = 'Verified' | 'Incomplete' | 'Under Review' | 'Attention Required'
+
+export const kycDocumentLabels: Record<string, string> = {
+  aadhaar: 'Aadhaar card',
+  pan: 'PAN card',
+  licence: 'Driving licence',
+  dl: 'Driving licence',
+  registration: 'Vehicle registration',
+  rc: 'Vehicle registration',
+  passbook: 'Bank passbook',
+  voter: 'Voter ID',
+  voterId: 'Voter ID',
+}
+
+export function documentLabel(key: string) {
+  return kycDocumentLabels[key] ?? key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+/** Aadhaar numbers read better in the 4-4-4 grouping printed on the card. */
+export function formatDocumentNumber(key: string, value: string) {
+  const trimmed = value.trim()
+  if (key === 'aadhaar' && /^\d{12}$/.test(trimmed)) return trimmed.replace(/(\d{4})(\d{4})(\d{4})/, '$1 $2 $3')
+  if (key === 'pan') return trimmed.toUpperCase()
+  return trimmed
+}
+
+export function requiredLiveDocumentKeys(vehicle: string): string[] {
+  const normalized = vehicle.toLowerCase()
+  if (normalized.includes('bicycle') || normalized.includes('foot') || normalized.includes('walk')) return ['aadhaar']
+  return ['aadhaar', 'licence', 'registration']
+}
+
+function liveVehicleNumber(record: PartnerAppRecord | undefined, key: 'registration' | 'licence') {
+  if (!record) return null
+  const aliases = key === 'registration'
+    ? ['vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber']
+    : ['vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber']
+  for (const alias of aliases) {
+    const value = record.fields[alias]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return null
+}
+
+/**
+ * Number for a document, falling back to the vehicle record. delivery_app
+ * stores the RC and licence numbers on `vehicles`, not `partner_documents`.
+ */
+export function partnerDocumentNumber(file: PartnerAppDocumentFile | undefined, record?: PartnerAppRecord) {
+  if (file?.documentNumber?.trim()) return file.documentNumber.trim()
+  if (!file) return null
+  if (file.key === 'registration') return liveVehicleNumber(record, 'registration')
+  if (file.key === 'licence') return liveVehicleNumber(record, 'licence')
+  return null
+}
+
+export function submittedLiveDocumentKeys(documents: PartnerAppDocument | undefined, record?: PartnerAppRecord) {
+  if (!documents) return []
+  return documents.files
+    .filter((file) => Boolean(file.fileName || partnerDocumentNumber(file, record)))
+    .map((file) => file.key)
+}
+
+/**
+ * Blocks approval only when a mandatory document was never submitted, was
+ * rejected, or expired. A typed document number counts as submitted even when
+ * delivery_app had no file to upload. Individual document review remains
+ * available in the Details dialog, but approving the application is itself the
+ * KYC decision and must not be held back by an unreviewed number.
+ */
+export function liveDocumentsBlocked(record: PartnerAppRecord | undefined, documents: PartnerAppDocument | undefined) {
+  if (!record) return 'No delivery_app application record was found.'
+  if (!documents) return 'No partner_documents record has been synced. Sync partner data before approving.'
+  for (const key of requiredLiveDocumentKeys(record.vehicle ?? '')) {
+    const file = documents.files.find((item) => item.key === key)
+    const number = partnerDocumentNumber(file, record)
+    if (!file?.fileName && !number) return `${documentLabel(key)} has not been submitted.`
+    if (file?.review?.status === 'Rejected') return `${documentLabel(key)} was rejected.`
+    if (file?.review?.expiresAt && new Date(file.review.expiresAt).getTime() <= Date.now()) return `${documentLabel(key)} has expired.`
+  }
+  return null
+}
+
+export function displayedDocumentStatus(document: PartnerDocument): DocumentStatus {
+  if (document.status === 'Verified' && document.expiresAt && new Date(document.expiresAt).getTime() <= Date.now()) return 'Expired'
+  return document.status
+}
+
+/**
+ * Directory verification state. A delivery_app account approved through KYC is
+ * verified even though the admin record has no separate local document rows.
+ */
+export function partnerVerification(data: OperationsState, partner: Partner): PartnerVerificationStatus {
+  const liveRecord = partner.partnerAppUid
+    ? data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)
+    : undefined
+  if (isLivePartnerApproved(liveRecord)) return 'Verified'
+  const liveStatus = liveApplicationStatus(liveRecord?.applicationStatus)
+  if (liveStatus === 'Rejected') return 'Attention Required'
+  if (liveStatus === 'Submitted') {
+    const liveDocuments = data.partnerAppDocuments.find((document) => document.id === liveRecord!.id)
+    if (!liveDocuments) return 'Under Review'
+    const blocked = liveDocumentsBlocked(liveRecord, liveDocuments)
+    if (!blocked) return 'Under Review'
+    if (blocked.includes('has not been submitted')) return 'Incomplete'
+    return 'Attention Required'
+  }
+  const mandatory = data.settings.requiredDocuments.map((type) => data.documents.find((document) => document.partnerId === partner.id && document.type === type))
+  if (mandatory.every((document) => document && isDocumentCurrent(document))) return 'Verified'
+  if (mandatory.some((document) => document && ['Rejected', 'Expired'].includes(displayedDocumentStatus(document)))) return 'Attention Required'
+  if (mandatory.some((document) => document && ['Under Review', 'Submitted'].includes(displayedDocumentStatus(document)))) return 'Under Review'
+  return 'Incomplete'
+}
 
 /**
  * One row in the KYC Review queue. Admin applications and live delivery_app

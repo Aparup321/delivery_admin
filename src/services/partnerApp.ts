@@ -348,7 +348,44 @@ function fromFirestoreDocument(document: unknown, syncedAt: string): PartnerAppR
   return toPartnerAppRecord(fields, id, typeof document.updateTime === 'string' ? document.updateTime : null, syncedAt)
 }
 
-export function normalizePartnerAppRecords(payload: unknown, syncedAt: string): PartnerAppRecord[] {
+function vehicleFieldsById(payload: unknown): Map<string, Record<string, unknown>> {
+  const vehicles = new Map<string, Record<string, unknown>>()
+  if (!isRecord(payload) || !Array.isArray(payload.documents)) return vehicles
+  for (const document of payload.documents) {
+    if (!isRecord(document) || typeof document.name !== 'string' || !isRecord(document.fields)) continue
+    const id = document.name.split('/').pop()
+    if (id) vehicles.set(id, decodeFirestoreFields(document.fields))
+  }
+  return vehicles
+}
+
+/** Adds the delivery_app vehicle document to a partner record without overwriting partner fields. */
+function withVehicleFields(record: PartnerAppRecord, vehicle: Record<string, unknown> | undefined): PartnerAppRecord {
+  if (!vehicle) return record
+  const flat = flattenFields(vehicle)
+  const additions: Record<string, string> = {}
+  const aliases: Array<[target: string, source: string]> = [
+    ['vehicleModel', 'model'],
+    ['vehicleColour', 'colour'],
+    ['vehicleRegistrationNumber', 'registrationNumber'],
+    ['vehicleLicenceNumber', 'licenceNumber'],
+    ['vehicleType', 'type'],
+  ]
+  for (const [target, source] of aliases) {
+    if (!record.fields[target] && flat[source]) additions[target] = flat[source]
+  }
+  // The partner profile reads nested live fields as dotted keys.
+  for (const [key, value] of Object.entries(flat)) {
+    if (!record.fields[`vehicle.${key}`]) additions[`vehicle.${key}`] = value
+  }
+  return {
+    ...record,
+    vehicle: record.vehicle ?? flat.type ?? null,
+    fields: { ...record.fields, ...additions },
+  }
+}
+
+export function normalizePartnerAppRecords(payload: unknown, syncedAt: string, vehiclesPayload?: unknown): PartnerAppRecord[] {
   const records: PartnerAppRecord[] = []
   if (isRecord(payload) && Array.isArray(payload.documents)) {
     for (const document of payload.documents) {
@@ -379,7 +416,8 @@ export function normalizePartnerAppRecords(payload: unknown, syncedAt: string): 
   }
   const unique = new Map<string, PartnerAppRecord>()
   for (const record of records) unique.set(record.id, record)
-  return [...unique.values()]
+  const vehicles = vehicleFieldsById(vehiclesPayload)
+  return [...unique.values()].map((record) => withVehicleFields(record, vehicles.get(record.id)))
 }
 
 export async function testPartnerAppConnection(config: PartnerAppConfig, token: string) {
@@ -392,8 +430,16 @@ export async function testPartnerAppConnection(config: PartnerAppConfig, token: 
 }
 
 export async function syncPartnerAppRecords(config: PartnerAppConfig, token: string) {
-  const payload = await requestPartnerApp(config, token, 300)
-  return normalizePartnerAppRecords(payload, new Date().toISOString())
+  const [payload, vehiclesPayload] = await Promise.all([
+    requestPartnerApp(config, token, 300),
+    config.mode === 'firestore'
+      // Vehicle documents are optional for older accounts and may not be
+      // covered by a deployed rules version. A missing vehicles collection must
+      // never block the partner sync.
+      ? requestFirestoreCollection(config, token, 'vehicles').catch(() => null)
+      : Promise.resolve(null),
+  ])
+  return normalizePartnerAppRecords(payload, new Date().toISOString(), vehiclesPayload)
 }
 
 function decodeTicketDocument(document: unknown, syncedAt: string): PartnerAppTicket | null {
@@ -441,11 +487,19 @@ function decodeDocumentFiles(document: unknown, syncedAt: string): PartnerAppDoc
   const fields = decodeFirestoreFields(document.fields)
   const rawDocuments = isRecord(fields.documents) ? fields.documents : {}
   const rawReviews = isRecord(fields.adminDocuments) ? fields.adminDocuments : {}
-  const files: PartnerAppDocumentFile[] = Object.entries(rawDocuments).map(([key, value]) => {
-    const record = isRecord(value) ? value : {}
+  const rawNumbers = isRecord(fields.documentNumbers) ? fields.documentNumbers : {}
+  // delivery_app may submit a document number without a file (files are
+  // optional), and an administrator may review a number before any file
+  // exists. Keep every known key so the review queue always shows the full
+  // KYC checklist instead of only the keys that happen to have uploads.
+  const knownKeys = ['aadhaar', 'pan', 'licence', 'registration', 'passbook']
+  const keys = [...new Set([...knownKeys, ...Object.keys(rawDocuments), ...Object.keys(rawReviews), ...Object.keys(rawNumbers)])]
+  const files: PartnerAppDocumentFile[] = keys.map((key) => {
+    const record = isRecord(rawDocuments[key]) ? rawDocuments[key] : {}
     return {
       key,
       fileName: asString(record.fileName),
+      documentNumber: asString(rawNumbers[key]),
       downloadUrl: asString(record.downloadUrl),
       uploadedAt: asString(record.uploadedAt),
       review: decodeDocumentReview(rawReviews[key]),
@@ -459,12 +513,15 @@ function decodeDocumentFiles(document: unknown, syncedAt: string): PartnerAppDoc
   }
 }
 
-export async function syncPartnerAppDocuments(config: PartnerAppConfig, token: string): Promise<PartnerAppDocument[]> {
-  if (config.mode !== 'firestore') return []
-  const syncedAt = new Date().toISOString()
-  const payload = await requestFirestoreCollection(config, token, 'partner_documents')
+export function normalizePartnerAppDocuments(payload: unknown, syncedAt: string): PartnerAppDocument[] {
   const documents = isRecord(payload) && Array.isArray(payload.documents) ? payload.documents : []
   return documents.map((document) => decodeDocumentFiles(document, syncedAt)).filter((record): record is PartnerAppDocument => Boolean(record))
+}
+
+export async function syncPartnerAppDocuments(config: PartnerAppConfig, token: string): Promise<PartnerAppDocument[]> {
+  if (config.mode !== 'firestore') return []
+  const payload = await requestFirestoreCollection(config, token, 'partner_documents')
+  return normalizePartnerAppDocuments(payload, new Date().toISOString())
 }
 
 async function patchFirestoreDocument(

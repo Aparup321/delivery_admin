@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { DocumentStatus, OperationsState, Partner, PartnerAppRecord, PartnerDocument } from '../domain/model'
 import { getActiveAssignment, getPartnerEligibility, isDocumentCurrent } from '../domain/operations'
+import {
+  displayedDocumentStatus,
+  documentLabel,
+  formatDocumentNumber,
+  partnerDocumentNumber,
+  partnerVerification,
+  requiredLiveDocumentKeys,
+  submittedLiveDocumentKeys,
+} from '../domain/kyc'
 import { Button, ConfirmDialog, Dialog, EmptyState, formatDate, Icon, initials, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { SuspendPartnerDialog } from '../components/SuspendPartnerDialog'
 import { formatSuspensionEnd, suspensionTimeline } from '../domain/suspension'
@@ -20,30 +29,9 @@ interface DirectoryProps {
   viewFromUrl?: string
 }
 
-function displayedDocumentStatus(document: PartnerDocument): DocumentStatus {
-  if (document.status === 'Verified' && document.expiresAt && new Date(document.expiresAt).getTime() <= Date.now()) return 'Expired'
-  return document.status
-}
-
-function partnerVerification(data: OperationsState, partner: Partner) {
-  const mandatory = data.settings.requiredDocuments.map((type) => data.documents.find((document) => document.partnerId === partner.id && document.type === type))
-  if (mandatory.every((document) => document && isDocumentCurrent(document))) return 'Verified'
-  if (mandatory.some((document) => document && ['Rejected', 'Expired'].includes(displayedDocumentStatus(document)))) return 'Attention Required'
-  if (mandatory.some((document) => document && ['Under Review', 'Submitted'].includes(displayedDocumentStatus(document)))) return 'Under Review'
-  return 'Incomplete'
-}
-
 function PartnerSectionTabs({ active, data, open }: { active: PartnersSection; data: OperationsState; open: (path: string) => void }) {
   const expiringCount = data.documents.filter((document) => document.expiresAt && new Date(document.expiresAt).getTime() <= Date.now() + 30 * 24 * 60 * 60_000).length
-  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>All partners<span>{data.partners.length}</span></button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'new' ? 'active' : ''} onClick={() => open('/admin/partners?view=new')}>Create partner</button><button className={active === 'expiring' ? 'active' : ''} onClick={() => open('/admin/partners?view=expiring')}>Expiring documents<span>{expiringCount}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
-}
-
-const liveDocumentLabels: Record<string, string> = {
-  aadhaar: 'Aadhaar card',
-  pan: 'PAN card',
-  licence: 'Driving licence',
-  registration: 'Vehicle registration',
-  passbook: 'Bank passbook',
+  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>All partners<span>{data.partners.length}</span></button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'expiring' ? 'active' : ''} onClick={() => open('/admin/partners?view=expiring')}>Expiring documents<span>{expiringCount}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
 }
 
 interface ExpiringDocumentRow {
@@ -86,7 +74,7 @@ function ExpiringDocumentsPage({ data, open }: { data: OperationsState; open: (p
         key: `${document.id}:${file.key}`,
         partnerId: partner?.id ?? null,
         partnerName: partner?.name ?? document.id,
-        label: liveDocumentLabels[file.key] ?? file.key,
+        label: documentLabel(file.key),
         reference: file.fileName ?? 'delivery_app document',
         status: file.review.status,
         expiresAt: file.review.expiresAt,
@@ -369,7 +357,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
 
-  if (view === 'new') return <div className="page-stack"><PartnerSectionTabs active="new" data={data} open={open} /><PartnerCreatePage data={data} open={open} /></div>
+  if (view === 'new') return <div className="page-stack"><div className="row-action-group"><Button size="small" onClick={() => open('/admin/partners')}><Icon name="arrow" size={14} className="icon-flip" />Back to partners</Button></div><PartnerCreatePage data={data} open={open} /></div>
   if (view === 'app') return <div className="page-stack"><PartnerSectionTabs active="app" data={data} open={open} /><PartnerAppDataPage data={data} open={open} /></div>
   if (view === 'activity') return <div className="page-stack"><PartnerSectionTabs active="activity" data={data} open={open} /><PartnerActivityPage data={data} open={open} /></div>
   if (view === 'expiring') return <div className="page-stack"><PartnerSectionTabs active="expiring" data={data} open={open} /><ExpiringDocumentsPage data={data} open={open} /></div>
@@ -451,7 +439,6 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
     : undefined
   const liveFields = liveRecord?.fields ?? {}
   const liveValue = (...keys: string[]) => keys.map((key) => liveFields[key]).find((value) => value?.trim()) ?? null
-  const visibleLiveFields = Object.entries(liveFields).filter(([key, value]) => value.trim() && !/token|password|secret/i.test(key))
   const [dialog, setDialog] = useState<'restrict' | 'suspend' | 'restore' | 'availability' | null>(null)
   const [documentId, setDocumentId] = useState<string | null>(initialDocumentId ?? null)
   const [documentFilter, setDocumentFilter] = useState('All')
@@ -459,17 +446,44 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
   if (!partner) return <EmptyState title="Partner not found" detail="This partner record may have been removed from local data." action={<Button onClick={() => open('/admin/partners')}>Back to partner directory</Button>} />
 
   const docs = data.documents.filter((document) => document.partnerId === partner.id)
+  const liveDocumentRecord = partner.partnerAppUid
+    ? data.partnerAppDocuments.find((document) => document.id === partner.partnerAppUid)
+    : undefined
+  const submittedLiveDocs = liveDocumentRecord
+    ? liveDocumentRecord.files.filter((file) => Boolean(file.fileName || partnerDocumentNumber(file, liveRecord)))
+    : []
+  const liveSubmittedKeys = submittedLiveDocumentKeys(liveDocumentRecord, liveRecord)
+  const missingLiveKeys = requiredLiveDocumentKeys(liveRecord?.vehicle ?? partner.vehicle)
+    .filter((key) => !liveSubmittedKeys.includes(key))
   const filteredDocs = docs.filter((document) => documentFilter === 'All' || displayedDocumentStatus(document) === documentFilter)
   const assignments = data.assignments.filter((assignment) => assignment.partnerId === partner.id).sort((a, b) => b.assignedAt.localeCompare(a.assignedAt))
   const active = getActiveAssignment(data, partner.id)
   const activeDelivery = active ? data.deliveries.find((delivery) => delivery.id === active.deliveryId) : undefined
   const history = data.partnerHistory.filter((event) => event.partnerId === partner.id).slice(0, 10)
   const verification = partnerVerification(data, partner)
-  const liveApplicationApproved = liveRecord?.applicationStatus?.trim().toLowerCase() === 'approved'
+  const liveApplicationApproved = Boolean(liveRecord) && verification === 'Verified'
   const canManage = userCan(frame.data.user, 'partner-management')
   const canReviewDocuments = userCan(frame.data.user, 'document-review')
   const document = documentId ? docs.find((item) => item.id === documentId) : undefined
+  // The primary grid already shows these values; keeping them out of the
+  // additional-fields grid avoids the duplicate profile sections.
+  const primaryFieldKeys = new Set([
+    'partnerId', 'fullName', 'name', 'phone', 'email',
+    'vehicleType', 'type', 'model', 'colour', 'registrationNumber', 'licenceNumber',
+    'vehicleModel', 'vehicleColour', 'vehicleRegistrationNumber', 'vehicleLicenceNumber',
+    'addressLine', 'address', 'fullAddress', 'city', 'pincode', 'postalCode',
+    'applicationStatus', 'status', 'availability', 'isOnline', 'lastSeen', 'lastSignInAt',
+    'updatedAt', 'submittedAt', 'statusUpdatedAt', 'joinedOn', 'rating',
+    'profilePhotoUrl', 'profilePhotoPath', 'lastLocation', 'lastLocationUpdatedAt',
+  ])
+  const additionalLiveFields = Object.entries(liveFields).filter(([key, value]) =>
+    value.trim()
+    && !/token|password|secret/i.test(key)
+    && !primaryFieldKeys.has(key)
+    && !key.startsWith('vehicle.'),
+  )
   const expiringDocs = docs.filter((item) => item.expiresAt && new Date(item.expiresAt).getTime() > Date.now() && new Date(item.expiresAt).getTime() < Date.now() + 30 * 24 * 60 * 60_000)
+  const expiringLiveDocs = (liveDocumentRecord?.files ?? []).filter((file) => file.review?.expiresAt && new Date(file.review.expiresAt).getTime() > Date.now() && new Date(file.review.expiresAt).getTime() < Date.now() + 30 * 24 * 60 * 60_000)
   const suspensionWindow = suspensionTimeline(partner.suspensionDays, partner.suspendedUntil)
 
   return <div className="page-stack partner-profile-page">
@@ -479,21 +493,51 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
     </Panel>
 
     {(partner.availability === 'Restricted' || partner.availability === 'Suspended') && <div className="exception-banner"><Icon name="shield" size={17} /><div><strong>Partner is {partner.availability.toLowerCase()} and ineligible for new assignments</strong><span>{partner.restrictedReason ?? partner.suspendedReason}{suspensionWindow ? ` · ${suspensionWindow}` : ''}{partner.needsOperationalReview && activeDelivery ? ` · Existing ${activeDelivery.id} assignment needs operational review.` : ''}</span></div></div>}
-    {expiringDocs.length > 0 && <div className="soft-notice"><Icon name="clock" size={15} />{expiringDocs.length} document{expiringDocs.length === 1 ? '' : 's'} expire within 30 days.</div>}
+    {(expiringDocs.length > 0 || expiringLiveDocs.length > 0) && <div className="soft-notice"><Icon name="clock" size={15} />{expiringDocs.length + expiringLiveDocs.length} document{expiringDocs.length + expiringLiveDocs.length === 1 ? '' : 's'} expire within 30 days.</div>}
 
     <div className="profile-columns">
       <div className="profile-main-column">
         <Panel><PanelHeading title="Partner and vehicle" detail={liveRecord ? 'Live synchronized partner details' : 'Live partner details are not synchronized'} />
-          <div className="profile-data-grid"><div><span>Partner ID</span><strong>{partner.id}</strong></div><div><span>Firebase UID</span><strong>{liveRecord?.id ?? 'Not linked'}</strong></div><div><span>Phone</span><strong>{liveRecord?.phone ?? 'Not synchronized'}</strong></div><div><span>Email</span><strong>{liveRecord?.email ?? 'Not synchronized'}</strong></div><div><span>Vehicle</span><strong><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{liveValue('vehicleType', 'vehicle.type') ?? partner.vehicle}</strong></div><div><span>Model</span><strong>{liveValue('vehicleModel', 'vehicle.model', 'model') ?? 'Not provided'}</strong></div><div><span>Colour</span><strong>{liveValue('vehicleColour', 'vehicle.color', 'colour', 'color') ?? 'Not provided'}</strong></div><div><span>Registration number</span><strong>{liveValue('vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber') ?? 'Not provided'}</strong></div><div><span>Licence number</span><strong>{liveValue('vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber') ?? 'Not provided'}</strong></div><div><span>Address</span><strong>{liveValue('addressLine', 'address', 'fullAddress') ?? 'Not provided'}</strong></div><div><span>City / pincode</span><strong>{[liveValue('city'), liveValue('pincode', 'postalCode')].filter(Boolean).join(' / ') || 'Not provided'}</strong></div><div><span>Application status</span><strong>{liveRecord?.applicationStatus ?? 'Not synchronized'}</strong></div><div><span>Account status</span><strong>{liveRecord?.status ?? 'Not synchronized'}</strong></div><div><span>Verification</span><strong><StatusBadge status={verification} /></strong></div><div><span>Assignment eligibility</span><strong><StatusBadge status={partner.availability === 'Restricted' || partner.availability === 'Suspended' || (!liveApplicationApproved && verification !== 'Verified') || active ? 'Ineligible' : 'Eligible'} /></strong></div></div>
-          {liveRecord && visibleLiveFields.length > 0 && <div className="submitted-fields"><strong>All synchronized submitted fields</strong><div className="profile-data-grid">{visibleLiveFields.map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}</strong></div>)}</div></div>}
+          <div className="profile-data-grid"><div><span>Firebase UID</span><strong>{liveRecord?.id ?? 'Not linked'}</strong></div><div><span>Vehicle</span><strong><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{liveValue('vehicleType', 'vehicle.type') ?? partner.vehicle}</strong></div><div><span>Model</span><strong>{liveValue('vehicleModel', 'vehicle.model', 'model') ?? 'Not provided'}</strong></div><div><span>Colour</span><strong>{liveValue('vehicleColour', 'vehicle.color', 'colour', 'color') ?? 'Not provided'}</strong></div><div><span>Registration number</span><strong>{liveValue('vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber') ?? 'Not provided'}</strong></div><div><span>Licence number</span><strong>{liveValue('vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber') ?? 'Not provided'}</strong></div><div><span>Address</span><strong>{liveValue('addressLine', 'address', 'fullAddress') ?? 'Not provided'}</strong></div><div><span>City / pincode</span><strong>{[liveValue('city'), liveValue('pincode', 'postalCode')].filter(Boolean).join(' / ') || 'Not provided'}</strong></div><div><span>Application status</span><strong>{liveRecord?.applicationStatus ?? 'Not synchronized'}</strong></div><div><span>Account status</span><strong>{liveRecord?.status ?? 'Not synchronized'}</strong></div></div>
+          {liveRecord && additionalLiveFields.length > 0 && <div className="submitted-fields"><strong>Additional submitted information</strong><div className="profile-data-grid">{additionalLiveFields.map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}</strong></div>)}</div></div>}
           <div className="illustrative-note"><Icon name="shield" size={14} />Only authorized administrators can view these personal and document details. Security tokens and secrets are excluded.</div>
         </Panel>
 
-        <Panel className="document-panel"><PanelHeading title="Verification documents" detail="Individual illustrative records · mandatory documents must be valid" action={<label className="inline-filter"><span className="sr-only">Filter document status</span><select value={documentFilter} onChange={(event) => setDocumentFilter(event.target.value)}><option>All</option><option>Missing</option><option>Submitted</option><option>Under Review</option><option>Verified</option><option>Rejected</option><option>Expired</option></select></label>} />
-          <div className="document-list">{filteredDocs.map((item) => <div className="document-row" key={item.id}>
-            <span className={`document-icon document-${displayedDocumentStatus(item).toLowerCase().replace(' ', '-')}`}><Icon name="file" size={17} /></span><div className="document-main"><strong>{item.type}<small>{item.id} · {item.demoRecord ? 'Local record' : 'Record'}</small></strong><span>{item.submittedAt ? `Submitted ${formatDate(item.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' })}` : 'No submission on record'}</span></div><div className="document-status"><StatusBadge status={displayedDocumentStatus(item)} />{item.expiresAt && <small>Expires {formatDate(item.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}{item.rejectionReason && <small className="text-danger">{item.rejectionReason}</small>}</div><div className="document-review-meta"><span>Reviewer</span><strong>{item.reviewer ?? '—'}</strong><small>{item.history.length} review event{item.history.length === 1 ? '' : 's'}</small></div><Button size="small" disabled={!canReviewDocuments} onClick={() => setDocumentId(item.id)}>Review</Button>
-          </div>)}{filteredDocs.length === 0 && <EmptyState title="No documents in this filter" detail="Choose another document status." />}</div>
-          <p className="demo-disclaimer-small">Document review records are shown from the synchronized admin data source. File previews are unavailable when the partner app has not synchronized document metadata.</p>
+        <Panel className="document-panel">
+          <PanelHeading
+            title="KYC documents"
+            detail={liveDocumentRecord ? 'Submitted from delivery_app · reviewed in KYC Review' : 'Admin document records'}
+            action={docs.length > 0 ? <label className="inline-filter"><span className="sr-only">Filter document status</span><select value={documentFilter} onChange={(event) => setDocumentFilter(event.target.value)}><option>All</option><option>Missing</option><option>Submitted</option><option>Under Review</option><option>Verified</option><option>Rejected</option><option>Expired</option></select></label> : undefined}
+          />
+          {liveDocumentRecord && <>
+            <div className="document-source-label">delivery_app submissions</div>
+            <div className="document-list">{submittedLiveDocs.map((file) => {
+              const number = partnerDocumentNumber(file, liveRecord)
+              return <div className="document-row" key={`live-${file.key}`}>
+                <span className={`document-icon document-${(file.review?.status ?? 'under-review').toLowerCase()}`}><Icon name="file" size={17} /></span>
+                <div className="document-main">
+                  <strong>{documentLabel(file.key)}<small>{file.fileName ?? 'Number on record'}</small></strong>
+                  {number && <span>Number: {formatDocumentNumber(file.key, number)}</span>}
+                </div>
+                <div className="document-status">
+                  <StatusBadge status={file.review?.status ?? 'Under Review'} />
+                  {file.review?.expiresAt && <small>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
+                  {file.review?.note && <small>{file.review.note}</small>}
+                </div>
+                <div className="document-review-meta"><span>Reviewer</span><strong>{file.review?.reviewedBy ?? '—'}</strong><small>{file.review ? 'Reviewed' : 'Awaiting review'}</small></div>
+                {file.downloadUrl ? <a className="text-link" href={file.downloadUrl} target="_blank" rel="noreferrer">Open file <Icon name="external" size={13} /></a> : <Button size="small" variant="quiet" onClick={() => open('/admin/kyc')}>Review in KYC</Button>}
+              </div>
+            })}{submittedLiveDocs.length === 0 && <EmptyState title="No documents submitted" detail="delivery_app has not submitted file or number details for this account yet." />}</div>
+            {missingLiveKeys.length > 0 && <div className="soft-notice"><Icon name="alert" size={15} /><span>Missing required KYC: {missingLiveKeys.map(documentLabel).join(', ')}. Review and record these in KYC Review.</span></div>}
+          </>}
+          {docs.length > 0 && <>
+            {liveDocumentRecord && <div className="document-source-label">Admin document records</div>}
+            <div className="document-list">{filteredDocs.map((item) => <div className="document-row" key={item.id}>
+              <span className={`document-icon document-${displayedDocumentStatus(item).toLowerCase().replace(' ', '-')}`}><Icon name="file" size={17} /></span><div className="document-main"><strong>{item.type}<small>{item.id} · {item.demoRecord ? 'Local record' : 'Record'}</small></strong><span>{item.submittedAt ? `Submitted ${formatDate(item.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' })}` : 'No submission on record'}</span></div><div className="document-status"><StatusBadge status={displayedDocumentStatus(item)} />{item.expiresAt && <small>Expires {formatDate(item.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}{item.rejectionReason && <small className="text-danger">{item.rejectionReason}</small>}</div><div className="document-review-meta"><span>Reviewer</span><strong>{item.reviewer ?? '—'}</strong><small>{item.history.length} review event{item.history.length === 1 ? '' : 's'}</small></div><Button size="small" disabled={!canReviewDocuments} onClick={() => setDocumentId(item.id)}>Review</Button>
+            </div>)}{filteredDocs.length === 0 && <EmptyState title="No documents in this filter" detail="Choose another document status." />}</div>
+          </>}
+          {!liveDocumentRecord && docs.length === 0 && <EmptyState title="No KYC documents" detail="This partner has no local document records and is not linked to a delivery_app document record." />}
+          <p className="demo-disclaimer-small">Document numbers are shown from the synchronized delivery_app record. File previews are unavailable when the partner app has not uploaded a file.</p>
         </Panel>
 
         <Panel><PanelHeading title="Delivery history" detail={`${assignments.length} assignment record${assignments.length === 1 ? '' : 's'} · retained across reassignments`} />
@@ -510,7 +554,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
         </Panel>
 
         <Panel><PanelHeading title="Partner activity" detail="Recent recorded history" />{history.length ? <div className="partner-timeline">{history.map((event) => <div className="partner-timeline-item" key={event.id}><i /><div><strong>{event.type}</strong><span>{event.description}</span><small>{formatDate(event.at)} · {event.actor}</small></div></div>)}</div> : <p className="muted-copy">Partner actions will be recorded here.</p>}</Panel>
-        <Panel><PanelHeading title="Eligibility summary" /><div className="eligibility-summary"><div><span>Mandatory documents</span><strong>{liveApplicationApproved ? 'Not required for assignment' : `${docs.filter((item) => data.settings.requiredDocuments.includes(item.type) && isDocumentCurrent(item)).length}/${data.settings.requiredDocuments.length} valid`}</strong></div><div><span>Active assignment</span><strong>{activeDelivery?.id ?? 'None'}</strong></div><div><span>Restriction / suspension</span><strong>{partner.availability === 'Suspended' && partner.suspendedUntil ? `Suspended until ${formatSuspensionEnd(partner.suspendedUntil)}` : partner.availability === 'Restricted' || partner.availability === 'Suspended' ? partner.availability : 'None'}</strong></div><div><span>Vehicle</span><strong>{partner.vehicle}</strong></div></div><button className="text-link" onClick={() => open('/admin/deliveries')}>Review delivery queue <Icon name="arrow" size={14} /></button></Panel>
+        <Panel><PanelHeading title="Verification and eligibility" /><div className="eligibility-summary"><div><span>Verification</span><strong><StatusBadge status={verification} /></strong></div><div><span>KYC documents</span><strong>{liveApplicationApproved ? 'Approved in KYC Review' : liveDocumentRecord ? `${liveSubmittedKeys.length} submitted · ${missingLiveKeys.length} missing` : `${docs.filter((item) => data.settings.requiredDocuments.includes(item.type) && isDocumentCurrent(item)).length}/${data.settings.requiredDocuments.length} valid`}</strong></div><div><span>Active assignment</span><strong>{activeDelivery?.id ?? 'None'}</strong></div><div><span>Restriction / suspension</span><strong>{partner.availability === 'Suspended' && partner.suspendedUntil ? `Suspended until ${formatSuspensionEnd(partner.suspendedUntil)}` : partner.availability === 'Restricted' || partner.availability === 'Suspended' ? partner.availability : 'None'}</strong></div></div><button className="text-link" onClick={() => liveDocumentRecord ? open('/admin/kyc') : open('/admin/deliveries')}>{liveDocumentRecord ? 'Review KYC documents' : 'Review delivery queue'} <Icon name="arrow" size={14} /></button></Panel>
       </aside>
     </div>
 

@@ -1,44 +1,22 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { userCan } from '../domain/admin'
 import type { OperationsState, Partner, PartnerAppDocument, PartnerAppDocumentFile, PartnerAppRecord, PartnerApplication, PartnerDocumentReview } from '../domain/model'
-import { buildKycQueue, type KycQueueItem } from '../domain/kyc'
+import {
+  buildKycQueue,
+  documentLabel,
+  formatDocumentNumber,
+  liveDocumentsBlocked,
+  partnerDocumentNumber,
+  requiredLiveDocumentKeys,
+  submittedLiveDocumentKeys,
+  type KycQueueItem,
+} from '../domain/kyc'
 import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
 import { readPartnerAppToken, writePartnerDocumentReview } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { useOperations } from '../state/OperationsProvider'
 
-const documentLabels: Record<string, string> = {
-  aadhaar: 'Aadhaar card',
-  pan: 'PAN card',
-  licence: 'Driving licence',
-  registration: 'Vehicle registration',
-  passbook: 'Bank passbook',
-}
-
-function documentLabel(key: string) {
-  return documentLabels[key] ?? key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
 type StatusFilter = 'Needs review' | 'KYC pending' | 'All' | 'Approved' | 'Rejected'
-
-function requiredLiveDocumentKeys(vehicle: string) {
-  const normalized = vehicle.toLowerCase()
-  if (normalized.includes('bicycle') || normalized.includes('foot') || normalized.includes('walk')) return ['aadhaar']
-  return ['aadhaar', 'licence', 'registration']
-}
-
-export function liveDocumentsBlocked(record: PartnerAppRecord | undefined, documents: PartnerAppDocument | undefined) {
-  if (!record) return 'No delivery_app application record was found.'
-  if (!documents) return 'No partner_documents record has been synced. Sync partner data before approving.'
-  for (const key of requiredLiveDocumentKeys(record.vehicle ?? '')) {
-    const file = documents.files.find((item) => item.key === key)
-    if (!file?.fileName) return `${documentLabel(key)} has not been uploaded.`
-    if (!file.review) return `${documentLabel(key)} has not been reviewed.`
-    if (file.review.status === 'Rejected') return `${documentLabel(key)} was rejected.`
-    if (file.review.expiresAt && new Date(file.review.expiresAt).getTime() <= Date.now()) return `${documentLabel(key)} has expired.`
-  }
-  return null
-}
 
 function vehicleIcon(vehicle: string): 'bike' | 'scooter' | 'van' | 'route' {
   const normalized = vehicle.toLowerCase()
@@ -199,7 +177,7 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
   const { frame, dispatch } = useOperations()
   const documents = application?.documents ?? item.documents
   const attachedCount = documentRecord
-    ? documentRecord.files.filter((file) => file.fileName).length
+    ? documentRecord.files.filter((file) => Boolean(file.fileName || partnerDocumentNumber(file, record))).length
     : documents.length
   const phone = record?.phone ?? application?.maskedPhone ?? null
   const email = record?.email ?? application?.maskedEmail ?? null
@@ -273,18 +251,26 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
         </div>
         <div className="application-doc-checklist details-document-list">
           {documentRecord && documentRecord.files.length > 0
-            ? documentRecord.files.map((file) => <div key={file.key} className="live-document-row">
-                <span className="live-document-main">
-                  <Icon name="file" size={13} />
-                  <span><strong>{documentLabel(file.key)}</strong><small>{file.fileName ?? 'No file uploaded'}{file.uploadedAt ? ` · ${formatDate(file.uploadedAt, { month: 'short', day: 'numeric', year: 'numeric' })}` : ''}</small></span>
-                </span>
-                <span className="live-document-meta">
-                  {file.review ? <StatusBadge status={file.review.status} /> : <StatusBadge status="Under Review" />}
-                  {file.review?.expiresAt && <small className={new Date(file.review.expiresAt).getTime() <= Date.now() ? 'text-danger' : ''}>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
-                  {file.downloadUrl && <a href={file.downloadUrl} target="_blank" rel="noreferrer">Open file</a>}
-                  {canReviewDocuments && <Button size="small" variant="quiet" onClick={() => beginReview(file)}>Review</Button>}
-                </span>
-              </div>)
+            ? documentRecord.files.map((file) => {
+                const number = partnerDocumentNumber(file, record)
+                const provided = Boolean(file.fileName || number)
+                return <div key={file.key} className="live-document-row">
+                  <span className="live-document-main">
+                    <Icon name="file" size={13} />
+                    <span>
+                      <strong>{documentLabel(file.key)}</strong>
+                      <small>{file.fileName ?? (provided ? 'Number on record · no file uploaded' : 'Not submitted')}{file.uploadedAt ? ` · ${formatDate(file.uploadedAt, { month: 'short', day: 'numeric', year: 'numeric' })}` : ''}</small>
+                      {number && <small className="document-number">Number: {formatDocumentNumber(file.key, number)}</small>}
+                    </span>
+                  </span>
+                  <span className="live-document-meta">
+                    {!provided ? <StatusBadge status="Missing" /> : file.review ? <StatusBadge status={file.review.status} /> : <StatusBadge status="Under Review" />}
+                    {file.review?.expiresAt && <small className={new Date(file.review.expiresAt).getTime() <= Date.now() ? 'text-danger' : ''}>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
+                    {file.downloadUrl && <a href={file.downloadUrl} target="_blank" rel="noreferrer">Open file</a>}
+                    {canReviewDocuments && provided && <Button size="small" variant="quiet" onClick={() => beginReview(file)}>Review</Button>}
+                  </span>
+                </div>
+              })
             : documents.length > 0
               ? documents.map((document) => <div key={document} className="attached"><span><Icon name="check-circle" size={13} />{document}</span><small>Attached</small></div>)
               : <div className="details-empty"><span>No document details available</span><small>{item.status === 'KYC pending' ? 'Onboarding has not been submitted' : 'No partner_documents record was synced for this account yet.'}</small></div>}
@@ -376,14 +362,26 @@ export function KycReviewPage({ data, open }: { data: OperationsState; open: (pa
       <div className="table-scroll"><table className="data-table applications-table"><thead><tr><th>Applicant</th><th>Vehicle / areas</th><th>Documents</th><th>Submitted / signed in</th><th>Status</th><th>Decision / reviewer</th><th>Actions</th></tr></thead><tbody>
         {visible.map((item) => {
           const missing = item.documentsKnown ? data.settings.requiredDocuments.filter((type) => !item.documents.includes(type)) : []
+          const liveRecord = item.recordId ? data.partnerAppRecords.find((record) => record.id === item.recordId) : undefined
+          const liveDocuments = item.recordId ? data.partnerAppDocuments.find((document) => document.id === item.recordId) : undefined
+          const liveSubmitted = submittedLiveDocumentKeys(liveDocuments, liveRecord)
+          const liveMissing = liveDocuments
+            ? requiredLiveDocumentKeys(item.vehicle).filter((key) => !liveSubmitted.includes(key))
+            : []
           return <tr key={item.key}>
             <td><span className="partner-cell"><span className="mini-avatar">{initials(item.applicantName)}</span><span><b>{item.applicantName}</b><small>{item.applicationId ? `${item.applicationId} · ${item.businessName}` : `${item.contact} · delivery_app`}</small></span></span></td>
             <td><span className="application-documents"><strong><Icon name={vehicleIcon(item.vehicle)} size={15} /> {item.vehicle}</strong><small>{item.serviceAreas.join(', ') || 'No service areas'}</small></span></td>
-            <td>{item.documentsKnown
-              ? <span className="application-documents"><strong>{item.documents.length} submitted</strong><small>{missing.length ? `Missing: ${missing.join(', ')}` : 'All mandatory documents attached'}</small></span>
-              : item.status === 'KYC pending'
-                ? <span className="application-documents"><strong>Not submitted</strong><small>Onboarding required</small></span>
-                : <span className="application-documents"><strong>delivery_app</strong><small>No local document record</small></span>}</td>
+            <td>{liveDocuments
+              ? liveSubmitted.length > 0
+                ? <span className="application-documents"><strong>{liveSubmitted.length} submitted</strong><small>{liveSubmitted.map(documentLabel).join(', ')}</small>{liveMissing.length > 0 && <small className="kyc-issue-text">Missing: {liveMissing.map(documentLabel).join(', ')}</small>}</span>
+                : <span className="application-documents"><strong>No documents</strong><small>None submitted in delivery_app</small></span>
+              : item.documentsKnown
+                ? <span className="application-documents"><strong>{item.documents.length} submitted</strong><small>{missing.length ? `Missing: ${missing.join(', ')}` : 'All mandatory documents attached'}</small></span>
+                : item.status === 'KYC pending'
+                  ? <span className="application-documents"><strong>Not submitted</strong><small>Onboarding required</small></span>
+                  : item.source === 'delivery_app'
+                    ? <span className="application-documents"><strong>Documents</strong><small>Not synced yet</small></span>
+                    : <span className="application-documents"><strong>delivery_app</strong><small>No local document record</small></span>}</td>
             <td>{formatDate(item.submittedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
             <td><StatusBadge status={item.status} /></td>
             <td><span className={item.status === 'Rejected' ? 'kyc-issue-text' : 'kyc-reviewer-text'}>{item.status === 'KYC pending' ? 'Onboarding not submitted' : item.decisionReason ?? item.reviewedBy ?? (item.status === 'Submitted' ? 'Awaiting Administrator review' : 'Decision recorded')}</span>{item.reviewedAt && <small className="muted-text">{formatDate(item.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}{item.resubmitted && <small className="kyc-issue-text">Resubmitted from delivery_app</small>}{!item.resubmitted && item.source === 'admin' && item.partnerAppUid && <small className="muted-text">delivery_app account linked</small>}</td>
