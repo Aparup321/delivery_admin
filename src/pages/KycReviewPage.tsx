@@ -205,6 +205,7 @@ const detailHiddenKeys = new Set([
   'profilePhotoPath',
   'lastLocation',
   'lastLocationUpdatedAt',
+  'presenceUpdatedAt',
   'isOnline',
   'lastSeen',
   'fcmToken',

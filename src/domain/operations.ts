@@ -27,6 +27,45 @@ export function liveServiceAreas(record: PartnerAppRecord | undefined) {
 /** A partner can accept nearby work after delivering outside their home area. */
 const CURRENT_AREA_RADIUS_KM = 12
 const CURRENT_LOCATION_MAX_AGE_MS = 2 * 60 * 60_000
+// delivery_app heartbeats presence once a minute. Three missed beats means the
+// app is closed, backgrounded too long, or offline; it must not remain assignable.
+const PRESENCE_TTL_MS = 3 * 60_000
+
+export type LivePresenceState = 'online' | 'offline' | 'stale' | 'unknown'
+
+function presenceTimestamp(record: PartnerAppRecord) {
+  const stamp = record.fields.presenceUpdatedAt
+    ?? record.fields.lastSeen
+    ?? record.fields.lastLocationUpdatedAt
+    ?? record.fields['lastLocation.updatedAt']
+  if (!stamp) return null
+  const time = Date.parse(stamp)
+  return Number.isFinite(time) ? time : null
+}
+
+/** Presence is only usable while the heartbeat is fresh. */
+export function livePresenceState(record: PartnerAppRecord | undefined, now = Date.now()): LivePresenceState {
+  if (!record) return 'unknown'
+  const availability = String(record.fields.availability ?? '').trim().toLowerCase()
+  const status = String(record.status ?? '').trim().toLowerCase()
+  const explicitOnline = record.isOnline === true
+    || ['online', 'available'].includes(status)
+    || ['online', 'available', 'on delivery', 'busy'].includes(availability)
+  const explicitOffline = record.isOnline === false
+    || ['offline', 'unavailable'].includes(status)
+    || availability === 'offline'
+  const updatedAt = presenceTimestamp(record)
+  if (updatedAt !== null && now - updatedAt > PRESENCE_TTL_MS) {
+    return explicitOnline ? 'stale' : 'offline'
+  }
+  if (explicitOnline) return 'online'
+  if (explicitOffline) return 'offline'
+  return 'unknown'
+}
+
+export function isLivePartnerOnline(record: PartnerAppRecord | undefined, now = Date.now()) {
+  return livePresenceState(record, now) === 'online'
+}
 
 function coordinatesFromRecord(record: PartnerAppRecord | undefined, now: number): DeliveryLocation | null {
   if (!record) return null
@@ -84,12 +123,9 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
   const validDocuments = required.filter((type) => documents.some((document) => document.type === type && isDocumentCurrent(document, now))).length
   const activeAssignment = getActiveAssignment(state, partner.id)
 
-  const liveOnline = liveRecord?.isOnline === true
-    || ['online', 'available'].includes((liveRecord?.status ?? '').trim().toLowerCase())
-    || ['online', 'available'].includes(liveAvailability)
-  const liveOffline = Boolean(liveRecord)
-    && (liveRecord?.isOnline === false || liveAvailability === 'offline')
-    && !liveOnline
+  const livePresence = livePresenceState(liveRecord, now)
+  const liveOnline = livePresence === 'online'
+  const liveOffline = livePresence === 'offline' || livePresence === 'stale'
   const liveBusy = ['on delivery', 'busy'].includes(liveAvailability)
 
   if (partner.availability === 'Restricted') reasons.push(`Partner is restricted${partner.restrictedReason ? `: ${partner.restrictedReason}` : ''}`)
@@ -108,7 +144,9 @@ export function getPartnerEligibility(state: OperationsState, partner: Partner, 
       ? 'Partner is offline'
       : !liveRecord
         ? 'No live presence record; refresh partner data'
-        : 'Partner is offline in delivery_app')
+        : livePresence === 'stale'
+          ? 'Partner presence is stale; ask them to reopen delivery_app'
+          : 'Partner is offline in delivery_app')
   }
   if (liveBusy && !activeAssignment) reasons.push('Partner is already on an active delivery')
 

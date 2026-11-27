@@ -2,7 +2,7 @@ import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCa
 import { createDropOtp } from '../domain/estimates.ts'
 import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type Assignment, type AuditEventType, type AuditLogEntry, type Delivery, type DeliveryMilestoneName, type DeliveryStatus, type DocumentStatus, type LiveOrderSnapshot, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppDocument, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type PartnerDocumentReview, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
-import { getPartnerEligibility, getActiveAssignment, hasPartnerAccepted, isLivePartnerApproved, nextPartnerId, liveServiceAreas } from '../domain/operations.ts'
+import { getPartnerEligibility, getActiveAssignment, hasPartnerAccepted, isLivePartnerApproved, nextPartnerId, liveServiceAreas, livePresenceState } from '../domain/operations.ts'
 import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
 
 export interface AppFrame {
@@ -195,17 +195,10 @@ function syncLinkedPartnerAvailability(data: OperationsState) {
       partner.availability = 'Offline'
       continue
     }
-    const availabilityValue = [
-      record.isOnline === true ? 'online' : record.isOnline === false ? 'offline' : '',
-      record.fields.isOnline,
-      record.fields.isAvailable,
-      record.fields.availability,
-      record.fields.onlineStatus,
-    ].find((value) => typeof value === 'string' && value.trim())?.trim().toLowerCase()
-    const online = availabilityValue === 'true' || availabilityValue === 'online' || availabilityValue === 'available'
+    const presence = livePresenceState(record)
     const liveAvailability = String(record.fields.availability ?? '').trim().toLowerCase()
     const busy = liveAvailability === 'on delivery' || liveAvailability === 'busy'
-    partner.availability = busy ? 'On Delivery' : online ? 'Available' : 'Offline'
+    partner.availability = presence === 'online' ? (busy ? 'On Delivery' : 'Available') : 'Offline'
   }
 }
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDemoState } from '../src/domain/seed.ts'
-import { getPartnerEligibility, hasPartnerAccepted, liveServiceAreas, nextPartnerId, vehicleCanCarry } from '../src/domain/operations.ts'
+import { getPartnerEligibility, hasPartnerAccepted, livePresenceState, liveServiceAreas, nextPartnerId, vehicleCanCarry } from '../src/domain/operations.ts'
 import { buildKycQueue, liveApplicationStatus, liveDocumentsBlocked, partnerVerification } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
@@ -1672,6 +1672,38 @@ test('a partner can take a nearby next delivery after completing one outside the
   const far = getPartnerEligibility(frame.data, partner, delivery, now)
   assert.equal(far.eligible, false)
   assert.ok(far.reasons.some((reason) => /Service area/.test(reason)))
+})
+
+test('stale presence heartbeats make an online partner offline and unassignable', () => {
+  const now = Date.now()
+  const base: PartnerAppRecord = {
+    id: 'live-stale-presence', partnerId: null, name: 'Stale Presence Partner', phone: '+91 90000 05050',
+    email: null, vehicle: 'Scooter', status: 'active', applicationStatus: 'approved', isOnline: true,
+    serviceAreas: ['Barasat'], updatedAt: new Date(now - 60_000).toISOString(),
+    fields: { isOnline: 'true', availability: 'Available' }, syncedAt: new Date(now).toISOString(),
+  }
+  const fresh: PartnerAppRecord = { ...base, fields: { ...base.fields, presenceUpdatedAt: new Date(now - 30_000).toISOString() } }
+  const stale: PartnerAppRecord = { ...base, fields: { ...base.fields, presenceUpdatedAt: new Date(now - 10 * 60_000).toISOString() } }
+  assert.equal(livePresenceState(fresh, now), 'online')
+  assert.equal(livePresenceState(stale, now), 'stale')
+
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.partnerAppUid = 'live-stale-presence'
+  partner.availability = 'Available'
+  partner.serviceAreas = ['Barasat']
+  frame.data.partnerAppRecords = [stale]
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.partnerId !== partner.id || assignment.status !== 'Active')
+  frame.data.settings.requireServiceAreaMatch = false
+  frame.data.settings.enforceVehicleCompatibility = false
+  const delivery = frame.data.deliveries.find((item) => item.id === 'DLV-1046')!
+  delivery.vehicleRequirement = 'Any'
+  const result = getPartnerEligibility(frame.data, partner, delivery, now)
+  assert.equal(result.eligible, false)
+  assert.ok(result.reasons.some((reason) => /presence is stale/i.test(reason)))
+
+  const synced = apply(frame, { type: 'partnerApp.sync-result', records: [stale], at: new Date(now).toISOString() })
+  assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Offline')
 })
 
 test('a stale On Delivery flag is reconciled from live presence and does not block assignment', () => {

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { userCan } from '../domain/admin'
 import type { Delivery, OperationsState, Partner } from '../domain/model'
-import { getPartnerEligibility, isLivePartnerApproved } from '../domain/operations'
+import { getPartnerEligibility, isLivePartnerApproved, livePresenceState } from '../domain/operations'
 import { Button, Dialog, EmptyState, formatDate, Icon, PageHeading, Panel, PanelHeading, StatusBadge } from '../components/ui'
 import { readPartnerAppToken, syncPartnerAppRecords } from '../services/partnerApp'
 import { hasFirebaseAdminSession } from '../services/firebaseAuth'
@@ -146,14 +146,23 @@ export function AssignmentPage({ data, delivery, open }: Props) {
             const liveRecord = partner.partnerAppUid ? data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid) : undefined
             const liveApproved = isLivePartnerApproved(liveRecord)
             const verified = liveApproved || validDocuments === requiredDocuments
+            const presence = livePresenceState(liveRecord, now)
+            const presenceStamp = liveRecord?.fields.presenceUpdatedAt ?? liveRecord?.fields.lastLocationUpdatedAt ?? liveRecord?.updatedAt
             const livePresence = !partner.partnerAppUid
               ? 'No app account linked'
               : liveRecord
-                ? `Live: ${liveRecord.isOnline === true ? 'online' : liveRecord.isOnline === false ? 'offline' : 'unknown'}${liveRecord.fields.availability ? ` · ${liveRecord.fields.availability}` : ''}`
+                ? presence === 'online'
+                  ? `Live: online${liveRecord.fields.availability ? ` · ${liveRecord.fields.availability}` : ''}`
+                  : presence === 'stale'
+                    ? 'Live: heartbeat stale · offline'
+                    : presence === 'offline'
+                      ? `Live: offline${liveRecord.fields.availability ? ` · ${liveRecord.fields.availability}` : ''}`
+                      : 'Live: presence unknown'
                 : 'Live record not loaded'
+            const presenceTone = presence === 'online' ? 'online' : presence === 'offline' || presence === 'stale' ? 'offline' : ''
             return <tr key={partner.id} onClick={() => canTake && setSelectedId(partner.id)} className={`${canTake && selectedId === partner.id ? 'candidate-selected' : ''} ${!canTake ? 'candidate-ineligible' : ''}`}>
               <td><input type="radio" name="partner" checked={canTake && selectedId === partner.id} disabled={!canTake} onChange={() => setSelectedId(partner.id)} aria-label={`Select ${partner.name}`} /></td>
-              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small>{liveAppConnected && (linkedToApp(partner) ? <em className="link-badge linked">App linked</em> : <em className="link-badge unlinked">Not linked</em>)}<small className={`live-presence ${liveRecord?.isOnline === true ? 'online' : liveRecord?.isOnline === false ? 'offline' : ''}`} title={liveRecord?.updatedAt ? `Live record updated ${formatDate(liveRecord.updatedAt)}` : undefined}>{livePresence}</small></span></span></td>
+              <td><span className="partner-cell"><span className="mini-avatar">{partner.name.split(' ').map((part) => part[0]).join('').replace('.', '')}</span><span><b>{partner.name}</b><small>{partner.id}{partner.partnerAppUid ? ` · ${partner.partnerAppUid}` : ''}</small>{liveAppConnected && (linkedToApp(partner) ? <em className="link-badge linked">App linked</em> : <em className="link-badge unlinked">Not linked</em>)}<small className={`live-presence ${presenceTone}`} title={presenceStamp ? `Last presence ${formatDate(presenceStamp)}` : undefined}>{livePresence}</small></span></span></td>
               <td><span className="application-documents"><strong>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.applicationStatus ?? (data.applications.find((application) => application.partnerId === partner.id)?.status ?? 'Admin record')}</strong><small>{data.partnerAppRecords.find((record) => record.id === partner.partnerAppUid)?.status ?? 'Local account'}</small></span></td>
               <td><span className="vehicle-cell"><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{partner.vehicle}</span></td>
               <td><span className="area-list">{partner.serviceAreas.slice(0, 2).join(', ')}{partner.serviceAreas.length > 2 && <small>+{partner.serviceAreas.length - 2} areas</small>}</span></td>

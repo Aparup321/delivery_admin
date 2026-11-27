@@ -476,6 +476,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
     'applicationStatus', 'status', 'availability', 'isOnline', 'lastSeen', 'lastSignInAt',
     'updatedAt', 'submittedAt', 'statusUpdatedAt', 'joinedOn', 'rating',
     'profilePhotoUrl', 'profilePhotoPath', 'lastLocation', 'lastLocationUpdatedAt',
+    'presenceUpdatedAt',
   ])
   const additionalLiveFields = Object.entries(liveFields).filter(([key, value]) =>
     value.trim()

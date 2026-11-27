@@ -1,4 +1,5 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { userCan, userHasSection } from '../domain/admin'
 import type { Delivery, OperationsState } from '../domain/model'
 import { buildKycQueue } from '../domain/kyc'
@@ -55,8 +56,24 @@ function activityByDay(data: OperationsState) {
   })
 }
 
+/** Recharts animates in SVG, so the CSS reduced-motion rule alone is not enough. */
+function useReducedMotion() {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setReduced(query.matches)
+    update()
+    query.addEventListener('change', update)
+    return () => query.removeEventListener('change', update)
+  }, [])
+  return reduced
+}
+
 export function OverviewPage({ data, open }: Props) {
   const { frame } = useOperations()
+  const reducedMotion = useReducedMotion()
+  const [activeStatus, setActiveStatus] = useState<string | null>(null)
+  const [visibleSeries, setVisibleSeries] = useState({ created: true, completed: true })
   const live = useLiveDeliveries(frame.data.partnerApp, hasFirebaseAdminSession())
   const liveDelivery = useMemo(
     () => live.deliveries.find((delivery) => LIVE_ACTIVE_STATUSES.includes(delivery.nativeStatus)) ?? null,
@@ -139,13 +156,12 @@ export function OverviewPage({ data, open }: Props) {
     }
   }, [liveDelivery, data.deliveries])
   const total = data.deliveries.length || 1
-  const gradient = counts.reduce<{ text: string; cursor: number }>((result, item) => {
-    const start = result.cursor
-    const end = start + item.count / total * 100
-    result.text += `${statusColors[item.status]} ${start}% ${end}%,`
-    result.cursor = end
-    return result
-  }, { text: '', cursor: 0 }).text.slice(0, -1)
+  const pieData = counts
+    .filter((item) => item.count > 0)
+    .map((item) => ({ ...item, value: item.count, percent: Math.round(item.count / total * 100), color: statusColors[item.status] }))
+  const activeEntry = activeStatus ? counts.find((item) => item.status === activeStatus) ?? null : null
+  const scheduledCreated = bars.reduce((sum, item) => sum + item.created, 0)
+  const scheduledCompleted = bars.reduce((sum, item) => sum + item.completed, 0)
   const metrics = [
     { label: 'Total deliveries', value: data.deliveries.length, hint: 'All delivery jobs', tone: 'purple', icon: 'deliveries' as const, path: '/admin/deliveries' },
     { label: 'Awaiting dispatch', value: pending + unassigned, hint: `${pending} pending · ${unassigned} unassigned`, tone: 'orange', icon: 'clock' as const, path: '/admin/deliveries' },
@@ -165,20 +181,83 @@ export function OverviewPage({ data, open }: Props) {
       <Panel className="status-overview">
         <PanelHeading title="Delivery status" detail={`${data.deliveries.length} delivery records`} action={<button className="text-link" onClick={() => open('/admin/deliveries')}>View deliveries <Icon name="arrow" size={14} /></button>} />
         <div className="status-summary">
-          <div className="status-donut" style={{ background: `conic-gradient(${gradient})` }}><div><strong>{data.deliveries.length}</strong><span>deliveries</span></div></div>
-          <div className="status-legend">{counts.map((item) => <div key={item.status}><span><i style={{ backgroundColor: statusColors[item.status] }} />{item.status}</span><strong>{item.count}<small>{Math.round(item.count / total * 100)}%</small></strong></div>)}</div>
+          <div className="status-chart-wrap">
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart accessibilityLayer>
+                <Tooltip
+                  cursor={false}
+                  contentStyle={{ borderRadius: 10, border: '1px solid #e8e3f0', boxShadow: '0 12px 30px rgba(25,21,43,.12)', fontSize: 11, padding: '8px 10px' }}
+                  itemStyle={{ color: '#433d4b', fontSize: 10, fontWeight: 600 }}
+                  labelStyle={{ display: 'none' }}
+                  formatter={(value, name, item) => {
+                    const percent = (item?.payload as { percent?: number } | undefined)?.percent
+                    return [`${value} deliveries${percent != null ? ` · ${percent}%` : ''}`, String(name ?? '')]
+                  }}
+                />
+                <Pie
+                  data={pieData}
+                  dataKey="value"
+                  nameKey="status"
+                  innerRadius="58%"
+                  outerRadius="86%"
+                  paddingAngle={2}
+                  cornerRadius={6}
+                  stroke="#fff"
+                  strokeWidth={2}
+                  isAnimationActive={!reducedMotion}
+                  animationDuration={750}
+                  animationEasing="ease-out"
+                  onMouseEnter={(_, index) => setActiveStatus(pieData[index]?.status ?? null)}
+                  onMouseLeave={() => setActiveStatus(null)}
+                  onClick={(entry) => {
+                    const status = (entry as { status?: string } | undefined)?.status
+                    if (status) open(`/admin/deliveries?status=${encodeURIComponent(status)}`)
+                  }}
+                >
+                  {pieData.map((item) => <Cell key={item.status} fill={item.color} opacity={activeStatus && activeStatus !== item.status ? .3 : 1} />)}
+                </Pie>
+              </PieChart>
+            </ResponsiveContainer>
+            <div className="status-donut-center"><strong>{activeEntry?.count ?? data.deliveries.length}</strong><span>{activeEntry?.status ?? 'deliveries'}</span></div>
+          </div>
+          <div className="status-legend">{counts.map((item) => <button
+            type="button"
+            key={item.status}
+            className={activeStatus === item.status ? 'active' : ''}
+            onMouseEnter={() => setActiveStatus(item.status)}
+            onMouseLeave={() => setActiveStatus(null)}
+            onFocus={() => setActiveStatus(item.status)}
+            onBlur={() => setActiveStatus(null)}
+            onClick={() => open(`/admin/deliveries?status=${encodeURIComponent(item.status)}`)}
+          ><span><i style={{ backgroundColor: statusColors[item.status] }} />{item.status}</span><strong>{item.count}<small>{Math.round(item.count / total * 100)}%</small></strong></button>)}</div>
         </div>
       </Panel>
 
       <Panel className="activity-panel">
-        <PanelHeading title="Delivery activity" detail="Created and completed · last 7 days" />
-        <div className="activity-chart" role="img" aria-label="Daily deliveries created and completed over the last seven days">
-          {bars.map((bar) => <div className="activity-day" key={bar.label}>
-            <div className="activity-bars"><span className="activity-created" style={{ height: `${Math.max(bar.created ? 10 : 2, bar.created / Math.max(1, ...bars.map((item) => item.created)) * 66)}px` }} title={`${bar.created} created`} /><span className="activity-completed" style={{ height: `${Math.max(bar.completed ? 10 : 2, bar.completed / Math.max(1, ...bars.map((item) => item.completed)) * 66)}px` }} title={`${bar.completed} completed`} /></div>
-            <small>{bar.label}</small>
-          </div>)}
+        <PanelHeading title="Delivery activity" detail="Created and completed · last 7 days" action={<button className="text-link" onClick={() => open('/admin/deliveries')}>View deliveries <Icon name="arrow" size={14} /></button>} />
+        <div className="activity-chart-recharts">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={bars} margin={{ top: 8, right: 10, left: 0, bottom: 0 }} barGap={3} barCategoryGap="26%" accessibilityLayer>
+              <CartesianGrid strokeDasharray="3 5" vertical={false} stroke="#efedf3" />
+              <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#5f5a68', fontSize: 9 }} dy={5} />
+              <YAxis allowDecimals={false} width={24} axisLine={false} tickLine={false} tick={{ fill: '#8a8592', fontSize: 8 }} />
+              <Tooltip
+                cursor={{ fill: 'rgba(113,60,224,.045)' }}
+                contentStyle={{ borderRadius: 10, border: '1px solid #e8e3f0', boxShadow: '0 12px 30px rgba(25,21,43,.12)', fontSize: 11, padding: '8px 10px' }}
+                itemStyle={{ fontSize: 10, fontWeight: 600 }}
+                labelStyle={{ color: '#6b6573', fontSize: 9, marginBottom: 4 }}
+                formatter={(value, name) => [`${value} deliver${value === 1 ? 'y' : 'ies'}`, name === 'created' ? 'Created' : 'Completed']}
+              />
+              {visibleSeries.created && <Bar dataKey="created" name="created" fill="#8d6bce" radius={[5, 5, 0, 0]} maxBarSize={16} isAnimationActive={!reducedMotion} animationDuration={650} animationEasing="ease-out" activeBar={{ fill: '#6f3fd8', opacity: .86 }} />}
+              {visibleSeries.completed && <Bar dataKey="completed" name="completed" fill="#62a982" radius={[5, 5, 0, 0]} maxBarSize={16} isAnimationActive={!reducedMotion} animationDuration={650} animationEasing="ease-out" activeBar={{ fill: '#4f9e75', opacity: .86 }} />}
+            </BarChart>
+          </ResponsiveContainer>
         </div>
-        <div className="chart-legend-inline"><span><i className="legend-purple" />Created</span><span><i className="legend-green" />Completed</span><span className="demo-caption">Based on stored timestamps</span></div>
+        <div className="chart-legend-inline">
+          <button type="button" className={`chart-series-toggle ${visibleSeries.created ? 'active' : ''}`} aria-pressed={visibleSeries.created} onClick={() => setVisibleSeries((current) => ({ ...current, created: !current.created }))}><i className="legend-purple" />Created <b>{scheduledCreated}</b></button>
+          <button type="button" className={`chart-series-toggle ${visibleSeries.completed ? 'active' : ''}`} aria-pressed={visibleSeries.completed} onClick={() => setVisibleSeries((current) => ({ ...current, completed: !current.completed }))}><i className="legend-green" />Completed <b>{scheduledCompleted}</b></button>
+          <span className="demo-caption">Last 7 days · click a series to toggle</span>
+        </div>
       </Panel>
     </div>
 
