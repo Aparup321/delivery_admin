@@ -31,6 +31,11 @@ export function documentLabel(key: string) {
   return kycDocumentLabels[key] ?? key.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 }
 
+/** Only documents that genuinely carry an expiry date can be marked expired. */
+export function documentTracksExpiry(key: string) {
+  return key === 'licence' || key === 'dl' || key === 'registration' || key === 'rc'
+}
+
 /** Aadhaar numbers read better in the 4-4-4 grouping printed on the card. */
 export function formatDocumentNumber(key: string, value: string) {
   const trimmed = value.trim()
@@ -91,7 +96,7 @@ export function liveDocumentsBlocked(record: PartnerAppRecord | undefined, docum
     const number = partnerDocumentNumber(file, record)
     if (!file?.fileName && !number) return `${documentLabel(key)} has not been submitted.`
     if (file?.review?.status === 'Rejected') return `${documentLabel(key)} was rejected.`
-    if (file?.review?.expiresAt && new Date(file.review.expiresAt).getTime() <= Date.now()) return `${documentLabel(key)} has expired.`
+    if (documentTracksExpiry(key) && file?.review?.expiresAt && new Date(file.review.expiresAt).getTime() <= Date.now()) return `${documentLabel(key)} has expired.`
   }
   return null
 }

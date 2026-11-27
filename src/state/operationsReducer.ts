@@ -39,7 +39,8 @@ export type OperationAction =
   | { type: 'partnerApp.save'; config: Pick<PartnerAppConfig, 'mode' | 'projectId' | 'apiKey' | 'databaseId' | 'partnersCollection' | 'endpointUrl'> }
   | { type: 'partnerApp.connected'; at: string }
   | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; tickets?: PartnerAppTicket[]; documents?: PartnerAppDocument[]; at: string; silent?: boolean }
-  | { type: 'partnerApp.presence'; presences: PartnerPresence[]; at: string }
+  | { type: 'partnerApp.tickets'; tickets: PartnerAppTicket[]; at: string }
+  | { type: 'partnerApp.presence'; presences: PartnerPresence[]; at: string; complete?: boolean }
   | { type: 'partnerApp.ticket-status'; ticketId: string; status: string; at: string }
   | { type: 'partnerApp.document-review'; uid: string; documentKey: string; review: PartnerDocumentReview; at: string }
   | { type: 'partnerApp.failed'; message: string }
@@ -83,6 +84,7 @@ const permissionByAction: Partial<Record<OperationAction['type'], Permission>> =
   // can open Partners. Linking is part of partner management.
   'partnerApp.connected': 'read',
   'partnerApp.sync-result': 'read',
+  'partnerApp.tickets': 'read',
   'partnerApp.presence': 'read',
   'partnerApp.failed': 'read',
   'partnerApp.link': 'partner-management',
@@ -735,6 +737,15 @@ function audit(data: OperationsState, eventType: AuditEventType, targetType: Aud
 function notify(data: OperationsState, category: NotificationCategory, title: string, message: string, path: string, recordId: string, at: string) {
   if (data.settings.notifications[category] === false) return
   data.notifications.unshift({ id: uid('NTF'), category, title, message, createdAt: at, readAt: null, relatedPath: path, relatedRecordId: recordId })
+}
+
+function notifyNewTickets(data: OperationsState, previousTicketIds: Set<string>, at: string) {
+  for (const ticket of data.partnerAppTickets) {
+    if (previousTicketIds.has(ticket.id)) continue
+    const partner = data.partners.find((item) => item.partnerAppUid === ticket.partnerUid)
+    const path = partner ? `/admin/partners/${partner.id}` : '/admin/partners?view=app'
+    notify(data, 'Partner Support Ticket', `New support ticket: ${ticket.subject}`, `${partner?.name ?? ticket.partnerUid}: ${ticket.message}`, path, ticket.id, at)
+  }
 }
 
 function partnerHistory(data: OperationsState, partnerId: string, type: string, description: string, relatedDeliveryId: string | null, at: string) {
@@ -1462,12 +1473,7 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       importApprovedPartnerAppRecords(data, at)
       syncLinkedPartnerProfile(data)
       syncLinkedPartnerAvailability(data)
-      for (const ticket of data.partnerAppTickets) {
-        if (previousTicketIds.has(ticket.id)) continue
-        const partner = data.partners.find((item) => item.partnerAppUid === ticket.partnerUid)
-        const path = partner ? `/admin/partners/${partner.id}` : '/admin/partners?view=app'
-        notify(data, 'Partner Support Ticket', `New support ticket: ${ticket.subject}`, `${partner?.name ?? ticket.partnerUid}: ${ticket.message}`, path, ticket.id, at)
-      }
+      notifyNewTickets(data, previousTicketIds, at)
       const linkedCount = data.partners.filter((partner) => partner.partnerAppUid).length
       // Background presence polls should update data without writing an audit
       // entry or raising a toast on every online/offline change.
@@ -1476,13 +1482,38 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       }
       return { message: `${data.partnerAppRecords.length} partner app record${data.partnerAppRecords.length === 1 ? '' : 's'} synced.${linkedCount ? ` ${linkedCount} partner${linkedCount === 1 ? '' : 's'} linked by name.` : ' Link records to admin partners before using live account actions.'}` }
     }
+    case 'partnerApp.tickets': {
+      if (!Array.isArray(action.tickets)) throw new Error('Partner support tickets were not valid.')
+      const previousTicketIds = new Set(data.partnerAppTickets.map((ticket) => ticket.id))
+      data.partnerAppTickets = action.tickets.slice(0, 1000)
+      notifyNewTickets(data, previousTicketIds, at)
+      return { message: `${data.partnerAppTickets.length} support ticket${data.partnerAppTickets.length === 1 ? '' : 's'} synced.` }
+    }
     case 'partnerApp.presence': {
       if (!Array.isArray(action.presences)) throw new Error('Partner presence data was not valid.')
       const byId = new Map(action.presences.map((presence) => [presence.id, presence]))
       let changed = false
       data.partnerAppRecords = data.partnerAppRecords.map((record) => {
         const presence = byId.get(record.id)
-        if (!presence) return record
+        if (!presence) {
+          if (!action.complete) return record
+          // The presence query only returns partners whose explicit switch is
+          // online. Everything else is offline, even if an older write left an
+          // "Available" string behind.
+          if (
+            record.isOnline === false
+            && record.fields.isOnline === 'false'
+            && record.fields.availability === 'Offline'
+          ) {
+            return record
+          }
+          changed = true
+          return {
+            ...record,
+            isOnline: false,
+            fields: { ...record.fields, isOnline: 'false', availability: 'Offline' },
+          }
+        }
         const nextIsOnline = presence.isOnline ?? record.isOnline ?? null
         const nextFields = { ...record.fields, ...presence.fields }
         const nextStatus = presence.fields.status ?? record.status
@@ -1876,6 +1907,7 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
       data,
       sequence,
       feedback: action.type === 'user.identify'
+        || action.type === 'partnerApp.tickets'
         || action.type === 'partnerApp.presence'
         || (action.type === 'partnerApp.sync-result' && action.silent)
         ? null

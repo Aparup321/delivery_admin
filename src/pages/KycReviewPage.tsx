@@ -4,6 +4,7 @@ import type { OperationsState, Partner, PartnerAppDocument, PartnerAppDocumentFi
 import {
   buildKycQueue,
   documentLabel,
+  documentTracksExpiry,
   formatDocumentNumber,
   liveDocumentsBlocked,
   partnerDocumentNumber,
@@ -255,7 +256,7 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
     setReviewing({
       key: file.key,
       status: file.review?.status ?? 'Verified',
-      expiresAt: file.review?.expiresAt ? file.review.expiresAt.slice(0, 10) : '',
+      expiresAt: documentTracksExpiry(file.key) && file.review?.expiresAt ? file.review.expiresAt.slice(0, 10) : '',
       note: file.review?.note ?? '',
     })
   }
@@ -267,7 +268,7 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
     try {
       const review: PartnerDocumentReview = {
         status: reviewing.status,
-        expiresAt: reviewing.expiresAt ? new Date(`${reviewing.expiresAt}T23:59:59`).toISOString() : null,
+        expiresAt: documentTracksExpiry(reviewing.key) && reviewing.expiresAt ? new Date(`${reviewing.expiresAt}T23:59:59`).toISOString() : null,
         note: reviewing.note.trim() || null,
         reviewedBy: frame.data.user.name,
         reviewedAt: new Date().toISOString(),
@@ -334,7 +335,7 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
                   </span>
                   <span className="live-document-meta">
                     {!provided ? <StatusBadge status="Missing" /> : file.review ? <StatusBadge status={file.review.status} /> : <StatusBadge status="Under Review" />}
-                    {file.review?.expiresAt && <small className={new Date(file.review.expiresAt).getTime() <= Date.now() ? 'text-danger' : ''}>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
+                    {documentTracksExpiry(file.key) && file.review?.expiresAt && <small className={new Date(file.review.expiresAt).getTime() <= Date.now() ? 'text-danger' : ''}>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
                     {file.downloadUrl && safeExternalUrl(file.downloadUrl) && <a href={safeExternalUrl(file.downloadUrl) ?? undefined} target="_blank" rel="noopener noreferrer">Open file</a>}
                     {canReviewDocuments && provided && <Button size="small" variant="quiet" onClick={() => beginReview(file)}>Review</Button>}
                   </span>
@@ -347,8 +348,8 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
         {reviewing && <div className="document-review-inline">
           <div className="document-review-inline-head"><strong>Review {documentLabel(reviewing.key)}</strong><span>Saved to delivery_app</span></div>
           <div className="form-grid two-columns">
-            <label className="field-label">Status<select value={reviewing.status} onChange={(event) => setReviewing({ ...reviewing, status: event.target.value as 'Verified' | 'Rejected' })}><option>Verified</option><option>Rejected</option></select></label>
-            <label className="field-label">Expiry date<input type="date" value={reviewing.expiresAt} onChange={(event) => setReviewing({ ...reviewing, expiresAt: event.target.value })} /></label>
+            <label className={`field-label ${documentTracksExpiry(reviewing.key) ? '' : 'span-two'}`}>Status<select value={reviewing.status} onChange={(event) => setReviewing({ ...reviewing, status: event.target.value as 'Verified' | 'Rejected' })}><option>Verified</option><option>Rejected</option></select></label>
+            {documentTracksExpiry(reviewing.key) && <label className="field-label">Expiry date<input type="date" value={reviewing.expiresAt} onChange={(event) => setReviewing({ ...reviewing, expiresAt: event.target.value })} /></label>}
             <label className="field-label span-two">Reviewer note<textarea rows={2} value={reviewing.note} onChange={(event) => setReviewing({ ...reviewing, note: event.target.value })} placeholder="Optional verification note" /></label>
           </div>
           {reviewError && <div className="admin-form-error" role="alert"><Icon name="alert" size={15} /><span>{reviewError}</span></div>}

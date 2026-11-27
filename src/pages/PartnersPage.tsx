@@ -4,6 +4,7 @@ import { getActiveAssignment, getPartnerEligibility, isDocumentCurrent, livePres
 import {
   displayedDocumentStatus,
   documentLabel,
+  documentTracksExpiry,
   formatDocumentNumber,
   partnerDocumentNumber,
   partnerVerification,
@@ -23,6 +24,14 @@ import { userCan } from '../domain/admin'
 import { PartnerCreatePage } from './PartnerCreatePage'
 
 type PartnersSection = 'directory' | 'activity' | 'new' | 'app'
+
+const availabilityOrder: Record<Partner['availability'], number> = {
+  Available: 0,
+  'On Delivery': 1,
+  Offline: 2,
+  Restricted: 3,
+  Suspended: 4,
+}
 
 interface DirectoryProps {
   data: OperationsState
@@ -285,7 +294,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
       && (area === 'All' || partner.serviceAreas.includes(area))
       && (verification === 'All' || status === verification)
       && (eligibility === 'All' || (eligibility === 'Eligible' ? isEligible : !isEligible))
-  }).sort((a, b) => a.id.localeCompare(b.id)), [data, search, availability, vehicle, area, verification, eligibility, deliveryForEligibility])
+  }).sort((a, b) => (availabilityOrder[a.availability] ?? 9) - (availabilityOrder[b.availability] ?? 9) || a.id.localeCompare(b.id)), [data, search, availability, vehicle, area, verification, eligibility, deliveryForEligibility])
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize))
   const visible = filtered.slice((page - 1) * pageSize, page * pageSize)
 
@@ -417,7 +426,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
     && !key.startsWith('vehicle.'),
   )
   const expiringDocs = docs.filter((item) => item.expiresAt && new Date(item.expiresAt).getTime() > Date.now() && new Date(item.expiresAt).getTime() < Date.now() + 30 * 24 * 60 * 60_000)
-  const expiringLiveDocs = (liveDocumentRecord?.files ?? []).filter((file) => file.review?.expiresAt && new Date(file.review.expiresAt).getTime() > Date.now() && new Date(file.review.expiresAt).getTime() < Date.now() + 30 * 24 * 60 * 60_000)
+  const expiringLiveDocs = (liveDocumentRecord?.files ?? []).filter((file) => documentTracksExpiry(file.key) && file.review?.expiresAt && new Date(file.review.expiresAt).getTime() > Date.now() && new Date(file.review.expiresAt).getTime() < Date.now() + 30 * 24 * 60 * 60_000)
   const suspensionWindow = suspensionTimeline(partner.suspensionDays, partner.suspendedUntil)
 
   return <div className="page-stack partner-profile-page">
@@ -455,7 +464,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
                 </div>
                 <div className="document-status">
                   <StatusBadge status={file.review?.status ?? 'Under Review'} />
-                  {file.review?.expiresAt && <small>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
+                  {documentTracksExpiry(file.key) && file.review?.expiresAt && <small>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
                   {file.review?.note && <small>{file.review.note}</small>}
                 </div>
                 <div className="document-review-meta"><span>Reviewer</span><strong>{file.review?.reviewedBy ?? '—'}</strong><small>{file.review ? 'Reviewed' : 'Awaiting review'}</small></div>

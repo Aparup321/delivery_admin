@@ -12,14 +12,15 @@ import {
 import { useOperations } from '../state/OperationsProvider'
 
 // REST has no Firestore listener, but every poll reads documents against the
-// project's daily quota. Full records sync once a minute; a field-masked
-// presence projection runs every 15 seconds so Online/Offline changes appear
-// quickly without re-reading KYC, tickets or every profile field. Stay paused
+// project's daily quota. Full profile/KYC collections are expensive on the
+// Firebase free quota (partners + vehicles + documents), so keep them slower;
+// presence and support tickets have their own lightweight reads. Stay paused
 // until the next daily reset when Firestore answers 429 Quota exceeded.
-const POLL_INTERVAL_MS = 60_000
-const FOCUS_REFRESH_MS = 45_000
-// Presence is a tiny field-masked read. Poll it more often than full records so
-// the console reflects an Online/Offline switch within a few seconds.
+const POLL_INTERVAL_MS = 5 * 60_000
+const FOCUS_REFRESH_MS = 2 * 60_000
+// The presence query asks Firestore only for partners whose switch is online,
+// so a mostly-offline fleet costs almost nothing while switches still appear
+// within a few seconds.
 const PRESENCE_POLL_INTERVAL_MS = 15_000
 
 /** Stable comparison for the extra string fields a record carries. */
@@ -69,9 +70,10 @@ function documentsChanged(previous: PartnerAppDocument[], next: PartnerAppDocume
 /**
  * Loads delivery_app partner records after a Firebase data connection and
  * keeps them fresh while the console stays open. The REST fallback refreshes
- * full records once a minute and presence fields every 15 seconds because this
- * app does not yet use the Firestore Web SDK, and it pauses entirely until the
- * daily reset when Firestore reports quota exhaustion. The console identity can
+ * full records every five minutes and the online-only presence projection every
+ * 15 seconds because this app does not yet use the Firestore Web SDK, and it
+ * pauses entirely until the daily reset when Firestore reports quota
+ * exhaustion. The console identity can
  * remain Demo access; the Firebase session only authorizes delivery_app data.
  * Without a Firebase session the seeded sample partners are left untouched.
  */
@@ -166,8 +168,8 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
       try {
         const token = readPartnerAppToken()
         const presences = await syncPartnerAppPresence(config, token)
-        if (!active || presences.length === 0) return
-        dispatch({ type: 'partnerApp.presence', presences, at: new Date().toISOString() })
+        if (!active) return
+        dispatch({ type: 'partnerApp.presence', presences, at: new Date().toISOString(), complete: true })
       } catch (error) {
         if (!active) return
         // Presence polling is best-effort. Only a quota failure needs to pause

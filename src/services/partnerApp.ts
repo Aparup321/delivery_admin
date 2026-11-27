@@ -99,10 +99,17 @@ function firestoreCollection(config: PartnerAppConfig, collectionOverride?: stri
   return { projectId, databaseId, collection }
 }
 
+function firestoreDocumentsUrl(config: PartnerAppConfig) {
+  const projectId = config.projectId.trim()
+  if (!projectId) throw new Error('Enter the Firebase project ID for the partner app.')
+  const databaseId = config.databaseId.trim() || '(default)'
+  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents`
+}
+
 function firestoreCollectionUrl(config: PartnerAppConfig, collectionOverride?: string) {
-  const { projectId, databaseId, collection } = firestoreCollection(config, collectionOverride)
+  const { collection } = firestoreCollection(config, collectionOverride)
   const path = collection.split('/').map((segment) => encodeURIComponent(segment)).join('/')
-  return `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(projectId)}/databases/${encodeURIComponent(databaseId)}/documents/${path}`
+  return `${firestoreDocumentsUrl(config)}/${path}`
 }
 
 export function partnerAppEndpoint(config: PartnerAppConfig, pageSize?: number) {
@@ -558,9 +565,15 @@ export async function syncPartnerAppDocuments(config: PartnerAppConfig, token: s
  * re-reading every profile field, KYC document and support ticket.
  */
 export function normalizePartnerAppPresence(payload: unknown): PartnerPresence[] {
-  if (!isRecord(payload) || !Array.isArray(payload.documents)) return []
+  // `runQuery` returns an array of `{ document }` entries; keep accepting the
+  // list-documents shape as well so older callers/tests stay compatible.
+  const documents = Array.isArray(payload)
+    ? payload.flatMap((entry) => isRecord(entry) && isRecord(entry.document) ? [entry.document] : [])
+    : isRecord(payload) && Array.isArray(payload.documents)
+      ? payload.documents
+      : []
   const presences: PartnerPresence[] = []
-  for (const document of payload.documents) {
+  for (const document of documents) {
     if (!isRecord(document) || typeof document.name !== 'string' || !isRecord(document.fields)) continue
     const id = document.name.split('/').pop()
     if (!id) continue
@@ -574,23 +587,54 @@ export function normalizePartnerAppPresence(payload: unknown): PartnerPresence[]
   return presences
 }
 
+const PRESENCE_FIELD_PATHS = [
+  'isOnline',
+  'availability',
+  'presenceUpdatedAt',
+  'lastSeen',
+  'lastLocationUpdatedAt',
+  'status',
+  'applicationStatus',
+]
+
 export async function syncPartnerAppPresence(config: PartnerAppConfig, token: string): Promise<PartnerPresence[]> {
   if (config.mode !== 'firestore') return []
-  const payload = await requestFirestoreCollection(
-    config,
-    token,
-    config.partnersCollection,
-    300,
-    [
-      'isOnline',
-      'availability',
-      'presenceUpdatedAt',
-      'lastSeen',
-      'lastLocationUpdatedAt',
-      'status',
-      'applicationStatus',
-    ],
+  const url = new URL(`${firestoreDocumentsUrl(config)}:runQuery`)
+  if (config.apiKey.trim()) url.searchParams.set('key', config.apiKey.trim())
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  }
+  const accessToken = await resolvePartnerAppToken(token, config.apiKey)
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`
+  const collectionId = config.partnersCollection.trim().replace(/^\/+|\/+$/g, '').split('/').pop() ?? 'partners'
+  const response = await fetchWithTimeout(
+    url.toString(),
+    {
+      method: 'POST',
+      headers,
+      cache: 'no-store',
+      body: JSON.stringify({
+        structuredQuery: {
+          from: [{ collectionId }],
+          where: {
+            fieldFilter: {
+              field: { fieldPath: 'isOnline' },
+              op: 'EQUAL',
+              value: { booleanValue: true },
+            },
+          },
+          select: {
+            fields: PRESENCE_FIELD_PATHS.map((fieldPath) => ({ fieldPath })),
+          },
+          limit: 500,
+        },
+      }),
+    },
+    'Partner presence request timed out after 20 seconds. Check the Firebase connection and try again.',
   )
+  if (!response.ok) throw new PartnerAppRequestError(`Partner presence request failed (HTTP ${response.status}).`, url.toString())
+  const payload = await response.json()
   return normalizePartnerAppPresence(payload)
 }
 

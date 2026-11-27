@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createDemoState } from '../src/domain/seed.ts'
 import { getPartnerEligibility, hasPartnerAccepted, livePresenceState, liveServiceAreas, nextPartnerId, vehicleCanCarry } from '../src/domain/operations.ts'
-import { buildKycQueue, liveApplicationStatus, liveDocumentsBlocked, partnerVerification } from '../src/domain/kyc.ts'
+import { buildKycQueue, documentTracksExpiry, liveApplicationStatus, liveDocumentsBlocked, partnerVerification } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
 import { decodeFirestoreFields, normalizePartnerAppDocuments, normalizePartnerAppPresence, normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint, syncPartnerAppPresence } from '../src/services/partnerApp.ts'
@@ -11,7 +11,7 @@ import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { clearDemoLocalWorkflow, hasDemoLocalWorkflow, markDemoLocalWorkflow, mergeSharedPayload, toSharedPayload } from '../src/services/sharedState.ts'
 import { isQuotaError, nextQuotaResetAt, quotaMessage } from '../src/services/firestoreQuota.ts'
 import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/config/firebase.ts'
-import type { AdminSection, PartnerAppConfig, PartnerAppDocument, PartnerAppRecord, PartnerDocumentReview, Permission } from '../src/domain/model.ts'
+import type { AdminSection, PartnerAppConfig, PartnerAppDocument, PartnerAppRecord, PartnerAppTicket, PartnerDocumentReview, Permission } from '../src/domain/model.ts'
 import { DEFAULT_ADMIN_EMAIL, DEMO_RESTRICTED_ADMIN_EMAIL } from '../src/domain/admin.ts'
 import { clearAdminSession, createAdminSession, createDemoAdminSession, DEMO_OTP_CODE, isDemoOtpValid, readAdminSession, readDemoAdminSession, storeDemoAdminSession } from '../src/auth/adminSession.ts'
 import { csvCell } from '../src/utils/csv.ts'
@@ -787,6 +787,20 @@ test('live KYC approval is gated by submitted numbers, not only file uploads', (
     ],
   }
   assert.equal(liveDocumentsBlocked(bikeRecord, bikeDocuments), null)
+
+  // Aadhaar, PAN, and passbook never expire; licence and RC do.
+  assert.equal(documentTracksExpiry('aadhaar'), false)
+  assert.equal(documentTracksExpiry('pan'), false)
+  assert.equal(documentTracksExpiry('passbook'), false)
+  assert.equal(documentTracksExpiry('licence'), true)
+  assert.equal(documentTracksExpiry('registration'), true)
+  const expiredReview = { ...reviewed(), expiresAt: '2020-01-01T23:59:59.000Z' }
+  assert.equal(liveDocumentsBlocked(record, documents(expiredReview)), null)
+  const expiredLicence: PartnerAppDocument = {
+    ...bikeDocuments,
+    files: bikeDocuments.files.map((file) => file.key === 'licence' ? { ...file, review: expiredReview } : file),
+  }
+  assert.match(liveDocumentsBlocked(bikeRecord, expiredLicence) ?? '', /Driving licence has expired/)
 })
 
 test('directory verification follows the linked KYC decision instead of local document rows', () => {
@@ -1759,30 +1773,81 @@ test('presence sync requests only heartbeat fields and normalizes the online fla
   }
   const originalFetch = globalThis.fetch
   let requested = ''
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  let requestBody = ''
+  let requestMethod = ''
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     requested = String(input)
-    return new Response(JSON.stringify({
-      documents: [{
+    requestBody = String(init?.body ?? '')
+    requestMethod = String(init?.method ?? '')
+    return new Response(JSON.stringify([{
+      document: {
         name: 'projects/delivery-app/databases/(default)/documents/partners/live-1',
         fields: {
           isOnline: { booleanValue: true },
           availability: { stringValue: 'Available' },
           presenceUpdatedAt: { stringValue: new Date().toISOString() },
         },
-      }],
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      },
+    }]), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }) as typeof fetch
   try {
     const presences = await syncPartnerAppPresence(config, '')
     assert.equal(presences.length, 1)
     assert.equal(presences[0].id, 'live-1')
     assert.equal(presences[0].isOnline, true)
-    assert.match(requested, /mask\.fieldPaths=isOnline/)
-    assert.match(requested, /mask\.fieldPaths=presenceUpdatedAt/)
-    assert.match(requested, /mask\.fieldPaths=availability/)
+    assert.match(requested, /documents:runQuery/)
+    assert.equal(requestMethod, 'POST')
+    assert.match(requestBody, /"fieldPath":"isOnline"/)
+    assert.match(requestBody, /"booleanValue":true/)
+    assert.match(requestBody, /"fieldPath":"presenceUpdatedAt"/)
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('a complete presence snapshot marks cached partners absent from the online query as offline', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.partnerAppUid = 'live-online-before'
+  partner.availability = 'Available'
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.partnerId !== partner.id || assignment.status !== 'Active')
+  frame.data.partnerAppRecords = [{
+    id: 'live-online-before',
+    partnerId: null,
+    name: 'Sayan M.',
+    phone: null,
+    email: null,
+    vehicle: 'Scooter',
+    status: 'active',
+    applicationStatus: 'approved',
+    isOnline: true,
+    serviceAreas: ['New Town'],
+    updatedAt: new Date().toISOString(),
+    fields: { isOnline: 'true', availability: 'Available', presenceUpdatedAt: new Date().toISOString() },
+    syncedAt: new Date().toISOString(),
+  }]
+  const synced = apply(frame, { type: 'partnerApp.presence', presences: [], at: new Date().toISOString(), complete: true })
+  assert.equal(synced.data.partnerAppRecords[0].isOnline, false)
+  assert.equal(synced.data.partnerAppRecords[0].fields.availability, 'Offline')
+  assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Offline')
+})
+
+test('support ticket refresh stores a ticket raised in delivery_app', () => {
+  const frame = frameWithDemo()
+  const ticket: PartnerAppTicket = {
+    id: 'KWfhSjlkzJcZvyMKPA305O4HZp72_SUP-5317',
+    partnerUid: 'KWfhSjlkzJcZvyMKPA305O4HZp72',
+    subject: 'Need help with a delivery',
+    message: 'The customer address is not opening on the map.',
+    status: 'Open',
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    syncedAt: new Date().toISOString(),
+  }
+  const synced = apply(frame, { type: 'partnerApp.tickets', tickets: [ticket], at: new Date().toISOString() })
+  assert.equal(synced.data.partnerAppTickets.length, 1)
+  assert.equal(synced.data.partnerAppTickets[0].subject, ticket.subject)
+  assert.equal(synced.feedback, null)
 })
 
 test('a linked partner with no live record is not left showing Available', () => {
