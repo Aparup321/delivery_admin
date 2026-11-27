@@ -10,7 +10,8 @@ import {
   requiredLiveDocumentKeys,
   submittedLiveDocumentKeys,
 } from '../domain/kyc'
-import { Button, ConfirmDialog, Dialog, EmptyState, formatDate, Icon, initials, Panel, PanelHeading, StatusBadge } from '../components/ui'
+import { Button, ConfirmDialog, Dialog, EmptyState, formatDate, Icon, initials, Panel, PanelHeading, safeExternalUrl, StatusBadge } from '../components/ui'
+import { redactUrlSecrets } from '../utils/url'
 import { SuspendPartnerDialog } from '../components/SuspendPartnerDialog'
 import { formatSuspensionEnd, suspensionTimeline } from '../domain/suspension'
 import { useOperations } from '../state/OperationsProvider'
@@ -208,7 +209,7 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
   const configured = config.mode === 'firestore' ? Boolean(config.projectId.trim() && config.partnersCollection.trim()) : Boolean(config.endpointUrl.trim())
   let requestUrl = ''
   try {
-    requestUrl = partnerAppEndpoint(config, 300)
+    requestUrl = redactUrlSecrets(partnerAppEndpoint(config, 300))
   } catch {
     requestUrl = ''
   }
@@ -525,7 +526,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
                   {file.review?.note && <small>{file.review.note}</small>}
                 </div>
                 <div className="document-review-meta"><span>Reviewer</span><strong>{file.review?.reviewedBy ?? '—'}</strong><small>{file.review ? 'Reviewed' : 'Awaiting review'}</small></div>
-                {file.downloadUrl ? <a className="text-link" href={file.downloadUrl} target="_blank" rel="noreferrer">Open file <Icon name="external" size={13} /></a> : <Button size="small" variant="quiet" onClick={() => open('/admin/kyc')}>Review in KYC</Button>}
+                {file.downloadUrl && safeExternalUrl(file.downloadUrl) ? <a className="text-link" href={safeExternalUrl(file.downloadUrl) ?? undefined} target="_blank" rel="noopener noreferrer">Open file <Icon name="external" size={13} /></a> : <Button size="small" variant="quiet" onClick={() => open('/admin/kyc')}>Review in KYC</Button>}
               </div>
             })}{submittedLiveDocs.length === 0 && <EmptyState title="No documents submitted" detail="delivery_app has not submitted file or number details for this account yet." />}</div>
             {missingLiveKeys.length > 0 && <div className="soft-notice"><Icon name="alert" size={15} /><span>Missing required KYC: {missingLiveKeys.map(documentLabel).join(', ')}. Review and record these in KYC Review.</span></div>}

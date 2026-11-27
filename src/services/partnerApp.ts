@@ -227,15 +227,21 @@ async function requestFirestoreCollection(config: PartnerAppConfig, token: strin
   return response.json()
 }
 
-export function decodeFirestoreFields(fields: unknown): Record<string, unknown> {
+// A partner can write nested delivery/notification/event data. Bound recursion
+// and array size so a malicious document cannot freeze the console while it
+// decodes a Firestore REST response.
+const MAX_DECODE_DEPTH = 20
+const MAX_DECODE_ARRAY_ITEMS = 500
+
+export function decodeFirestoreFields(fields: unknown, depth = 0): Record<string, unknown> {
   if (!isRecord(fields)) return {}
   const result: Record<string, unknown> = {}
-  for (const [key, value] of Object.entries(fields)) result[key] = decodeFirestoreValue(value)
+  for (const [key, value] of Object.entries(fields)) result[key] = decodeFirestoreValue(value, depth)
   return result
 }
 
-function decodeFirestoreValue(value: unknown): unknown {
-  if (!isRecord(value)) return null
+function decodeFirestoreValue(value: unknown, depth = 0): unknown {
+  if (!isRecord(value) || depth > MAX_DECODE_DEPTH) return null
   if (typeof value.stringValue === 'string') return value.stringValue
   if (typeof value.integerValue === 'string' || typeof value.integerValue === 'number') return Number(value.integerValue)
   if (typeof value.doubleValue === 'number') return value.doubleValue
@@ -244,8 +250,12 @@ function decodeFirestoreValue(value: unknown): unknown {
   if ('nullValue' in value) return null
   if (typeof value.referenceValue === 'string') return value.referenceValue
   if (isRecord(value.geoPointValue)) return value.geoPointValue
-  if (isRecord(value.mapValue)) return decodeFirestoreFields(value.mapValue.fields)
-  if (isRecord(value.arrayValue) && Array.isArray(value.arrayValue.values)) return value.arrayValue.values.map(decodeFirestoreValue)
+  if (isRecord(value.mapValue)) return decodeFirestoreFields(value.mapValue.fields, depth + 1)
+  if (isRecord(value.arrayValue) && Array.isArray(value.arrayValue.values)) {
+    return value.arrayValue.values
+      .slice(0, MAX_DECODE_ARRAY_ITEMS)
+      .map((item) => decodeFirestoreValue(item, depth + 1))
+  }
   return null
 }
 
@@ -285,21 +295,30 @@ function asStringArray(value: unknown): string[] {
   return text ? text.split(',').map((item) => item.trim()).filter(Boolean) : []
 }
 
-function flattenFields(source: Record<string, unknown>): Record<string, string> {
+function flattenFields(source: Record<string, unknown>, depth = 0): Record<string, string> {
   const output: Record<string, string> = {}
-  const walk = (value: unknown, key: string) => {
+  const walk = (value: unknown, key: string, level: number) => {
     if (value === null || value === undefined) return
+    if (level > MAX_DECODE_DEPTH) {
+      output[key] = '[nested data]'
+      return
+    }
     if (Array.isArray(value)) {
-      output[key] = value.map((item) => (isRecord(item) ? JSON.stringify(item) : String(item))).join(', ')
+      output[key] = value
+        .slice(0, MAX_DECODE_ARRAY_ITEMS)
+        .map((item) => (isRecord(item) ? JSON.stringify(item) : String(item)))
+        .join(', ')
       return
     }
     if (isRecord(value)) {
-      for (const [childKey, child] of Object.entries(value)) walk(child, key ? `${key}.${childKey}` : childKey)
+      for (const [childKey, child] of Object.entries(value)) {
+        walk(child, key ? `${key}.${childKey}` : childKey, level + 1)
+      }
       return
     }
     output[key] = String(value)
   }
-  for (const [key, value] of Object.entries(source)) walk(value, key)
+  for (const [key, value] of Object.entries(source)) walk(value, key, depth)
   return output
 }
 

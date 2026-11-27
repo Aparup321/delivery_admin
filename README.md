@@ -66,7 +66,7 @@ After sign-in, partner records sync from Firestore automatically. The same conne
 
 A delivery_app partner document created at sign-in contains only the verified mobile number and no application fields. KYC Review lists that record as **KYC pending** with **Awaiting onboarding** in place of the approve/reject actions; approval becomes available only after the partner submits the onboarding wizard.
 
-The Firebase refresh token is stored in the browser's `localStorage`, so the console reconnects and syncs delivery_app data automatically after a restart. The short-lived ID token is refreshed on demand. The password is never stored. Signing out clears the persistent Firebase session, demo session, and partner token. On a shared computer, sign out when finished.
+The Firebase refresh token is stored in the browser's `localStorage`, so the console reconnects and syncs delivery_app data automatically after a restart. A persisted session stops working 30 days after the original sign-in and then requires a fresh Firebase sign-in. The short-lived ID token is refreshed on demand. The password is never stored. Signing out clears the persistent Firebase session, demo session, and partner token. On a shared computer, sign out when finished.
 
 The email allow-list is a client-side gate for the console shell. It is not a security boundary: Firestore rules and API key restrictions remain authoritative. With demo mode disabled, production Firebase sign-in fails closed when `VITE_ADMIN_EMAILS` is empty.
 

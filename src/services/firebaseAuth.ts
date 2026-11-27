@@ -20,6 +20,12 @@ export interface FirebaseAdminSession {
 
 const SESSION_KEY = 'picdrop-firebase-admin-session-v1'
 const PERSISTED_SESSION_KEY = 'picdrop-firebase-admin-session-persisted-v1'
+/**
+ * A refresh token in localStorage survives browser restarts. Cap its useful
+ * life so a copied browser profile cannot stay authenticated forever; an open
+ * tab keeps its sessionStorage session until sign-out.
+ */
+const PERSISTED_SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60_000
 
 let memorySession: FirebaseAdminSession | null = null
 
@@ -52,6 +58,14 @@ function readStoredSession(key: string, storage: 'sessionStorage' | 'localStorag
   }
 }
 
+/** A persisted refresh token is accepted for 30 days after interactive sign-in. */
+export function isPersistedSessionFresh(session: FirebaseAdminSession, now = Date.now()) {
+  const signedInAt = Date.parse(session.signedInAt)
+  return Number.isFinite(signedInAt)
+    && signedInAt <= now
+    && now - signedInAt < PERSISTED_SESSION_MAX_AGE_MS
+}
+
 export function readFirebaseAdminSession(): FirebaseAdminSession | null {
   if (memorySession) return memorySession
   const active = readStoredSession(SESSION_KEY, 'sessionStorage')
@@ -63,6 +77,14 @@ export function readFirebaseAdminSession(): FirebaseAdminSession | null {
   // token is empty until the first Firestore request refreshes it.
   const persisted = readStoredSession(PERSISTED_SESSION_KEY, 'localStorage')
   if (!persisted) return null
+  if (!isPersistedSessionFresh(persisted)) {
+    try {
+      window.localStorage.removeItem(PERSISTED_SESSION_KEY)
+    } catch {
+      // The stale session still cannot be used for this page view.
+    }
+    return null
+  }
   memorySession = persisted
   return persisted
 }
@@ -148,7 +170,15 @@ async function postJson(url: string, body: unknown): Promise<unknown> {
   if (!response.ok) {
     const errorBody = isRecord(payload) && isRecord(payload.error) ? payload.error : null
     const code = errorBody ? asString(errorBody.message) : ''
-    throw new FirebaseAuthRequestError(`${authErrorMessage(code)}${code && !authErrorMessage(code).includes(code) ? ` (${code})` : ''}`, code)
+    const friendly = authErrorMessage(code)
+    // Do not echo credential-error codes: doing so would reveal whether an
+    // administrator email exists even though the friendly text is generic.
+    const sensitive = [
+      'EMAIL_NOT_FOUND', 'INVALID_PASSWORD', 'INVALID_LOGIN_CREDENTIALS',
+      'USER_DISABLED', 'TOO_MANY_ATTEMPTS_TRY_LATER',
+    ].includes(code)
+    const detail = code && !sensitive && !friendly.includes(code) ? ` (${code})` : ''
+    throw new FirebaseAuthRequestError(`${friendly}${detail}`, code)
   }
   return payload
 }

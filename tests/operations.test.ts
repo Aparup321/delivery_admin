@@ -5,7 +5,7 @@ import { getPartnerEligibility, hasPartnerAccepted, liveServiceAreas, nextPartne
 import { buildKycQueue, liveApplicationStatus, liveDocumentsBlocked, partnerVerification } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
-import { normalizePartnerAppDocuments, normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
+import { decodeFirestoreFields, normalizePartnerAppDocuments, normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { clearDemoLocalWorkflow, hasDemoLocalWorkflow, markDemoLocalWorkflow, mergeSharedPayload, toSharedPayload } from '../src/services/sharedState.ts'
@@ -14,7 +14,9 @@ import { applyFirebaseConnectionDefaults, type FirebaseEnvConfig } from '../src/
 import type { AdminSection, PartnerAppConfig, PartnerAppDocument, PartnerAppRecord, PartnerDocumentReview, Permission } from '../src/domain/model.ts'
 import { DEFAULT_ADMIN_EMAIL, DEMO_RESTRICTED_ADMIN_EMAIL } from '../src/domain/admin.ts'
 import { clearAdminSession, createAdminSession, createDemoAdminSession, DEMO_OTP_CODE, isDemoOtpValid, readAdminSession, readDemoAdminSession, storeDemoAdminSession } from '../src/auth/adminSession.ts'
-import { clearFirebaseAdminSession, readFirebaseAdminSession, storeFirebaseAdminSession, type FirebaseAdminSession } from '../src/services/firebaseAuth.ts'
+import { csvCell } from '../src/utils/csv.ts'
+import { redactUrlSecrets, safeExternalUrl } from '../src/utils/url.ts'
+import { clearFirebaseAdminSession, isPersistedSessionFresh, readFirebaseAdminSession, storeFirebaseAdminSession, type FirebaseAdminSession } from '../src/services/firebaseAuth.ts'
 
 function frameWithDemo(): AppFrame {
   return { data: createDemoState(), feedback: null, sequence: 0 }
@@ -123,7 +125,7 @@ test('the persistent Firebase session reconnects after an app restart without st
       idToken: 'short-lived-id-token',
       refreshToken: 'long-lived-refresh-token',
       expiresAt: Date.now() + 3_600_000,
-      signedInAt: '2026-05-01T09:30:00.000Z',
+      signedInAt: new Date().toISOString(),
     }
     storeFirebaseAdminSession(firebase)
     const persistedRaw = diskStore.get('picdrop-firebase-admin-session-persisted-v1')
@@ -145,6 +147,22 @@ test('the persistent Firebase session reconnects after an app restart without st
     clearFirebaseAdminSession()
     delete (globalThis as { window?: unknown }).window
   }
+})
+
+test('a persisted administrator refresh token expires after 30 days', () => {
+  const now = Date.now()
+  const session: FirebaseAdminSession = {
+    uid: 'firebase-uid-3',
+    email: 'ops@example.com',
+    idToken: '',
+    refreshToken: 'refresh-token',
+    expiresAt: 0,
+    signedInAt: new Date(now - 29 * 24 * 60 * 60_000).toISOString(),
+  }
+  assert.equal(isPersistedSessionFresh(session, now), true)
+  assert.equal(isPersistedSessionFresh({ ...session, signedInAt: new Date(now - 31 * 24 * 60 * 60_000).toISOString() }, now), false)
+  assert.equal(isPersistedSessionFresh({ ...session, signedInAt: new Date(now + 60_000).toISOString() }, now), false)
+  assert.equal(isPersistedSessionFresh({ ...session, signedInAt: 'not-a-date' }, now), false)
 })
 
 test('demo access can keep a separate Firebase data connection', () => {
@@ -2040,6 +2058,23 @@ test('demo workflow marker only matches the exact local payload and can be clear
   }
 })
 
+test('security helpers block external JavaScript links and CSV formula injection', () => {
+  assert.equal(safeExternalUrl('https://example.com/file.pdf'), 'https://example.com/file.pdf')
+  assert.equal(safeExternalUrl('javascript:alert(1)'), null)
+  assert.equal(safeExternalUrl('data:text/html,<script>alert(1)</script>'), null)
+  assert.equal(safeExternalUrl('not a url'), null)
+  assert.equal(
+    redactUrlSecrets('https://firestore.googleapis.com/v1/projects/demo/documents/partners?key=secret&pageSize=300'),
+    'https://firestore.googleapis.com/v1/projects/demo/documents/partners?key=redacted&pageSize=300',
+  )
+  assert.equal(redactUrlSecrets('not a url'), '')
+  assert.match(csvCell('=1+1'), /^"'/)
+  assert.match(csvCell('+cmd|calc'), /^"'/)
+  assert.match(csvCell('@SUM(A1:A2)'), /^"'/)
+  assert.match(csvCell('  =1+1'), /^"'/)
+  assert.equal(csvCell('normal value'), '"normal value"')
+})
+
 test('shared workflow state excludes identity and live caches and hydrates without overwriting them', () => {
   const frame = frameWithDemo()
   const payload = toSharedPayload(frame.data)
@@ -2141,6 +2176,25 @@ test('live deliveries from delivery_app are normalized for the operations map', 
   assert.equal(delivery.etaMinutes, 22)
   assert.equal(delivery.events.length, 2)
   assert.equal(delivery.currentLocation?.updatedAt, '2026-11-16T09:12:00.000Z')
+})
+
+test('Firestore decoding caps nesting and array length', () => {
+  let nested: Record<string, unknown> = { stringValue: 'bottom' }
+  for (let index = 0; index < 30; index += 1) {
+    nested = { mapValue: { fields: { child: nested } } }
+  }
+  const decoded = decodeFirestoreFields({ root: nested })
+  let cursor: unknown = decoded.root
+  let depth = 0
+  while (cursor && typeof cursor === 'object' && 'child' in cursor && depth < 40) {
+    cursor = (cursor as Record<string, unknown>).child
+    depth += 1
+  }
+  assert.ok(depth <= 22)
+
+  const values = Array.from({ length: 600 }, (_, index) => ({ integerValue: String(index) }))
+  const list = decodeFirestoreFields({ list: { arrayValue: { values } } }).list
+  assert.equal(Array.isArray(list) ? list.length : -1, 500)
 })
 
 test('live delivery normalization tolerates missing optional fields', () => {

@@ -47,10 +47,13 @@ function readList(value: string | undefined) {
 }
 
 /** Emails allowed into the console. Production builds fail closed when empty. */
-// Demo access is opt-in for local development; production builds never seed
-// demo records. An empty env object means a direct Node import (tests), where
-// demo sessions must remain available.
-export const demoModeEnabled = Object.keys(env).length === 0 || env.VITE_DEMO_MODE === 'true'
+// Demo access is opt-in for local development. A production build must set
+// VITE_DEMO_MODE=true explicitly; a missing value fails closed even when the
+// rest of the environment is empty. An empty env object means a direct Node
+// import (tests), where demo sessions must remain available.
+export const demoModeEnabled = env.PROD
+  ? env.VITE_DEMO_MODE === 'true'
+  : Object.keys(env).length === 0 || env.VITE_DEMO_MODE === 'true'
 
 export const adminEmailAllowList = readList(env.VITE_ADMIN_EMAILS)
 export const hasAdminEmailAllowList = adminEmailAllowList.length > 0

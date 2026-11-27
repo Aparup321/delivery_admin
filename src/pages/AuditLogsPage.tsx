@@ -1,10 +1,7 @@
 import { useMemo, useState } from 'react'
 import type { AuditLogEntry, OperationsState } from '../domain/model'
 import { Button, Dialog, EmptyState, formatDate, Icon, Panel } from '../components/ui'
-
-function csvCell(value: string) {
-  return `"${value.replace(/"/g, '""')}"`
-}
+import { csvCell } from '../utils/csv'
 
 function exportCsv(rows: AuditLogEntry[]) {
   const header = ['Event ID', 'Event type', 'Operator', 'Role', 'Target type', 'Target ID', 'Previous value', 'New value', 'Timestamp', 'Reason']

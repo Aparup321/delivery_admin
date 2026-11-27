@@ -150,6 +150,8 @@ export function ConfirmDialog({ title, detail, reasonLabel = 'Reason', confirmLa
   </Dialog>
 }
 
+export { safeExternalUrl } from '../utils/url'
+
 export function formatDate(value: string | null | undefined, options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) {
   if (!value) return '—'
   const date = new Date(value)

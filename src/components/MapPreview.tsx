@@ -35,11 +35,27 @@ function pointLatLng(point: MapPoint): L.LatLng | null {
   return L.latLng(point.latitude, point.longitude)
 }
 
+function markerKind(kind: MapPoint['kind']) {
+  return kind === 'pickup' || kind === 'drop' || kind === 'partner'
+    ? kind
+    : 'neutral'
+}
+
 function markerColor(kind: MapPoint['kind']) {
   if (kind === 'pickup') return '#29956f'
   if (kind === 'drop') return '#d94f5c'
   if (kind === 'partner') return '#2f7de1'
   return '#713ce0'
+}
+
+/**
+ * Leaflet treats string tooltip content as HTML. Labels include partner names
+ * and free-text addresses, so pass a text node instead of interpolating data.
+ */
+function tooltipText(label: string) {
+  const node = document.createElement('span')
+  node.textContent = label
+  return node
 }
 
 function fitMap(map: L.Map, points: MapPoint[], animate = false) {
@@ -193,14 +209,15 @@ export function MapPreview({
 
     for (const { point, latlng } of valid) {
       const color = markerColor(point.kind)
-      const tooltipClass = `osm-map-tooltip osm-map-tooltip-${point.kind ?? 'neutral'}`
+      const kind = markerKind(point.kind)
+      const tooltipClass = `osm-map-tooltip osm-map-tooltip-${kind}`
 
       if (interactive && valid.length === 1) {
         // The create-delivery picker has one movable stop. A draggable marker
         // makes fine adjustment possible without hunting for another click.
         const icon = L.divIcon({
           className: 'osm-picker-marker',
-          html: `<span class="osm-picker-dot osm-picker-dot-${point.kind ?? 'neutral'}"></span>`,
+          html: `<span class="osm-picker-dot osm-picker-dot-${kind}"></span>`,
           iconSize: [18, 18],
           iconAnchor: [9, 9],
         })
@@ -214,7 +231,7 @@ export function MapPreview({
           const next = marker.getLatLng()
           onMapClickRef.current?.({ latitude: next.lat, longitude: next.lng })
         })
-        marker.bindTooltip(point.label, {
+        marker.bindTooltip(tooltipText(point.label), {
           permanent: true,
           direction: 'right',
           offset: [11, 0],
@@ -243,7 +260,7 @@ export function MapPreview({
         fillOpacity: 1,
         interactive: false,
       })
-      dot.bindTooltip(point.label, {
+      dot.bindTooltip(tooltipText(point.label), {
         permanent: true,
         direction: 'right',
         offset: [10, 0],

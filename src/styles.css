@@ -1137,9 +1137,9 @@ a { color: inherit; }
 .fatal-error p { max-width: 520px; margin: 0 0 8px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 
 @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes dialog-in { from { opacity: 0; transform: translateY(9px) scale(.988); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes dialog-in { from { opacity: 0; transform: translateY(12px) scale(.972); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes details-rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
-@keyframes toast-in { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes toast-in { from { opacity: 0; transform: translateY(12px) scale(.965); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
 @media (max-width: 1300px) {
   .page-content { padding-inline: 22px; }
@@ -1436,3 +1436,142 @@ a { color: inherit; }
 .row-menu-trigger { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; color: #827c8b; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
 .row-menu-trigger:hover, .row-menu-trigger.open { color: var(--purple); background: #f3eff9; }
 .row-menu-note { display: block; padding: 8px; color: #6b6573; border-top: 1px solid #efedf3; font-size: 8px; }
+
+/* ── Premium motion layer ─────────────────────────────────────────────── */
+:root {
+  --motion-fast: 160ms;
+  --motion-base: 260ms;
+  --motion-slow: 420ms;
+  --motion-ease: cubic-bezier(.22, 1, .36, 1);
+  --motion-spring: cubic-bezier(.34, 1.56, .64, 1);
+}
+
+@keyframes page-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes hero-rise { from { opacity: 0; transform: translateY(9px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes surface-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes card-in { from { opacity: 0; transform: translateY(11px) scale(.984); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes row-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes dropdown-in { from { opacity: 0; transform: translateY(-5px) scale(.99); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes drawer-in { from { transform: translateX(-102%); } to { transform: translateX(0); } }
+@keyframes bar-grow { from { opacity: .25; transform: scaleY(.06); } to { opacity: 1; transform: scaleY(1); } }
+@keyframes donut-pop { from { opacity: 0; transform: scale(.86) rotate(-9deg); } to { opacity: 1; transform: scale(1) rotate(0); } }
+@keyframes status-breathe { 0%, 100% { box-shadow: 0 0 0 0 rgba(45,154,110,0); } 50% { box-shadow: 0 0 0 4px rgba(45,154,110,.13); } }
+@keyframes environment-breathe { 0%, 100% { box-shadow: 0 0 0 3px rgba(231,165,61,.12); } 50% { box-shadow: 0 0 0 5px rgba(231,165,61,.19); } }
+
+/* First paint and route changes */
+.login-brand-lockup { animation: hero-rise .45s var(--motion-ease) backwards; }
+.login-brand-copy { animation: hero-rise .55s var(--motion-ease) 60ms backwards; }
+.login-feature-list li { animation: row-in .42s var(--motion-ease) backwards; }
+.login-feature-list li:nth-child(2) { animation-delay: 90ms; }
+.login-feature-list li:nth-child(3) { animation-delay: 150ms; }
+.login-feature-list li:nth-child(4) { animation-delay: 210ms; }
+.login-card { animation: card-in .55s var(--motion-ease) 90ms backwards; }
+
+.page-heading { animation: hero-rise var(--motion-slow) var(--motion-ease) backwards; }
+.page-stack { animation: page-fade var(--motion-base) ease-out backwards; }
+.panel, .records-panel { animation: surface-fade var(--motion-slow) var(--motion-ease) backwards; }
+.page-stack > :nth-child(2) { animation-delay: 35ms; }
+.page-stack > :nth-child(3) { animation-delay: 70ms; }
+.page-stack > :nth-child(4) { animation-delay: 105ms; }
+.page-stack > :nth-child(5) { animation-delay: 140ms; }
+.page-stack > :nth-child(n+6) { animation-delay: 175ms; }
+
+/* Metric cards */
+.metric-card { transition: border-color var(--motion-base) var(--motion-ease), transform var(--motion-base) var(--motion-ease), box-shadow var(--motion-base) var(--motion-ease); animation: card-in .48s var(--motion-ease) backwards; }
+.metric-card:nth-child(2) { animation-delay: 35ms; }
+.metric-card:nth-child(3) { animation-delay: 70ms; }
+.metric-card:nth-child(4) { animation-delay: 105ms; }
+.metric-card:nth-child(5) { animation-delay: 140ms; }
+.metric-card:nth-child(n+6) { animation-delay: 175ms; }
+.metric-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; border-radius: 7px 7px 0 0; background: linear-gradient(90deg, rgba(113,60,224,.65), rgba(113,60,224,0)); opacity: 0; transition: opacity var(--motion-base) ease; }
+.metric-card:hover { transform: translateY(-3px); box-shadow: 0 13px 28px rgba(25,21,43,.075); }
+.metric-card:hover::before { opacity: 1; }
+
+/* Tables and list rows */
+.data-table tbody tr { animation: row-in .32s var(--motion-ease) backwards; }
+.data-table tbody tr:nth-child(2) { animation-delay: 22ms; }
+.data-table tbody tr:nth-child(3) { animation-delay: 44ms; }
+.data-table tbody tr:nth-child(4) { animation-delay: 66ms; }
+.data-table tbody tr:nth-child(5) { animation-delay: 88ms; }
+.data-table tbody tr:nth-child(n+6) { animation-delay: 110ms; }
+.data-table td { transition: box-shadow var(--motion-fast) ease; }
+.data-table tbody tr:hover { background: linear-gradient(90deg, #fbf8ff, #fff 70%); }
+.data-table tbody tr:hover td:first-child { box-shadow: inset 2px 0 var(--purple); }
+.activity-feed-row, .attention-row, .notification-row, .document-row, .history-row, .milestone-row, .offer-row, .partner-timeline-item, .tracking-events > div { animation: row-in .3s var(--motion-ease) backwards; }
+.activity-feed-row, .attention-row, .notification-row, .document-row, .history-row, .offer-row { transition: background var(--motion-fast) ease, transform var(--motion-fast) var(--motion-ease); }
+.activity-feed-row:hover, .attention-row:hover, .notification-row:hover, .document-row:hover, .history-row:hover, .offer-row:hover { background: #fcfbff; }
+.document-row:hover { transform: translateX(1px); }
+
+/* Charts */
+.status-donut { animation: donut-pop .55s var(--motion-ease) 90ms backwards; }
+.activity-bars span { transform-origin: bottom; animation: bar-grow .55s var(--motion-ease) backwards; }
+.activity-day:nth-child(2) .activity-bars span { animation-delay: 35ms; }
+.activity-day:nth-child(3) .activity-bars span { animation-delay: 70ms; }
+.activity-day:nth-child(4) .activity-bars span { animation-delay: 105ms; }
+.activity-day:nth-child(5) .activity-bars span { animation-delay: 140ms; }
+.activity-day:nth-child(n+6) .activity-bars span { animation-delay: 175ms; }
+.mini-progress i { transition: width var(--motion-slow) var(--motion-ease); }
+
+/* Navigation and shell */
+.sidebar { background: radial-gradient(circle at 22% 0%, rgba(158,112,232,.18), transparent 42%), linear-gradient(180deg, #2c1d46 0%, #251737 100%); }
+.nav-item { transition: background var(--motion-fast) ease, color var(--motion-fast) ease, transform var(--motion-base) var(--motion-ease); }
+.nav-item > svg { transition: transform var(--motion-base) var(--motion-spring); }
+.nav-item:hover:not(.active) { transform: translateX(2px); }
+.nav-item:hover > svg, .nav-item.active > svg { transform: scale(1.08); }
+.nav-item.active { background: linear-gradient(90deg, #5a28b3, #4b1f9c); box-shadow: inset 3px 0 #c4a9f3, 0 8px 18px rgba(38,15,78,.22); }
+.profile-card { transition: background var(--motion-fast) ease, transform var(--motion-base) var(--motion-ease), border-color var(--motion-fast) ease; }
+.profile-card:hover { transform: translateY(-1px); }
+.avatar { transition: transform var(--motion-base) var(--motion-spring); }
+.profile-card:hover .avatar, .topbar-user:hover .avatar { transform: scale(1.06); }
+.topbar { background: rgba(255,255,255,.93); }
+.topbar::after { content: ""; position: absolute; right: 0; bottom: -1px; left: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(113,60,224,.26), transparent); pointer-events: none; }
+
+/* Controls */
+.button { transition: background var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease, box-shadow var(--motion-base) ease, transform var(--motion-base) var(--motion-ease); }
+.button:hover:not(:disabled) { transform: translateY(-1px); }
+.button:active:not(:disabled) { transform: translateY(0) scale(.985); }
+.button-primary { position: relative; overflow: hidden; }
+.button-primary::after { content: ""; position: absolute; top: -60%; bottom: -60%; left: -35%; width: 34%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.34), transparent); transform: translateX(-230%) skewX(-17deg); transition: transform .62s var(--motion-ease); pointer-events: none; }
+.button-primary:hover:not(:disabled)::after { transform: translateX(460%) skewX(-17deg); }
+.button-secondary:hover:not(:disabled) { box-shadow: 0 4px 11px rgba(25,21,43,.06); }
+.search-control, .global-search, .filter-control select, .filter-control input { transition: border-color var(--motion-fast) ease, box-shadow var(--motion-fast) ease; }
+.toggle { transition: background var(--motion-base) ease; }
+.toggle i { transition: transform var(--motion-base) var(--motion-spring), background var(--motion-fast) ease; }
+.partner-section-tabs button { transition: color var(--motion-fast) ease, border-color var(--motion-base) var(--motion-ease), background var(--motion-fast) ease; }
+.partner-section-tabs button:hover { background: rgba(113,60,224,.045); border-radius: 5px 5px 0 0; }
+.row-open-button { transition: color var(--motion-fast) ease, background var(--motion-fast) ease, transform var(--motion-base) var(--motion-ease); }
+.row-open-button:hover { transform: translateX(2px); }
+.global-search-results, .row-menu-popover, .location-suggestions { animation: dropdown-in .18s var(--motion-ease) backwards; transform-origin: top right; }
+.location-suggestions { transform-origin: top left; }
+
+/* Live indicators */
+.environment-dot { animation: environment-breathe 3s ease-in-out infinite; }
+.status-available .status-dot, .status-eligible .status-dot { animation: status-breathe 2.8s ease-in-out infinite; }
+.status-badge { transition: background var(--motion-fast) ease, border-color var(--motion-fast) ease, color var(--motion-fast) ease; }
+
+/* Mobile drawer */
+.mobile-nav-open .sidebar { animation: drawer-in .3s var(--motion-ease) both; }
+.mobile-nav-open .mobile-nav-backdrop { animation: fade-in .2s ease-out both; }
+
+/* Reduced motion: keep state changes instant and never translate controls. */
+@media (prefers-reduced-motion: reduce) {
+  .login-brand-lockup, .login-brand-copy, .login-feature-list li, .login-card,
+  .page-heading, .page-stack, .panel, .records-panel, .metric-card,
+  .data-table tbody tr, .activity-feed-row, .attention-row, .notification-row,
+  .document-row, .history-row, .milestone-row, .offer-row, .partner-timeline-item,
+  .tracking-events > div, .status-donut, .activity-bars span,
+  .global-search-results, .row-menu-popover, .location-suggestions,
+  .mobile-nav-open .sidebar, .mobile-nav-open .mobile-nav-backdrop,
+  .environment-dot, .status-available .status-dot, .status-eligible .status-dot {
+    animation: none !important;
+  }
+  .nav-item, .nav-item > svg, .nav-item:hover:not(.active), .nav-item:hover > svg, .nav-item.active > svg,
+  .metric-card, .metric-card:hover, .button, .button:hover:not(:disabled), .button:active:not(:disabled),
+  .profile-card, .profile-card:hover, .avatar, .profile-card:hover .avatar, .topbar-user:hover .avatar,
+  .toggle i, .mini-progress i, .row-open-button, .row-open-button:hover, .document-row:hover {
+    transform: none !important;
+    transition: none !important;
+  }
+  .button-primary::after { display: none !important; }
+}
+

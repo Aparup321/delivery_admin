@@ -11,7 +11,7 @@ import {
   submittedLiveDocumentKeys,
   type KycQueueItem,
 } from '../domain/kyc'
-import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, StatusBadge } from '../components/ui'
+import { Button, Dialog, EmptyState, formatDate, Icon, initials, Panel, safeExternalUrl, StatusBadge } from '../components/ui'
 import { beginFirebaseDataConnection } from '../auth/adminSession'
 import { liveServiceAreas } from '../domain/operations'
 import { readPartnerAppToken, syncPartnerAppDocuments, syncPartnerAppRecords, writePartnerDocumentReview } from '../services/partnerApp'
@@ -334,7 +334,7 @@ export function KycApplicationDetailsDialog({ item, application, record, documen
                   <span className="live-document-meta">
                     {!provided ? <StatusBadge status="Missing" /> : file.review ? <StatusBadge status={file.review.status} /> : <StatusBadge status="Under Review" />}
                     {file.review?.expiresAt && <small className={new Date(file.review.expiresAt).getTime() <= Date.now() ? 'text-danger' : ''}>Expires {formatDate(file.review.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</small>}
-                    {file.downloadUrl && <a href={file.downloadUrl} target="_blank" rel="noreferrer">Open file</a>}
+                    {file.downloadUrl && safeExternalUrl(file.downloadUrl) && <a href={safeExternalUrl(file.downloadUrl) ?? undefined} target="_blank" rel="noopener noreferrer">Open file</a>}
                     {canReviewDocuments && provided && <Button size="small" variant="quiet" onClick={() => beginReview(file)}>Review</Button>}
                   </span>
                 </div>
