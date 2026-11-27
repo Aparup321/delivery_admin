@@ -189,6 +189,13 @@ export interface PartnerAppRecord {
   syncedAt: string
 }
 
+/** Lightweight presence-only projection of one delivery_app partner. */
+export interface PartnerPresence {
+  id: string
+  isOnline: boolean | null
+  fields: Record<string, string>
+}
+
 export interface PartnerAppTicket {
   id: string
   partnerUid: string

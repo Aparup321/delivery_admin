@@ -48,18 +48,21 @@ export function livePresenceState(record: PartnerAppRecord | undefined, now = Da
   if (!record) return 'unknown'
   const availability = String(record.fields.availability ?? '').trim().toLowerCase()
   const status = String(record.status ?? '').trim().toLowerCase()
-  const explicitOnline = record.isOnline === true
+  const availabilityOnline = ['online', 'available', 'on delivery', 'busy'].includes(availability)
     || ['online', 'available'].includes(status)
-    || ['online', 'available', 'on delivery', 'busy'].includes(availability)
-  const explicitOffline = record.isOnline === false
+  const availabilityOffline = availability === 'offline'
     || ['offline', 'unavailable'].includes(status)
-    || availability === 'offline'
   const updatedAt = presenceTimestamp(record)
-  if (updatedAt !== null && now - updatedAt > PRESENCE_TTL_MS) {
-    return explicitOnline ? 'stale' : 'offline'
-  }
-  if (explicitOnline) return 'online'
-  if (explicitOffline) return 'offline'
+  const heartbeatStale = updatedAt !== null && now - updatedAt > PRESENCE_TTL_MS
+
+  // The explicit boolean is the partner app's switch. It must win over a stale
+  // availability string from an older write; otherwise an offline partner can
+  // keep showing as active in the console.
+  if (record.isOnline === false) return 'offline'
+  if (record.isOnline === true) return heartbeatStale ? 'stale' : 'online'
+  if (availabilityOffline) return 'offline'
+  if (heartbeatStale) return 'offline'
+  if (availabilityOnline) return 'online'
   return 'unknown'
 }
 

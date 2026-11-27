@@ -1,4 +1,4 @@
-import type { PartnerAppConfig, PartnerAppDocument, PartnerAppDocumentFile, PartnerAppRecord, PartnerAppTicket, PartnerDocumentReview } from '../domain/model.ts'
+import type { PartnerAppConfig, PartnerAppDocument, PartnerAppDocumentFile, PartnerAppRecord, PartnerAppTicket, PartnerDocumentReview, PartnerPresence } from '../domain/model.ts'
 import { resolvePartnerAppToken } from './firebaseAuth.ts'
 
 const TOKEN_KEY = 'picdrop-partner-app-token'
@@ -209,10 +209,18 @@ async function requestPartnerApp(config: PartnerAppConfig, token: string, pageSi
   }
 }
 
-async function requestFirestoreCollection(config: PartnerAppConfig, token: string, collection: string, pageSize = 300): Promise<unknown> {
+async function requestFirestoreCollection(
+  config: PartnerAppConfig,
+  token: string,
+  collection: string,
+  pageSize = 300,
+  fieldPaths: string[] = [],
+): Promise<unknown> {
   if (config.mode !== 'firestore') return []
   const base = firestoreCollectionUrl(config, collection)
   const params = new URLSearchParams({ pageSize: String(pageSize) })
+  // Firestore returns only the requested fields when a document mask is set.
+  for (const path of fieldPaths) params.append('mask.fieldPaths', path)
   if (config.apiKey.trim()) params.set('key', config.apiKey.trim())
   const url = `${base}?${params.toString()}`
   const headers: Record<string, string> = { Accept: 'application/json' }
@@ -541,6 +549,49 @@ export async function syncPartnerAppDocuments(config: PartnerAppConfig, token: s
   if (config.mode !== 'firestore') return []
   const payload = await requestFirestoreCollection(config, token, 'partner_documents')
   return normalizePartnerAppDocuments(payload, new Date().toISOString())
+}
+
+/**
+ * Reads only the fields needed to decide whether a partner is online. This is
+ * polled more frequently than the full partner sync so a partner switching
+ * Online/Offline in delivery_app is reflected in the console quickly without
+ * re-reading every profile field, KYC document and support ticket.
+ */
+export function normalizePartnerAppPresence(payload: unknown): PartnerPresence[] {
+  if (!isRecord(payload) || !Array.isArray(payload.documents)) return []
+  const presences: PartnerPresence[] = []
+  for (const document of payload.documents) {
+    if (!isRecord(document) || typeof document.name !== 'string' || !isRecord(document.fields)) continue
+    const id = document.name.split('/').pop()
+    if (!id) continue
+    const fields = decodeFirestoreFields(document.fields)
+    presences.push({
+      id,
+      isOnline: typeof fields.isOnline === 'boolean' ? fields.isOnline : null,
+      fields: flattenFields(fields),
+    })
+  }
+  return presences
+}
+
+export async function syncPartnerAppPresence(config: PartnerAppConfig, token: string): Promise<PartnerPresence[]> {
+  if (config.mode !== 'firestore') return []
+  const payload = await requestFirestoreCollection(
+    config,
+    token,
+    config.partnersCollection,
+    300,
+    [
+      'isOnline',
+      'availability',
+      'presenceUpdatedAt',
+      'lastSeen',
+      'lastLocationUpdatedAt',
+      'status',
+      'applicationStatus',
+    ],
+  )
+  return normalizePartnerAppPresence(payload)
 }
 
 async function patchFirestoreDocument(

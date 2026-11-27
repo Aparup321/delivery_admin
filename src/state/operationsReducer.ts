@@ -1,6 +1,6 @@
 import { adminUserFromAccount, normalizeAdminAccess, normalizeAdminEmail, userCan } from '../domain/admin.ts'
 import { createDropOtp } from '../domain/estimates.ts'
-import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type Assignment, type AuditEventType, type AuditLogEntry, type Delivery, type DeliveryMilestoneName, type DeliveryStatus, type DocumentStatus, type LiveOrderSnapshot, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppDocument, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type PartnerDocumentReview, type Permission } from '../domain/model.ts'
+import { DELIVERY_MILESTONES, type AdminAccount, type AdminRole, type AdminSection, type Assignment, type AuditEventType, type AuditLogEntry, type Delivery, type DeliveryMilestoneName, type DeliveryStatus, type DocumentStatus, type LiveOrderSnapshot, type NotificationCategory, type OperationsState, type Partner, type PartnerAppConfig, type PartnerAppDocument, type PartnerAppRecord, type PartnerAppTicket, type PartnerApplication, type PartnerDocumentReview, type PartnerPresence, type Permission } from '../domain/model.ts'
 import { createDemoState } from '../domain/seed.ts'
 import { getPartnerEligibility, getActiveAssignment, hasPartnerAccepted, isLivePartnerApproved, nextPartnerId, liveServiceAreas, livePresenceState } from '../domain/operations.ts'
 import { DEFAULT_SUSPENSION_DAYS, formatSuspensionEnd, isValidSuspensionDays, suspensionDaysLabel, suspensionEnd } from '../domain/suspension.ts'
@@ -39,6 +39,7 @@ export type OperationAction =
   | { type: 'partnerApp.save'; config: Pick<PartnerAppConfig, 'mode' | 'projectId' | 'apiKey' | 'databaseId' | 'partnersCollection' | 'endpointUrl'> }
   | { type: 'partnerApp.connected'; at: string }
   | { type: 'partnerApp.sync-result'; records: PartnerAppRecord[]; tickets?: PartnerAppTicket[]; documents?: PartnerAppDocument[]; at: string; silent?: boolean }
+  | { type: 'partnerApp.presence'; presences: PartnerPresence[]; at: string }
   | { type: 'partnerApp.ticket-status'; ticketId: string; status: string; at: string }
   | { type: 'partnerApp.document-review'; uid: string; documentKey: string; review: PartnerDocumentReview; at: string }
   | { type: 'partnerApp.failed'; message: string }
@@ -82,6 +83,7 @@ const permissionByAction: Partial<Record<OperationAction['type'], Permission>> =
   // can open Partners. Linking is part of partner management.
   'partnerApp.connected': 'read',
   'partnerApp.sync-result': 'read',
+  'partnerApp.presence': 'read',
   'partnerApp.failed': 'read',
   'partnerApp.link': 'partner-management',
   'partnerApp.unlink': 'partner-management',
@@ -176,6 +178,12 @@ function fullPhoneKey(value: string | null | undefined) {
   return digits.length >= 10 ? digits.slice(-10) : ''
 }
 
+function livePresenceForPartner(data: OperationsState, partner: Partner) {
+  if (!partner.partnerAppUid) return null
+  const record = data.partnerAppRecords.find((item) => item.id === partner.partnerAppUid)
+  return record ? livePresenceState(record) : null
+}
+
 function syncLinkedPartnerAvailability(data: OperationsState) {
   for (const partner of data.partners) {
     if (!partner.partnerAppUid || partner.availability === 'Restricted' || partner.availability === 'Suspended') continue
@@ -188,7 +196,12 @@ function syncLinkedPartnerAvailability(data: OperationsState) {
       partner.availability = 'On Delivery'
       continue
     }
-    if (!record) continue
+    if (!record) {
+      // A linked partner with no live record is not present in delivery_app.
+      // Do not keep the last known Available/On Delivery value indefinitely.
+      partner.availability = 'Offline'
+      continue
+    }
     const approved = isLivePartnerApproved(record)
       || data.applications.some((application) => application.partnerAppUid === record.id && application.status === 'Approved')
     if (!approved || record.status?.toLowerCase() === 'paused') {
@@ -292,9 +305,7 @@ function importApprovedPartnerAppRecords(data: OperationsState, at: string) {
       ?? record.fields.registrationNumber
       ?? '',
     ).replace(/\D/g, '')
-    const online = record.isOnline === true
-      || record.status?.trim().toLowerCase() === 'online'
-      || record.status?.trim().toLowerCase() === 'available'
+    const online = livePresenceState(record) === 'online'
     const partner: Partner = {
       id: partnerId,
       name: record.name,
@@ -1325,8 +1336,14 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       partner.suspendedReason = null
       partner.suspendedUntil = null
       partner.suspensionDays = null
-      partner.availability = getActiveAssignment(data, partner.id) ? 'On Delivery' : 'Available'
-      partner.needsOperationalReview = Boolean(getActiveAssignment(data, partner.id))
+      const activeAssignment = getActiveAssignment(data, partner.id)
+      const presence = livePresenceForPartner(data, partner)
+      partner.availability = activeAssignment
+        ? 'On Delivery'
+        : partner.partnerAppUid
+          ? presence === 'online' ? 'Available' : 'Offline'
+          : 'Available'
+      partner.needsOperationalReview = Boolean(activeAssignment)
       partnerHistory(data, partner.id, 'Eligibility restored', `Restored from ${previous.toLowerCase()}: ${action.reason.trim()}`, getActiveAssignment(data, partner.id)?.deliveryId ?? null, at)
       audit(data, 'Partner eligibility changed', 'Partner', partner.id, previous, partner.availability, action.reason, at)
       return { message: `${partner.name} restored to ${partner.availability.toLowerCase()} status.` }
@@ -1336,6 +1353,14 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
       requireValue(action.reason, 'Operational note')
       if (partner.availability === 'Restricted' || partner.availability === 'Suspended') throw new Error('Restore this partner before changing availability.')
       if (action.availability === 'Available' && getActiveAssignment(data, partner.id)) throw new Error('A partner with an active delivery cannot be set available.')
+      if (action.availability === 'Available' && partner.partnerAppUid) {
+        const presence = livePresenceForPartner(data, partner)
+        if (presence !== 'online') {
+          throw new Error(presence === 'stale'
+            ? 'Partner presence is stale. Ask them to reopen delivery_app and go Online.'
+            : 'Partner is offline in delivery_app. Ask them to go Online first.')
+        }
+      }
       const previous = partner.availability
       partner.availability = action.availability
       partnerHistory(data, partner.id, 'Availability changed', `Availability changed from ${previous} to ${action.availability}: ${action.reason.trim()}.`, null, at)
@@ -1450,6 +1475,43 @@ function applyAction(data: OperationsState, action: OperationAction): { message:
         audit(data, 'Partner app data synced', 'Settings', 'partner-app', `${previousCount} cached records`, `${data.partnerAppRecords.length} cached records · ${linkedCount} linked partners`, 'Partner records synced from delivery_app.', at)
       }
       return { message: `${data.partnerAppRecords.length} partner app record${data.partnerAppRecords.length === 1 ? '' : 's'} synced.${linkedCount ? ` ${linkedCount} partner${linkedCount === 1 ? '' : 's'} linked by name.` : ' Link records to admin partners before using live account actions.'}` }
+    }
+    case 'partnerApp.presence': {
+      if (!Array.isArray(action.presences)) throw new Error('Partner presence data was not valid.')
+      const byId = new Map(action.presences.map((presence) => [presence.id, presence]))
+      let changed = false
+      data.partnerAppRecords = data.partnerAppRecords.map((record) => {
+        const presence = byId.get(record.id)
+        if (!presence) return record
+        const nextIsOnline = presence.isOnline ?? record.isOnline ?? null
+        const nextFields = { ...record.fields, ...presence.fields }
+        const nextStatus = presence.fields.status ?? record.status
+        const nextApplicationStatus = presence.fields.applicationStatus ?? record.applicationStatus
+        if (
+          nextIsOnline === record.isOnline
+          && nextStatus === record.status
+          && nextApplicationStatus === record.applicationStatus
+          && JSON.stringify(nextFields) === JSON.stringify(record.fields)
+        ) {
+          return record
+        }
+        changed = true
+        return {
+          ...record,
+          status: nextStatus,
+          applicationStatus: nextApplicationStatus,
+          isOnline: nextIsOnline,
+          fields: nextFields,
+        }
+      })
+      // Re-evaluate even when the raw heartbeat fields did not change: the
+      // presence TTL can expire between two identical payloads, which must turn
+      // an Online partner Offline without waiting for another profile edit.
+      const availabilityBefore = data.partners.map((partner) => `${partner.id}:${partner.availability}`).join('\u0000')
+      syncLinkedPartnerAvailability(data)
+      const availabilityChanged = data.partners.map((partner) => `${partner.id}:${partner.availability}`).join('\u0000') !== availabilityBefore
+      if (!changed && !availabilityChanged) return { message: 'Partner presence unchanged.', kind: 'info' }
+      return { message: 'Partner presence updated.', kind: 'info' }
     }
     case 'partnerApp.failed': {
       data.partnerApp.lastError = action.message.trim() || 'Partner app request failed.'
@@ -1814,6 +1876,7 @@ export function appReducer(frame: AppFrame, action: OperationAction): AppFrame {
       data,
       sequence,
       feedback: action.type === 'user.identify'
+        || action.type === 'partnerApp.presence'
         || (action.type === 'partnerApp.sync-result' && action.silent)
         ? null
         : { id: sequence, kind: result.kind ?? 'success', message: result.message },

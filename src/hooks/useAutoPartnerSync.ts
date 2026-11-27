@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { AdminSession } from '../auth/adminSession'
 import type { PartnerAppDocument, PartnerAppRecord, PartnerAppTicket } from '../domain/model'
-import { readPartnerAppToken, syncPartnerAppDocuments, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
+import { readPartnerAppToken, syncPartnerAppDocuments, syncPartnerAppPresence, syncPartnerAppRecords, syncPartnerAppTickets } from '../services/partnerApp'
 import { readFirebaseAdminSession } from '../services/firebaseAuth'
 import {
   activeQuotaMessage,
@@ -12,11 +12,15 @@ import {
 import { useOperations } from '../state/OperationsProvider'
 
 // REST has no Firestore listener, but every poll reads documents against the
-// project's daily quota. Poll once a minute and stay paused until the next
-// daily reset when Firestore answers 429 Quota exceeded, so an exhausted quota
-// stops generating failing requests instead of retrying every few minutes.
+// project's daily quota. Full records sync once a minute; a field-masked
+// presence projection runs every 15 seconds so Online/Offline changes appear
+// quickly without re-reading KYC, tickets or every profile field. Stay paused
+// until the next daily reset when Firestore answers 429 Quota exceeded.
 const POLL_INTERVAL_MS = 60_000
 const FOCUS_REFRESH_MS = 45_000
+// Presence is a tiny field-masked read. Poll it more often than full records so
+// the console reflects an Online/Offline switch within a few seconds.
+const PRESENCE_POLL_INTERVAL_MS = 15_000
 
 /** Stable comparison for the extra string fields a record carries. */
 function fieldsKey(fields: Record<string, string>) {
@@ -65,9 +69,9 @@ function documentsChanged(previous: PartnerAppDocument[], next: PartnerAppDocume
 /**
  * Loads delivery_app partner records after a Firebase data connection and
  * keeps them fresh while the console stays open. The REST fallback refreshes
- * once a minute because this app does not yet use the Firestore Web SDK, and it
- * pauses entirely until the daily reset when Firestore reports quota
- * exhaustion. The console identity can
+ * full records once a minute and presence fields every 15 seconds because this
+ * app does not yet use the Firestore Web SDK, and it pauses entirely until the
+ * daily reset when Firestore reports quota exhaustion. The console identity can
  * remain Demo access; the Firebase session only authorizes delivery_app data.
  * Without a Firebase session the seeded sample partners are left untouched.
  */
@@ -101,10 +105,13 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
     if (!configured) return
 
     let active = true
-    // Keep the in-flight flag per effect run. React StrictMode starts a second
+    // Keep the in-flight flags per effect run. React StrictMode starts a second
     // run while the first request is still pending; a shared ref would make the
     // second run skip the request while the first run discards its result.
     let inFlight = false
+    // Presence must not wait behind a slow full sync; otherwise an Offline
+    // switch during a profile refresh would stay stale in the console.
+    let presenceInFlight = false
 
     // Replace the raw 429 stored by an earlier session with the reset notice,
     // once, so a reload explains why live data is paused.
@@ -148,6 +155,30 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
       }
     }
 
+    // The presence projection is intentionally separate from the full sync:
+    // it only reads isOnline/availability/heartbeat fields, so it can run much
+    // more often without re-reading every partner profile and KYC document.
+    const refreshPresence = async () => {
+      if (!active || presenceInFlight) return
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      if (readQuotaBlockedUntil(config.projectId)) return
+      presenceInFlight = true
+      try {
+        const token = readPartnerAppToken()
+        const presences = await syncPartnerAppPresence(config, token)
+        if (!active || presences.length === 0) return
+        dispatch({ type: 'partnerApp.presence', presences, at: new Date().toISOString() })
+      } catch (error) {
+        if (!active) return
+        // Presence polling is best-effort. Only a quota failure needs to pause
+        // the console; a transient network error must not spam the operator.
+        const message = blockQuotaUntilReset(error, config.projectId)?.message
+        if (message) dispatch({ type: 'partnerApp.failed', message })
+      } finally {
+        presenceInFlight = false
+      }
+    }
+
     const lastSync = config.lastSyncAt
       ? new Date(config.lastSyncAt).getTime()
       : 0
@@ -160,9 +191,17 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
     }
 
     const timer = window.setInterval(() => void refresh(false), POLL_INTERVAL_MS)
-    const onFocus = () => void refresh(false)
+    const presenceTimer = window.setInterval(() => void refreshPresence(), PRESENCE_POLL_INTERVAL_MS)
+    void refreshPresence()
+    const onFocus = () => {
+      void refresh(false)
+      void refreshPresence()
+    }
     const onVisibilityChange = () => {
-      if (document.visibilityState === 'visible') void refresh(false)
+      if (document.visibilityState === 'visible') {
+        void refresh(false)
+        void refreshPresence()
+      }
     }
     window.addEventListener('focus', onFocus)
     document.addEventListener('visibilitychange', onVisibilityChange)
@@ -170,6 +209,7 @@ export function useAutoPartnerSync(session: AdminSession, enabled = true) {
     return () => {
       active = false
       window.clearInterval(timer)
+      window.clearInterval(presenceTimer)
       window.removeEventListener('focus', onFocus)
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }

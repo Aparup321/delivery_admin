@@ -5,7 +5,7 @@ import { getPartnerEligibility, hasPartnerAccepted, livePresenceState, liveServi
 import { buildKycQueue, liveApplicationStatus, liveDocumentsBlocked, partnerVerification } from '../src/domain/kyc.ts'
 import { appReducer, type AppFrame, type OperationAction } from '../src/state/operationsReducer.ts'
 import { loadOperationsState, saveOperationsState } from '../src/data/persistence.ts'
-import { decodeFirestoreFields, normalizePartnerAppDocuments, normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint } from '../src/services/partnerApp.ts'
+import { decodeFirestoreFields, normalizePartnerAppDocuments, normalizePartnerAppPresence, normalizePartnerAppRecords, parseFirebaseConfigJson, partnerAppCollectionDocumentEndpoint, partnerAppDocumentEndpoint, partnerAppEndpoint, syncPartnerAppPresence } from '../src/services/partnerApp.ts'
 import { buildPartnerAppWriteIntent } from '../src/services/partnerAppIntent.ts'
 import { normalizeLiveDeliveries } from '../src/services/liveDeliveries.ts'
 import { clearDemoLocalWorkflow, hasDemoLocalWorkflow, markDemoLocalWorkflow, mergeSharedPayload, toSharedPayload } from '../src/services/sharedState.ts'
@@ -1686,6 +1686,8 @@ test('stale presence heartbeats make an online partner offline and unassignable'
   const stale: PartnerAppRecord = { ...base, fields: { ...base.fields, presenceUpdatedAt: new Date(now - 10 * 60_000).toISOString() } }
   assert.equal(livePresenceState(fresh, now), 'online')
   assert.equal(livePresenceState(stale, now), 'stale')
+  // A stale availability string must never override the explicit offline switch.
+  assert.equal(livePresenceState({ ...fresh, isOnline: false }, now), 'offline')
 
   const frame = frameWithDemo()
   const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
@@ -1703,6 +1705,94 @@ test('stale presence heartbeats make an online partner offline and unassignable'
   assert.ok(result.reasons.some((reason) => /presence is stale/i.test(reason)))
 
   const synced = apply(frame, { type: 'partnerApp.sync-result', records: [stale], at: new Date(now).toISOString() })
+  assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Offline')
+})
+
+test('presence-only polling marks a linked partner offline as soon as the app says Offline', () => {
+  const payload = {
+    documents: [{
+      name: 'projects/delivery/databases/(default)/documents/partners/live-presence-1',
+      fields: {
+        isOnline: { booleanValue: false },
+        availability: { stringValue: 'Offline' },
+        presenceUpdatedAt: { stringValue: new Date().toISOString() },
+      },
+    }],
+  }
+  const presences = normalizePartnerAppPresence(payload)
+  assert.equal(presences.length, 1)
+  assert.equal(presences[0].id, 'live-presence-1')
+  assert.equal(presences[0].isOnline, false)
+  assert.equal(presences[0].fields.availability, 'Offline')
+
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.partnerAppUid = 'live-presence-1'
+  partner.availability = 'Available'
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.partnerId !== partner.id || assignment.status !== 'Active')
+  frame.data.partnerAppRecords = [{
+    id: 'live-presence-1',
+    partnerId: null,
+    name: 'Sayan M.',
+    phone: null,
+    email: null,
+    vehicle: 'Scooter',
+    status: 'active',
+    applicationStatus: 'approved',
+    isOnline: true,
+    serviceAreas: ['New Town'],
+    updatedAt: new Date().toISOString(),
+    fields: { isOnline: 'true', availability: 'Available' },
+    syncedAt: new Date().toISOString(),
+  }]
+
+  const synced = apply(frame, { type: 'partnerApp.presence', presences, at: new Date().toISOString() })
+  assert.equal(synced.feedback, null)
+  assert.equal(synced.data.partnerAppRecords[0].isOnline, false)
+  assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Offline')
+})
+
+test('presence sync requests only heartbeat fields and normalizes the online flag', async () => {
+  const config: PartnerAppConfig = {
+    mode: 'firestore', projectId: 'delivery-app', apiKey: 'demo', databaseId: '(default)',
+    partnersCollection: 'partners', endpointUrl: '', lastConnectedAt: null, lastSyncAt: null, lastError: null,
+  }
+  const originalFetch = globalThis.fetch
+  let requested = ''
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    requested = String(input)
+    return new Response(JSON.stringify({
+      documents: [{
+        name: 'projects/delivery-app/databases/(default)/documents/partners/live-1',
+        fields: {
+          isOnline: { booleanValue: true },
+          availability: { stringValue: 'Available' },
+          presenceUpdatedAt: { stringValue: new Date().toISOString() },
+        },
+      }],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+  try {
+    const presences = await syncPartnerAppPresence(config, '')
+    assert.equal(presences.length, 1)
+    assert.equal(presences[0].id, 'live-1')
+    assert.equal(presences[0].isOnline, true)
+    assert.match(requested, /mask\.fieldPaths=isOnline/)
+    assert.match(requested, /mask\.fieldPaths=presenceUpdatedAt/)
+    assert.match(requested, /mask\.fieldPaths=availability/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('a linked partner with no live record is not left showing Available', () => {
+  const frame = frameWithDemo()
+  const partner = frame.data.partners.find((item) => item.id === 'DP-0187')!
+  partner.partnerAppUid = 'missing-live-record'
+  partner.availability = 'Available'
+  frame.data.assignments = frame.data.assignments.filter((assignment) => assignment.partnerId !== partner.id || assignment.status !== 'Active')
+  frame.data.partnerAppRecords = []
+  const synced = apply(frame, { type: 'partnerApp.sync-result', records: [], at: new Date().toISOString(), silent: true })
   assert.equal(synced.data.partners.find((item) => item.id === partner.id)?.availability, 'Offline')
 })
 

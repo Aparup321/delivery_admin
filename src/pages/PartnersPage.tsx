@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import type { DocumentStatus, OperationsState, Partner, PartnerAppRecord, PartnerDocument } from '../domain/model'
-import { getActiveAssignment, getPartnerEligibility, isDocumentCurrent, liveServiceAreas } from '../domain/operations'
+import { getActiveAssignment, getPartnerEligibility, isDocumentCurrent, livePresenceState, liveServiceAreas } from '../domain/operations'
 import {
   displayedDocumentStatus,
   documentLabel,
@@ -22,7 +22,7 @@ import { hasFirebaseAdminSession } from '../services/firebaseAuth'
 import { userCan } from '../domain/admin'
 import { PartnerCreatePage } from './PartnerCreatePage'
 
-type PartnersSection = 'directory' | 'activity' | 'new' | 'expiring' | 'app'
+type PartnersSection = 'directory' | 'activity' | 'new' | 'app'
 
 interface DirectoryProps {
   data: OperationsState
@@ -31,95 +31,24 @@ interface DirectoryProps {
 }
 
 function PartnerSectionTabs({ active, data, open }: { active: PartnersSection; data: OperationsState; open: (path: string) => void }) {
-  const expiringCount = data.documents.filter((document) => document.expiresAt && new Date(document.expiresAt).getTime() <= Date.now() + 30 * 24 * 60 * 60_000).length
-  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>All partners<span>{data.partners.length}</span></button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'expiring' ? 'active' : ''} onClick={() => open('/admin/partners?view=expiring')}>Expiring documents<span>{expiringCount}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
-}
-
-interface ExpiringDocumentRow {
-  key: string
-  partnerId: string | null
-  partnerName: string
-  label: string
-  reference: string
-  status: string
-  expiresAt: string
-  reviewer: string | null
-  documentId: string | null
-}
-
-function ExpiringDocumentsPage({ data, open }: { data: OperationsState; open: (path: string) => void }) {
-  const { frame } = useOperations()
-  const canReview = userCan(frame.data.user, 'document-review')
-  const now = Date.now()
-  const cutoff = now + 30 * 24 * 60 * 60_000
-  const localRows: ExpiringDocumentRow[] = data.documents
-    .filter((document) => document.expiresAt && new Date(document.expiresAt).getTime() <= cutoff)
-    .map((document) => {
-      const partner = data.partners.find((item) => item.id === document.partnerId)
-      return {
-        key: document.id,
-        partnerId: partner?.id ?? null,
-        partnerName: partner?.name ?? document.partnerId,
-        label: document.type,
-        reference: document.id,
-        status: displayedDocumentStatus(document),
-        expiresAt: document.expiresAt!,
-        reviewer: document.reviewer,
-        documentId: document.id,
-      }
-    })
-  const liveRows: ExpiringDocumentRow[] = data.partnerAppDocuments.flatMap((document) => {
-    const partner = data.partners.find((item) => item.partnerAppUid === document.id)
-    return document.files.flatMap((file) => file.review?.expiresAt && new Date(file.review.expiresAt).getTime() <= cutoff
-      ? [{
-        key: `${document.id}:${file.key}`,
-        partnerId: partner?.id ?? null,
-        partnerName: partner?.name ?? document.id,
-        label: documentLabel(file.key),
-        reference: file.fileName ?? 'delivery_app document',
-        status: file.review.status,
-        expiresAt: file.review.expiresAt,
-        reviewer: file.review.reviewedBy,
-        documentId: null,
-      }]
-      : [])
-  })
-  const documents = [...localRows, ...liveRows].sort((left, right) => new Date(left.expiresAt).getTime() - new Date(right.expiresAt).getTime())
-
-  function expiryLabel(document: ExpiringDocumentRow) {
-    const expiresAt = new Date(document.expiresAt).getTime()
-    const days = Math.ceil((expiresAt - now) / (24 * 60 * 60_000))
-    if (days < 0) return `${Math.abs(days)} day${Math.abs(days) === 1 ? '' : 's'} overdue`
-    if (days === 0) return 'Expires today'
-    return `Expires in ${days} day${days === 1 ? '' : 's'}`
-  }
-
-  function reviewRow(document: ExpiringDocumentRow) {
-    if (document.documentId && document.partnerId) open(`/admin/partners/${document.partnerId}?document=${encodeURIComponent(document.documentId)}`)
-    else open('/admin/kyc')
-  }
-
-  return <div className="page-stack">
-    <Panel className="records-panel">
-      <div className="records-topline"><div className="records-count"><strong>{documents.length}</strong><span>documents expired or expiring</span><span className="dot-separator" />{documents.filter((document) => new Date(document.expiresAt).getTime() <= now).length} overdue</div><span className="demo-caption">Next 30 days · local and delivery_app</span></div>
-      <div className="notification-history-note"><Icon name="clock" size={14} />Review expired documents first. Updating a document review recalculates the partner's assignment eligibility. delivery_app documents are reviewed from KYC Review → Details.</div>
-      <div className="table-scroll"><table className="data-table expiring-documents-table"><thead><tr><th>Partner</th><th>Document</th><th>Status</th><th>Expiry</th><th>Reviewer</th><th>Action</th></tr></thead><tbody>
-        {documents.map((document) => <tr key={document.key}>
-          <td>{document.partnerId ? <button className="partner-cell partner-profile-button" onClick={() => open(`/admin/partners/${document.partnerId}`)}><span className="mini-avatar">{initials(document.partnerName)}</span><span><b>{document.partnerName}</b><small>{document.partnerId}</small></span></button> : <span className="muted-text">{document.partnerName}</span>}</td>
-          <td><span className="document-main"><strong>{document.label}<small>{document.reference}</small></strong></span></td>
-          <td><StatusBadge status={document.status} /></td>
-          <td><span className={`expiry-cell ${new Date(document.expiresAt).getTime() <= now ? 'overdue' : ''}`}><strong>{formatDate(document.expiresAt, { month: 'short', day: 'numeric', year: 'numeric' })}</strong><small>{expiryLabel(document)}</small></span></td>
-          <td>{document.reviewer ?? <span className="muted-text">Not reviewed</span>}</td>
-          <td><Button size="small" variant="quiet" disabled={!canReview} title={canReview ? undefined : 'Document review access required'} onClick={() => reviewRow(document)}>Review document</Button></td>
-        </tr>)}
-      </tbody></table>{documents.length === 0 && <EmptyState title="No documents are expiring soon" detail="Documents with an expiry within the next 30 days or already expired appear here. Review delivery_app documents from KYC Review to record an expiry." />}</div>
-    </Panel>
-  </div>
+  return <div className="partner-section-tabs"><button className={active === 'directory' ? 'active' : ''} onClick={() => open('/admin/partners')}>All partners<span>{data.partners.length}</span></button><button className={active === 'activity' ? 'active' : ''} onClick={() => open('/admin/partners?view=activity')}>Partner activity<span>{data.partnerHistory.length}</span></button><button className={active === 'app' ? 'active' : ''} onClick={() => open('/admin/partners?view=app')}>Partner app<span>{data.partnerAppRecords.length}</span></button></div>
 }
 
 function appStatusLabel(value: string | null) {
   if (!value) return ''
   return value.replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
+}
+
+function presenceText(record: PartnerAppRecord | undefined) {
+  if (!record) return 'Not synchronized'
+  const presence = livePresenceState(record)
+  return presence === 'online'
+    ? 'Online'
+    : presence === 'stale'
+      ? 'Stale heartbeat'
+      : presence === 'offline'
+        ? 'Offline'
+        : 'No heartbeat'
 }
 
 function linkedPartnerForRecord(data: OperationsState, record: PartnerAppRecord) {
@@ -163,7 +92,8 @@ function PartnerAppRecordDialog({ record, data, onClose, open }: { record: Partn
         <div><span>Email</span><strong>{record.email ?? '—'}</strong></div>
         <div><span>Vehicle</span><strong>{record.vehicle ?? '—'}</strong></div>
         <div><span>Application</span><strong>{record.applicationStatus ? <StatusBadge status={appStatusLabel(record.applicationStatus)} /> : '—'}</strong></div>
-        <div><span>Account</span><strong>{record.status ? <StatusBadge status={record.status} /> : '—'}</strong></div>
+        <div><span>Account state</span><strong>{record.status ? <StatusBadge status={record.status} /> : '—'}</strong></div>
+        <div><span>Presence</span><strong>{presenceText(record)}</strong></div>
         <div><span>Admin partner</span><strong>{linkedPartner ? `${linkedPartner.id} · ${linkedPartner.name}` : '—'}</strong></div>
         <div><span>Service areas</span><strong>{record.serviceAreas.length ? record.serviceAreas.join(', ') : '—'}</strong></div>
       </div>
@@ -256,7 +186,7 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
           ? <Button variant="primary" onClick={refreshLive} disabled={syncing || !configured}><Icon name="refresh" size={14} />{syncing ? 'Refreshing…' : 'Refresh live data'}</Button>
           : <Button variant="primary" onClick={beginFirebaseDataConnection} disabled={!configured}><Icon name="lock" size={14} />Sign in with Firebase</Button>} /> : <>
           <div className="filter-toolbar kyc-filter-toolbar"><label className="search-control"><Icon name="search" size={16} /><input value={search} onChange={(event) => { setSearch(event.target.value); setPage(1) }} placeholder="Search record, partner ID, contact, vehicle, status, or application" aria-label="Search partner app records" /></label></div>
-          <div className="table-scroll"><table className="data-table app-data-table"><thead><tr><th>App record</th><th>Contact</th><th>Vehicle / areas</th><th>Application</th><th>Account</th><th>Admin partner</th><th>Updated</th><th /></tr></thead><tbody>
+          <div className="table-scroll"><table className="data-table app-data-table"><thead><tr><th>App record</th><th>Contact</th><th>Vehicle / areas</th><th>Application</th><th>Account state</th><th>Presence</th><th>Admin partner</th><th>Updated</th><th /></tr></thead><tbody>
             {visible.map((item) => {
               const partner = linkedPartnerForRecord(data, item)
               const application = applicationForRecord(data, item, partner)
@@ -266,6 +196,7 @@ function PartnerAppDataPage({ data, open }: { data: OperationsState; open: (path
                 <td><span className="application-documents"><strong>{item.vehicle ?? '—'}</strong><small>{item.serviceAreas.slice(0, 2).join(', ') || 'No areas'}{item.serviceAreas.length > 2 ? ` +${item.serviceAreas.length - 2}` : ''}</small></span></td>
                 <td>{item.applicationStatus ? <StatusBadge status={appStatusLabel(item.applicationStatus)} /> : <span className="muted-text">—</span>}</td>
                 <td>{item.status ? <StatusBadge status={item.status} /> : <span className="muted-text">—</span>}</td>
+                <td>{presenceText(item)}</td>
                 <td>{partner ? <button className="table-record-link" onClick={() => open(`/admin/partners/${partner.id}`)}>{partner.id}<small>{partner.name}</small></button> : application ? <span className="muted-text">{application.id}<small>Application only</small></span> : <span className="muted-text">Not linked</span>}</td>
                 <td>{formatDate(item.updatedAt ?? item.syncedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</td>
                 <td><Button size="small" onClick={() => setRecordId(item.id)}>Manage</Button></td>
@@ -340,7 +271,7 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   const [restoreTarget, setRestoreTarget] = useState<Partner | null>(null)
   const pageSize = 8
   const canManage = userCan(frame.data.user, 'partner-management')
-  const view: PartnersSection = viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : viewFromUrl === 'new' ? 'new' : viewFromUrl === 'expiring' ? 'expiring' : 'directory'
+  const view: PartnersSection = viewFromUrl === 'app' ? 'app' : viewFromUrl === 'activity' ? 'activity' : viewFromUrl === 'new' ? 'new' : 'directory'
   const areas = [...new Set(data.partners.flatMap((partner) => partner.serviceAreas))].sort()
   const deliveryForEligibility = data.deliveries.find((item) => item.status === 'Unassigned' || item.status === 'Pending') ?? data.deliveries.find((item) => !['Completed', 'Cancelled'].includes(item.status))
 
@@ -361,7 +292,6 @@ export function PartnersPage({ data, open, viewFromUrl }: DirectoryProps) {
   if (view === 'new') return <div className="page-stack"><div className="row-action-group"><Button size="small" onClick={() => open('/admin/partners')}><Icon name="arrow" size={14} className="icon-flip" />Back to partners</Button></div><PartnerCreatePage data={data} open={open} /></div>
   if (view === 'app') return <div className="page-stack"><PartnerSectionTabs active="app" data={data} open={open} /><PartnerAppDataPage data={data} open={open} /></div>
   if (view === 'activity') return <div className="page-stack"><PartnerSectionTabs active="activity" data={data} open={open} /><PartnerActivityPage data={data} open={open} /></div>
-  if (view === 'expiring') return <div className="page-stack"><PartnerSectionTabs active="expiring" data={data} open={open} /><ExpiringDocumentsPage data={data} open={open} /></div>
 
   return <div className="page-stack">
     <PartnerSectionTabs active="directory" data={data} open={open} />
@@ -463,6 +393,8 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
   const history = data.partnerHistory.filter((event) => event.partnerId === partner.id).slice(0, 10)
   const verification = partnerVerification(data, partner)
   const liveApplicationApproved = Boolean(liveRecord) && verification === 'Verified'
+  const livePresence = liveRecord ? livePresenceState(liveRecord) : 'unknown'
+  const livePresenceLabel = presenceText(liveRecord)
   const canManage = userCan(frame.data.user, 'partner-management')
   const canReviewDocuments = userCan(frame.data.user, 'document-review')
   const document = documentId ? docs.find((item) => item.id === documentId) : undefined
@@ -491,7 +423,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
   return <div className="page-stack partner-profile-page">
     <Panel className="partner-profile-header">
       <div className="partner-profile-identity"><span className="profile-large-avatar">{initials(partner.name)}</span><div><div className="profile-name-line"><h2>{partner.name}</h2><StatusBadge status={partner.availability} /></div><p>{partner.id} <span>·</span> Registered {new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(new Date(partner.registeredAt))} {liveRecord ? <><span>·</span> Live Firebase record</> : <><span>·</span> Not synchronized</>}</p><div className="masked-contact"><span><Icon name="user" size={14} />{liveRecord?.phone ?? partner.maskedPhone}</span><span>{liveRecord?.email ?? partner.maskedEmail}</span></div></div></div>
-      <div className="partner-profile-actions"><Button size="small" onClick={() => open('/admin/partners')}><Icon name="arrow" size={14} className="icon-flip" />Directory</Button>{partner.availability === 'Restricted' || partner.availability === 'Suspended' ? <Button size="small" variant="primary" disabled={!canManage} onClick={() => setDialog('restore')}>Restore eligibility</Button> : <><Button size="small" disabled={!canManage || partner.availability === 'On Delivery'} onClick={() => setDialog('availability')}>{partner.availability === 'Offline' ? 'Set available' : 'Take offline'}</Button><Button size="small" variant="secondary" disabled={!canManage} onClick={() => setDialog('restrict')}>Restrict</Button><Button size="small" variant="danger" disabled={!canManage} onClick={() => setDialog('suspend')}>Suspend</Button></>}</div>
+      <div className="partner-profile-actions"><Button size="small" onClick={() => open('/admin/partners')}><Icon name="arrow" size={14} className="icon-flip" />Directory</Button>{partner.availability === 'Restricted' || partner.availability === 'Suspended' ? <Button size="small" variant="primary" disabled={!canManage} onClick={() => setDialog('restore')}>Restore eligibility</Button> : <><Button size="small" disabled={!canManage || partner.availability === 'On Delivery' || (Boolean(liveRecord) && livePresence !== 'online')} title={Boolean(liveRecord) && livePresence !== 'online' ? 'The partner must be Online in delivery_app first' : undefined} onClick={() => setDialog('availability')}>{partner.availability === 'Offline' ? 'Set available' : 'Take offline'}</Button><Button size="small" variant="secondary" disabled={!canManage} onClick={() => setDialog('restrict')}>Restrict</Button><Button size="small" variant="danger" disabled={!canManage} onClick={() => setDialog('suspend')}>Suspend</Button></>}</div>
     </Panel>
 
     {(partner.availability === 'Restricted' || partner.availability === 'Suspended') && <div className="exception-banner"><Icon name="shield" size={17} /><div><strong>Partner is {partner.availability.toLowerCase()} and ineligible for new assignments</strong><span>{partner.restrictedReason ?? partner.suspendedReason}{suspensionWindow ? ` · ${suspensionWindow}` : ''}{partner.needsOperationalReview && activeDelivery ? ` · Existing ${activeDelivery.id} assignment needs operational review.` : ''}</span></div></div>}
@@ -500,7 +432,7 @@ export function PartnerProfilePage({ data, open, partnerId, initialDocumentId }:
     <div className="profile-columns">
       <div className="profile-main-column">
         <Panel><PanelHeading title="Partner and vehicle" detail={liveRecord ? 'Live synchronized partner details' : 'Live partner details are not synchronized'} />
-          <div className="profile-data-grid"><div><span>Firebase UID</span><strong>{liveRecord?.id ?? 'Not linked'}</strong></div><div><span>Vehicle</span><strong><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{liveValue('vehicleType', 'vehicle.type') ?? partner.vehicle}</strong></div><div><span>Model</span><strong>{liveValue('vehicleModel', 'vehicle.model', 'model') ?? 'Not provided'}</strong></div><div><span>Colour</span><strong>{liveValue('vehicleColour', 'vehicle.color', 'colour', 'color') ?? 'Not provided'}</strong></div><div><span>Registration number</span><strong>{liveValue('vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber') ?? 'Not provided'}</strong></div><div><span>Licence number</span><strong>{liveValue('vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber') ?? 'Not provided'}</strong></div><div><span>Address</span><strong>{liveValue('addressLine', 'address', 'fullAddress') ?? 'Not provided'}</strong></div><div><span>City / pincode</span><strong>{[liveValue('city'), liveValue('pincode', 'postalCode')].filter(Boolean).join(' / ') || 'Not provided'}</strong></div><div><span>Service areas</span><strong>{partner.serviceAreas.join(', ') || liveServiceAreas(liveRecord).join(', ') || 'Not provided'}</strong></div><div><span>Application status</span><strong>{liveRecord?.applicationStatus ?? 'Not synchronized'}</strong></div><div><span>Account status</span><strong>{liveRecord?.status ?? 'Not synchronized'}</strong></div></div>
+          <div className="profile-data-grid"><div><span>Firebase UID</span><strong>{liveRecord?.id ?? 'Not linked'}</strong></div><div><span>Vehicle</span><strong><Icon name={partner.vehicle === 'Van' ? 'van' : partner.vehicle === 'On foot' ? 'user' : 'bike'} size={16} />{liveValue('vehicleType', 'vehicle.type') ?? partner.vehicle}</strong></div><div><span>Model</span><strong>{liveValue('vehicleModel', 'vehicle.model', 'model') ?? 'Not provided'}</strong></div><div><span>Colour</span><strong>{liveValue('vehicleColour', 'vehicle.color', 'colour', 'color') ?? 'Not provided'}</strong></div><div><span>Registration number</span><strong>{liveValue('vehicleRegistrationNumber', 'vehicle.registrationNumber', 'registrationNumber') ?? 'Not provided'}</strong></div><div><span>Licence number</span><strong>{liveValue('vehicleLicenceNumber', 'vehicle.licenceNumber', 'licenceNumber', 'licenseNumber') ?? 'Not provided'}</strong></div><div><span>Address</span><strong>{liveValue('addressLine', 'address', 'fullAddress') ?? 'Not provided'}</strong></div><div><span>City / pincode</span><strong>{[liveValue('city'), liveValue('pincode', 'postalCode')].filter(Boolean).join(' / ') || 'Not provided'}</strong></div><div><span>Service areas</span><strong>{partner.serviceAreas.join(', ') || liveServiceAreas(liveRecord).join(', ') || 'Not provided'}</strong></div><div><span>Application status</span><strong>{liveRecord?.applicationStatus ?? 'Not synchronized'}</strong></div><div><span>Account state</span><strong>{liveRecord?.status ?? 'Not synchronized'}</strong></div><div><span>App presence</span><strong>{liveRecord ? livePresenceLabel : 'Not synchronized'}</strong></div></div>
           {liveRecord && additionalLiveFields.length > 0 && <div className="submitted-fields"><strong>Additional submitted information</strong><div className="profile-data-grid">{additionalLiveFields.map(([key, value]) => <div key={key}><span>{key}</span><strong>{value}</strong></div>)}</div></div>}
           <div className="illustrative-note"><Icon name="shield" size={14} />Only authorized administrators can view these personal and document details. Security tokens and secrets are excluded.</div>
         </Panel>
